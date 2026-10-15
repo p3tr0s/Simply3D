@@ -32,14 +32,17 @@ fn from_manifold(r: &Manifold) -> Mesh {
 
 /// Boolean between two world-space meshes.
 pub fn boolean(a: &Mesh, b: &Mesh, op: BoolOp) -> Result<Mesh> {
-    let ma = to_manifold(a)?;
-    let mb = to_manifold(b)?;
+    let ma = std::panic::catch_unwind(|| to_manifold(a)).map_err(|_| Error::Boolean("invalid mesh".into()))??;
+    let mb = std::panic::catch_unwind(|| to_manifold(b)).map_err(|_| Error::Boolean("invalid mesh".into()))??;
     let op = match op {
         BoolOp::Union => OpType::Add,
         BoolOp::Subtract => OpType::Subtract,
         BoolOp::Intersect => OpType::Intersect,
     };
-    let r = compute_boolean(&ma, &mb, op).map_err(Error::Boolean)?;
+    // the boolean kernel can panic on degenerate input: turn that into an error
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compute_boolean(&ma, &mb, op)))
+        .map_err(|_| Error::Boolean("the geometry is too degenerate for a boolean — try Repair first".into()))?
+        .map_err(Error::Boolean)?;
     Ok(from_manifold(&r))
 }
 

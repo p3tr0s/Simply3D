@@ -10,11 +10,34 @@ use crate::{Error, Result};
 use std::path::Path;
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct IoObject {
     pub name: String,
+    /// World-space mesh, or local-space when `transform` is set.
     pub mesh: Mesh,
     /// sRGB colour, if the file carries one.
     pub color: Option<[u8; 4]>,
+    /// Object placement (3MF build item). `None` = mesh is already in world space.
+    pub transform: Option<glam::Mat4>,
+    /// Group name (Builder3D project metadata).
+    pub group: Option<String>,
+    pub hidden: bool,
+    pub locked: bool,
+    /// Written by Builder3D: positions are meaningful as-is.
+    pub keep_position: bool,
+}
+
+impl IoObject {
+    pub fn new(name: impl Into<String>, mesh: Mesh, color: Option<[u8; 4]>) -> Self {
+        IoObject { name: name.into(), mesh, color, ..Default::default() }
+    }
+    /// Mesh with the placement applied.
+    pub fn world_mesh(&self) -> Mesh {
+        match self.transform {
+            Some(m) => self.mesh.transformed(&m),
+            None => self.mesh.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,9 +86,9 @@ pub fn load(path: &Path) -> Result<Vec<IoObject>> {
 
 pub fn load_bytes(bytes: &[u8], fmt: Format, name: &str) -> Result<Vec<IoObject>> {
     let objs = match fmt {
-        Format::Stl => vec![IoObject { name: name.into(), mesh: stl::read(bytes)?, color: None }],
+        Format::Stl => vec![IoObject::new(name, stl::read(bytes)?, None)],
         Format::Obj => obj::read(bytes, name)?,
-        Format::Ply => vec![IoObject { name: name.into(), mesh: ply::read(bytes)?, color: None }],
+        Format::Ply => vec![IoObject::new(name, ply::read(bytes)?, None)],
         Format::ThreeMf => threemf::read(bytes)?,
     };
     let objs: Vec<_> = objs.into_iter().filter(|o| !o.mesh.is_empty()).collect();
@@ -84,6 +107,15 @@ pub fn save(path: &Path, objects: &[IoObject]) -> Result<()> {
 
 /// Encode. For OBJ a companion `.mtl` is written next to `path` when colours exist.
 pub fn save_bytes(objects: &[IoObject], fmt: Format, path: &Path) -> Result<Vec<u8>> {
+    if fmt == Format::ThreeMf {
+        return threemf::write(objects);
+    }
+    // the other formats have no placements: bake them
+    let baked: Vec<IoObject> = objects
+        .iter()
+        .map(|o| IoObject { name: o.name.clone(), mesh: o.world_mesh(), color: o.color, ..Default::default() })
+        .collect();
+    let objects = &baked[..];
     Ok(match fmt {
         Format::Stl => {
             let mut all = Mesh::default();
@@ -109,7 +141,7 @@ pub fn save_bytes(objects: &[IoObject], fmt: Format, path: &Path) -> Result<Vec<
             }
             obj
         }
-        Format::ThreeMf => threemf::write(objects)?,
+        Format::ThreeMf => unreachable!(),
     })
 }
 
@@ -134,8 +166,8 @@ mod tests {
         let mut b = sphere(5.0, 24, 12);
         b.translate(Vec3::new(20.0, 0.0, 5.0));
         vec![
-            IoObject { name: "Cube & <friends>".into(), mesh: cuboid(Vec3::splat(10.0)), color: Some([255, 0, 0, 255]) },
-            IoObject { name: "Ball".into(), mesh: b, color: Some([0, 128, 255, 255]) },
+            IoObject::new("Cube & <friends>", cuboid(Vec3::splat(10.0)), Some([255, 0, 0, 255])),
+            IoObject::new("Ball", b, Some([0, 128, 255, 255])),
         ]
     }
 

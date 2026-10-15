@@ -184,6 +184,11 @@ impl Mesh {
 
     /// Möller–Trumbore ray cast. Returns (distance, triangle index).
     pub fn ray_cast(&self, origin: Vec3, dir: Vec3) -> Option<(f32, usize)> {
+        self.ray_cast_where(origin, dir, |_| true)
+    }
+
+    /// Nearest hit whose (local) hit point passes `accept` — e.g. to skip a clipped region.
+    pub fn ray_cast_where(&self, origin: Vec3, dir: Vec3, accept: impl Fn(Vec3) -> bool) -> Option<(f32, usize)> {
         if self.bounds().ray_hit(origin, dir).is_none() {
             return None;
         }
@@ -209,7 +214,7 @@ impl Mesh {
                 continue;
             }
             let t = e2.dot(q) * inv;
-            if t > 1e-6 && best.map_or(true, |(bt, _)| t < bt) {
+            if t > 1e-6 && best.map_or(true, |(bt, _)| t < bt) && accept(origin + dir * t) {
                 best = Some((t, i));
             }
         }

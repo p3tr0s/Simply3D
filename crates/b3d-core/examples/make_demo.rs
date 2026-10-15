@@ -17,16 +17,16 @@ fn main() {
     save(
         &out.join("demo.3mf"),
         &[
-            IoObject { name: "Base block".into(), mesh: base, color: Some([96, 165, 250, 255]) },
-            IoObject { name: "Ball".into(), mesh: ball, color: Some([251, 146, 60, 255]) },
-            IoObject { name: "Ring".into(), mesh: ring, color: Some([74, 222, 128, 255]) },
-            IoObject { name: "Post".into(), mesh: post, color: Some([244, 114, 182, 255]) },
+            IoObject::new("Base block", base, Some([96, 165, 250, 255])),
+            IoObject::new("Ball", ball, Some([251, 146, 60, 255])),
+            IoObject::new("Ring", ring, Some([74, 222, 128, 255])),
+            IoObject::new("Post", post, Some([244, 114, 182, 255])),
         ],
     )
     .unwrap();
     let mut broken = sphere(20.0, 48, 24);
     let n = broken.triangles.len();
     broken.triangles.drain(n / 2..n / 2 + 40);
-    save(&out.join("broken.stl"), &[IoObject { name: "broken".into(), mesh: broken, color: None }]).unwrap();
+    save(&out.join("broken.stl"), &[IoObject::new("broken", broken, None)]).unwrap();
     println!("wrote demo files to {}", out.display());
 }

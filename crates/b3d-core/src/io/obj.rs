@@ -73,7 +73,7 @@ pub fn read(bytes: &[u8], default_name: &str) -> Result<Vec<IoObject>> {
             m.compact();
             // colour encoded in material name by our own exporter: mat_RRGGBBAA
             let color = mat.and_then(|m| m.strip_prefix("mat_").and_then(super::parse_hex_color));
-            IoObject { name, mesh: m, color }
+            IoObject::new(name, m, color)
         })
         .collect())
 }

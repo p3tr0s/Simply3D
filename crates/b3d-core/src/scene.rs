@@ -75,6 +75,17 @@ pub struct Object {
     /// sRGB colour, 0-255.
     pub color: [u8; 4],
     pub visible: bool,
+    /// Locked objects can't be picked or moved in the viewport.
+    pub locked: bool,
+    pub group: Option<GroupId>,
+}
+
+pub type GroupId = u64;
+
+#[derive(Debug, Clone)]
+pub struct Group {
+    pub id: GroupId,
+    pub name: String,
 }
 
 impl Object {
@@ -109,6 +120,7 @@ pub const PALETTE: [[u8; 4]; 8] = [
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     pub objects: Vec<Object>,
+    pub groups: Vec<Group>,
     next_id: ObjectId,
 }
 
@@ -124,8 +136,70 @@ impl Scene {
         self.next_id += 1;
         let id = self.next_id;
         let color = color.unwrap_or(PALETTE[(id as usize - 1) % PALETTE.len()]);
-        self.objects.push(Object { id, name: name.into(), mesh: MeshHandle::new(mesh), transform, color, visible: true });
+        self.objects.push(Object {
+            id,
+            name: name.into(),
+            mesh: MeshHandle::new(mesh),
+            transform,
+            color,
+            visible: true,
+            locked: false,
+            group: None,
+        });
         id
+    }
+
+    // ---------- groups ----------
+
+    /// Put the objects in a new group (removing them from any previous group).
+    pub fn group(&mut self, ids: &[ObjectId], name: impl Into<String>) -> GroupId {
+        self.next_id += 1;
+        let gid = self.next_id;
+        self.groups.push(Group { id: gid, name: name.into() });
+        for o in self.objects.iter_mut().filter(|o| ids.contains(&o.id)) {
+            o.group = Some(gid);
+        }
+        self.prune_groups();
+        gid
+    }
+
+    pub fn ungroup(&mut self, ids: &[ObjectId]) {
+        for o in self.objects.iter_mut().filter(|o| ids.contains(&o.id)) {
+            o.group = None;
+        }
+        self.prune_groups();
+    }
+
+    /// Drop groups with fewer than two members.
+    pub fn prune_groups(&mut self) {
+        let objects = &mut self.objects;
+        self.groups.retain(|g| objects.iter().filter(|o| o.group == Some(g.id)).count() >= 2);
+        let live: Vec<GroupId> = self.groups.iter().map(|g| g.id).collect();
+        for o in objects.iter_mut() {
+            if o.group.is_some_and(|g| !live.contains(&g)) {
+                o.group = None;
+            }
+        }
+    }
+
+    pub fn group_of(&self, id: ObjectId) -> Option<GroupId> {
+        self.get(id).and_then(|o| o.group)
+    }
+
+    pub fn group_name(&self, gid: GroupId) -> Option<&str> {
+        self.groups.iter().find(|g| g.id == gid).map(|g| g.name.as_str())
+    }
+
+    pub fn members(&self, gid: GroupId) -> Vec<ObjectId> {
+        self.objects.iter().filter(|o| o.group == Some(gid)).map(|o| o.id).collect()
+    }
+
+    /// The object plus the rest of its group.
+    pub fn with_group(&self, id: ObjectId) -> Vec<ObjectId> {
+        match self.group_of(id) {
+            Some(g) => self.members(g),
+            None => vec![id],
+        }
     }
 
     pub fn get(&self, id: ObjectId) -> Option<&Object> {
@@ -136,7 +210,11 @@ impl Scene {
     }
     pub fn remove(&mut self, id: ObjectId) -> Option<Object> {
         let i = self.objects.iter().position(|o| o.id == id)?;
-        Some(self.objects.remove(i))
+        let o = self.objects.remove(i);
+        if o.group.is_some() {
+            self.prune_groups();
+        }
+        Some(o)
     }
 
     pub fn bounds(&self) -> Aabb {
@@ -174,37 +252,35 @@ impl Scene {
 
     /// Ray pick: returns (object id, distance, world hit point).
     pub fn pick(&self, origin: Vec3, dir: Vec3) -> Option<(ObjectId, f32, Vec3)> {
-        let mut best: Option<(ObjectId, f32, Vec3)> = None;
-        for o in self.objects.iter().filter(|o| o.visible) {
-            let m = o.matrix();
-            let inv = m.inverse();
-            let lo = inv.transform_point3(origin);
-            let ld = inv.transform_vector3(dir);
-            if let Some((t, _)) = o.mesh.mesh.ray_cast(lo, ld) {
-                let hit = m.transform_point3(lo + ld * t);
-                let dist = (hit - origin).length();
-                if best.is_none_or(|b| dist < b.1) {
-                    best = Some((o.id, dist, hit));
-                }
-            }
-        }
-        best
+        self.pick_filtered(origin, dir, |_| true, |_| true).map(|h| (h.id, h.distance, h.point))
     }
 
     /// Detailed pick: hit point, world face normal and world triangle corners.
     pub fn pick_detail(&self, origin: Vec3, dir: Vec3) -> Option<PickHit> {
-        self.pick_detail_where(origin, dir, |_| true)
+        self.pick_filtered(origin, dir, |_| true, |_| true)
     }
 
     /// Like [`pick_detail`](Self::pick_detail) but only considers objects for which `keep` is true.
     pub fn pick_detail_where(&self, origin: Vec3, dir: Vec3, keep: impl Fn(&Object) -> bool) -> Option<PickHit> {
+        self.pick_filtered(origin, dir, keep, |_| true)
+    }
+
+    /// Most general pick: filter objects, and filter hit points in world space
+    /// (used to see through the part removed by a section plane).
+    pub fn pick_filtered(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        keep: impl Fn(&Object) -> bool,
+        accept_point: impl Fn(Vec3) -> bool,
+    ) -> Option<PickHit> {
         let mut best: Option<(f32, PickHit)> = None;
         for o in self.objects.iter().filter(|o| o.visible && keep(o)) {
             let m = o.matrix();
             let inv = m.inverse();
             let lo = inv.transform_point3(origin);
             let ld = inv.transform_vector3(dir);
-            if let Some((t, tri)) = o.mesh.mesh.ray_cast(lo, ld) {
+            if let Some((t, tri)) = o.mesh.mesh.ray_cast_where(lo, ld, |lp| accept_point(m.transform_point3(lp))) {
                 let point = m.transform_point3(lo + ld * t);
                 let dist = (point - origin).length();
                 if best.as_ref().is_none_or(|b| dist < b.0) {
@@ -245,6 +321,19 @@ mod tests {
         assert_eq!(hit, id);
         assert!((d - 48.0).abs() < 1e-4);
         assert!((p.z - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn groups() {
+        let mut s = Scene::default();
+        let a = s.add_world_mesh("a", cuboid(Vec3::ONE), None);
+        let b = s.add_world_mesh("b", cuboid(Vec3::ONE), None);
+        let c = s.add_world_mesh("c", cuboid(Vec3::ONE), None);
+        let g = s.group(&[a, b], "pair");
+        assert_eq!(s.with_group(a), vec![a, b]);
+        assert_eq!(s.with_group(c), vec![c]);
+        s.remove(b); // a group of one dissolves
+        assert!(s.group_of(a).is_none() && s.group_name(g).is_none());
     }
 
     #[test]

@@ -17,6 +17,7 @@ struct Obj3mf {
     mesh: Option<Mesh>,
     prop: Option<(u32, u32)>,
     components: Vec<(Option<String>, u32, Mat4)>,
+    meta: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -25,6 +26,7 @@ struct ModelFile {
     objects: HashMap<u32, Obj3mf>,
     build: Vec<(Option<String>, u32, Mat4)>,
     colors: HashMap<u32, Vec<[u8; 4]>>,
+    meta: HashMap<String, String>,
 }
 
 fn norm_path(p: &str) -> String {
@@ -69,11 +71,13 @@ fn unit_scale(u: &str) -> f32 {
 
 fn parse_model(xml: &[u8]) -> Result<ModelFile> {
     let mut r = Reader::from_reader(xml);
-    r.config_mut().trim_text(true);
+    r.config_mut().trim_text(false); // keep spaces inside metadata values
     let mut buf = Vec::new();
     let mut mf = ModelFile { unit_scale: 1.0, ..Default::default() };
     let mut cur_obj: Option<(u32, Obj3mf)> = None;
     let mut cur_group: Option<u32> = None;
+    let mut cur_meta: Option<String> = None;
+    let mut meta_text = String::new();
     loop {
         let ev = r.read_event_into(&mut buf).map_err(|e| Error::Parse(format!("3MF xml: {e}")))?;
         match ev {
@@ -136,6 +140,14 @@ fn parse_model(xml: &[u8]) -> Result<ModelFile> {
                             }
                         }
                     }
+                    "metadata" => {
+                        let key = a.get("name").cloned().unwrap_or_default();
+                        let key = key.rsplit(':').next().unwrap_or("").to_string();
+                        if matches!(ev, Event::Start(_)) {
+                            cur_meta = Some(key);
+                            meta_text.clear();
+                        }
+                    }
                     "item" => {
                         if let Some(oid) = id("objectid") {
                             mf.build.push((a.get("path").map(|p| norm_path(p)), oid, parse_transform(a.get("transform"))));
@@ -144,7 +156,34 @@ fn parse_model(xml: &[u8]) -> Result<ModelFile> {
                     _ => {}
                 }
             }
+            Event::Text(ref t) if cur_meta.is_some() => meta_text.push_str(t.as_ref()),
+            Event::GeneralRef(ref r) if cur_meta.is_some() => {
+                let name: &str = r.as_ref();
+                match name {
+                    "amp" => meta_text.push('&'),
+                    "lt" => meta_text.push('<'),
+                    "gt" => meta_text.push('>'),
+                    "quot" => meta_text.push('"'),
+                    "apos" => meta_text.push('\''),
+                    n => {
+                        // numeric reference: &#65; / &#x41;
+                        let code = n.strip_prefix("#x").map(|h| u32::from_str_radix(h, 16).ok()).unwrap_or_else(|| n.strip_prefix('#').and_then(|d| d.parse().ok()));
+                        if let Some(c) = code.and_then(char::from_u32) {
+                            meta_text.push(c);
+                        }
+                    }
+                }
+            }
             Event::End(ref e) => match e.local_name().as_ref() {
+                "metadata" => {
+                    if let Some(k) = cur_meta.take() {
+                        let v = std::mem::take(&mut meta_text).trim().to_string();
+                        match &mut cur_obj {
+                            Some((_, o)) => o.meta.insert(k, v),
+                            None => mf.meta.insert(k, v),
+                        };
+                    }
+                }
                 "object" => {
                     if let Some((id, o)) = cur_obj.take() {
                         mf.objects.insert(id, o);
@@ -230,19 +269,46 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
     }
     let pkg = Package { files };
     let mf = pkg.files.get(&main).ok_or_else(|| Error::Parse(format!("3MF: missing {main}")))?;
+    let ours = mf.meta.get("Application").is_some_and(|a| a.starts_with("Builder3D"));
     let mut out = Vec::new();
     for (i, (path, oid, xf)) in mf.build.iter().enumerate() {
         let path = path.clone().unwrap_or_else(|| main.clone());
-        let mut mesh = Mesh::default();
-        let mut color = None;
-        pkg.flatten(&path, *oid, *xf, 0, &mut mesh, &mut color);
-        let name = pkg
-            .files
-            .get(&path)
-            .and_then(|f| f.objects.get(oid))
-            .and_then(|o| o.name.clone())
-            .unwrap_or_else(|| format!("Object {}", i + 1));
-        out.push(IoObject { name, mesh, color });
+        let file = pkg.files.get(&path);
+        let obj = file.and_then(|f| f.objects.get(oid));
+        let name = obj.and_then(|o| o.name.clone()).unwrap_or_else(|| format!("Object {}", i + 1));
+        let meta = |k: &str| obj.and_then(|o| o.meta.get(k)).cloned();
+        let mut io = IoObject {
+            name,
+            group: meta("group").filter(|g| !g.is_empty()),
+            hidden: meta("hidden").is_some_and(|v| v == "1"),
+            locked: meta("locked").is_some_and(|v| v == "1"),
+            keep_position: ours,
+            ..Default::default()
+        };
+        match (file, obj) {
+            // a plain mesh object: keep it local and remember the placement (keeps rotations)
+            (Some(f), Some(o)) if o.components.is_empty() && o.mesh.is_some() => {
+                let mut m = o.mesh.clone().unwrap();
+                let n = m.positions.len() as u32;
+                m.triangles.retain(|t| t.iter().all(|&i| i < n));
+                if let Some((g, pi)) = o.prop {
+                    io.color = f.colors.get(&g).and_then(|c| c.get(pi as usize)).copied();
+                }
+                let placement = *xf * Mat4::from_scale(Vec3::splat(f.unit_scale));
+                if placement.abs_diff_eq(Mat4::IDENTITY, 1e-7) {
+                    io.mesh = m;
+                } else {
+                    io.mesh = m;
+                    io.transform = Some(placement);
+                }
+            }
+            _ => {
+                let mut color = None;
+                pkg.flatten(&path, *oid, *xf, 0, &mut io.mesh, &mut color);
+                io.color = color;
+            }
+        }
+        out.push(io);
     }
     Ok(out)
 }
@@ -255,7 +321,7 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
     let mut model = String::with_capacity(1 << 20);
     model.push_str(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:b3d="https://builder3d.app/3mf/2026">
 <metadata name="Application">Builder3D</metadata>
 <resources>
 <basematerials id="1">
@@ -267,7 +333,21 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
     }
     model.push_str("</basematerials>\n");
     for (i, o) in objects.iter().enumerate() {
-        let _ = writeln!(model, r#"<object id="{}" type="model" name="{}" pid="1" pindex="{}"><mesh><vertices>"#, i + 2, esc(&o.name), i);
+        let _ = writeln!(model, r#"<object id="{}" type="model" name="{}" pid="1" pindex="{}">"#, i + 2, esc(&o.name), i);
+        if o.group.is_some() || o.hidden || o.locked {
+            model.push_str("<metadatagroup>");
+            if let Some(g) = &o.group {
+                let _ = write!(model, r#"<metadata name="b3d:group">{}</metadata>"#, esc(g));
+            }
+            if o.hidden {
+                model.push_str(r#"<metadata name="b3d:hidden">1</metadata>"#);
+            }
+            if o.locked {
+                model.push_str(r#"<metadata name="b3d:locked">1</metadata>"#);
+            }
+            model.push_str("</metadatagroup>\n");
+        }
+        model.push_str("<mesh><vertices>\n");
         for p in &o.mesh.positions {
             let _ = writeln!(model, r#"<vertex x="{}" y="{}" z="{}"/>"#, p.x, p.y, p.z);
         }
@@ -278,8 +358,32 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
         model.push_str("</triangles></mesh></object>\n");
     }
     model.push_str("</resources>\n<build>\n");
-    for i in 0..objects.len() {
-        let _ = writeln!(model, r#"<item objectid="{}"/>"#, i + 2);
+    for (i, o) in objects.iter().enumerate() {
+        match o.transform {
+            Some(m) => {
+                let c = m.to_cols_array();
+                let _ = writeln!(
+                    model,
+                    r#"<item objectid="{}" transform="{} {} {} {} {} {} {} {} {} {} {} {}"/>"#,
+                    i + 2,
+                    c[0],
+                    c[1],
+                    c[2],
+                    c[4],
+                    c[5],
+                    c[6],
+                    c[8],
+                    c[9],
+                    c[10],
+                    c[12],
+                    c[13],
+                    c[14]
+                );
+            }
+            None => {
+                let _ = writeln!(model, r#"<item objectid="{}"/>"#, i + 2);
+            }
+        }
     }
     model.push_str("</build>\n</model>\n");
 
@@ -299,6 +403,32 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transforms_and_metadata_roundtrip() {
+        let m = crate::primitives::cuboid(Vec3::new(10.0, 4.0, 2.0));
+        let xf = Mat4::from_scale_rotation_translation(Vec3::new(2.0, 1.0, 1.0), glam::Quat::from_rotation_z(0.7), Vec3::new(5.0, -3.0, 1.0));
+        let o = IoObject {
+            name: "Rotated & co".into(),
+            mesh: m.clone(),
+            color: Some([1, 2, 3, 255]),
+            transform: Some(xf),
+            group: Some("Group <A>".into()),
+            hidden: true,
+            locked: true,
+            ..Default::default()
+        };
+        let bytes = write(&[o, IoObject::new("plain", m.clone(), None)]).unwrap();
+        let back = read(&bytes).unwrap();
+        assert_eq!(back.len(), 2);
+        let a = &back[0];
+        assert!(a.transform.unwrap().abs_diff_eq(xf, 1e-5));
+        assert_eq!(a.mesh.positions, m.positions);
+        assert_eq!(a.group.as_deref(), Some("Group <A>"));
+        assert!(a.hidden && a.locked && a.keep_position);
+        assert_eq!(a.color, Some([1, 2, 3, 255]));
+        assert!(back[1].transform.is_none() && back[1].group.is_none() && !back[1].hidden);
+    }
 
     /// Production-extension layout: build item -> component in a separate model file, with transforms.
     #[test]

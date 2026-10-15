@@ -592,24 +592,61 @@ impl App {
     }
 
     fn finish_import(&mut self, objects: Vec<IoObject>, path: &Path) -> Vec<ObjectId> {
-        // place the imported group: centred in XY, resting on the plate, beside existing objects
-        let group = objects.iter().fold(Aabb::EMPTY, |b, o| b.union(&o.mesh.bounds()));
         let existing = self.scene.bounds();
         let recovered = crate::autosave::is_recovery_file(path);
+        // our own projects opened into an empty scene keep their exact layout;
+        // anything else is centred on the plate (or placed beside what's there)
+        let keep = recovered || (existing.is_empty() && !objects.is_empty() && objects.iter().all(|o| o.keep_position));
+        let group = objects.iter().fold(Aabb::EMPTY, |b, o| b.union(&o.world_mesh().bounds()));
         let mut offset = Vec3::new(-group.center().x, -group.center().y, -group.min.z);
         if !existing.is_empty() {
             offset.x = existing.max.x + 10.0 - group.min.x;
         }
-        if recovered {
-            offset = Vec3::ZERO; // restore the exact layout
+        if keep {
+            offset = Vec3::ZERO;
         }
         let n = objects.len();
         let tris: usize = objects.iter().map(|o| o.mesh.triangles.len()).sum();
         let mut ids = vec![];
-        for mut o in objects {
-            o.mesh.translate(offset);
+        let mut groups: Vec<(String, Vec<ObjectId>)> = vec![];
+        for o in objects {
             let name = self.scene.unique_name(&o.name);
-            ids.push(self.scene.add_world_mesh(name, o.mesh, o.color));
+            let id = match o.transform.and_then(|xf| {
+                // keep rotation/scale as a transform when it is a clean TRS matrix
+                let (sc, rot, tr) = xf.to_scale_rotation_translation();
+                let back = Mat4::from_scale_rotation_translation(sc, rot, tr);
+                let tol = 1e-4 * xf.abs().to_cols_array().iter().cloned().fold(1.0, f32::max);
+                back.abs_diff_eq(xf, tol).then_some((xf, sc, rot))
+            }) {
+                Some((xf, sc, rot)) => {
+                    let mut mesh = o.mesh;
+                    let c = mesh.bounds().center();
+                    mesh.translate(-c);
+                    let t = Transform { translation: xf.transform_point3(c) + offset, rotation: rot, scale: sc };
+                    self.scene.add_object(name, mesh, t, o.color)
+                }
+                None => {
+                    let mut mesh = o.world_mesh();
+                    mesh.translate(offset);
+                    self.scene.add_world_mesh(name, mesh, o.color)
+                }
+            };
+            if let Some(ob) = self.scene.get_mut(id) {
+                ob.visible = !o.hidden;
+                ob.locked = o.locked;
+            }
+            if let Some(g) = o.group {
+                match groups.iter_mut().find(|(n, _)| *n == g) {
+                    Some((_, v)) => v.push(id),
+                    None => groups.push((g, vec![id])),
+                }
+            }
+            ids.push(id);
+        }
+        for (name, members) in groups {
+            if members.len() >= 2 {
+                self.scene.group(&members, name);
+            }
         }
         if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("3mf")) && self.scene.objects.len() == n {
             self.current_file = Some(path.to_path_buf());
@@ -620,15 +657,33 @@ impl App {
         }
         self.fit_on_next_frame = true;
         self.info(format!("Imported {n} object(s), {tris} triangles from {}", path.display()));
+        ids.retain(|id| self.scene.get(*id).is_some_and(|o| o.visible));
         ids
     }
 
-    pub fn export_objects(&self, only_selected: bool) -> Vec<IoObject> {
+    /// Objects to write. `project`: everything (hidden too) with placements, groups and
+    /// flags, for 3MF projects. Otherwise: visible objects as world meshes.
+    pub fn export_objects(&self, only_selected: bool, project: bool) -> Vec<IoObject> {
         self.scene
             .objects
             .iter()
-            .filter(|o| o.visible && (!only_selected || self.selection.contains(&o.id)))
-            .map(|o| IoObject { name: o.name.clone(), mesh: o.world_mesh(), color: Some(o.color) })
+            .filter(|o| if project { true } else { o.visible && (!only_selected || self.selection.contains(&o.id)) })
+            .map(|o| {
+                if project {
+                    IoObject {
+                        name: o.name.clone(),
+                        mesh: (*o.mesh.mesh).clone(),
+                        color: Some(o.color),
+                        transform: Some(o.matrix()),
+                        group: o.group.and_then(|g| self.scene.group_name(g)).map(str::to_string),
+                        hidden: !o.visible,
+                        locked: o.locked,
+                        keep_position: true,
+                    }
+                } else {
+                    IoObject::new(o.name.clone(), o.world_mesh(), Some(o.color))
+                }
+            })
             .collect()
     }
 
@@ -661,7 +716,8 @@ impl App {
     }
 
     fn save_to(&mut self, ctx: &egui::Context, path: PathBuf, only_selected: bool) {
-        let objs = self.export_objects(only_selected);
+        let project = !only_selected && Format::from_path(&path) == Some(Format::ThreeMf);
+        let objs = self.export_objects(only_selected, project);
         if objs.is_empty() {
             self.error("Nothing to save");
             return;
@@ -1214,7 +1270,7 @@ impl App {
         }
         self.last_autosave = Instant::now();
         self.autosaved_gen = self.edit_gen;
-        let objs = self.export_objects(false);
+        let objs = self.export_objects(false, true);
         crate::autosave::write_async(objs, self.current_file.clone(), self.autosave_busy.clone());
     }
 
