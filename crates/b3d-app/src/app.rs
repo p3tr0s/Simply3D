@@ -9,6 +9,9 @@ use b3d_core::io::{self, Format, IoObject};
 use b3d_core::primitives::Primitive;
 use b3d_core::repair::{self, RepairOptions};
 use b3d_core::scene::{MeshHandle, ObjectId, Scene, Transform};
+use b3d_core::sdf::{self, RoundOptions};
+use b3d_core::simplify::{self, SimplifyOptions};
+use b3d_core::smooth;
 use b3d_core::{Aabb, Mesh};
 use glam::{Mat4, Quat, Vec2, Vec3};
 use std::path::{Path, PathBuf};
@@ -100,6 +103,49 @@ pub struct MeasureState {
     pub snap_vertices: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmoothMode {
+    /// Loop subdivision: smooth and 4× triangles per level.
+    Subdivide,
+    /// Midpoint subdivision: same shape, 4× triangles per level.
+    SubdivideFlat,
+    /// Taubin relaxation: same triangle count, removes noise/facets.
+    Relax,
+}
+
+#[derive(Debug, Clone)]
+pub struct MeshTools {
+    pub simplify_pct: f32,
+    pub simplify_err: f32,
+    pub smooth_mode: SmoothMode,
+    pub smooth_levels: u32,
+    pub relax_iters: u32,
+    pub keep_sharp: bool,
+    pub crease_deg: f32,
+    pub round_radius: f32,
+    pub round_mode: b3d_core::sdf::RoundMode,
+    pub round_voxel: f32,
+    pub round_simplify: bool,
+}
+
+impl Default for MeshTools {
+    fn default() -> Self {
+        Self {
+            simplify_pct: 50.0,
+            simplify_err: 0.0,
+            smooth_mode: SmoothMode::Subdivide,
+            smooth_levels: 1,
+            relax_iters: 10,
+            keep_sharp: true,
+            crease_deg: 40.0,
+            round_radius: 2.0,
+            round_mode: b3d_core::sdf::RoundMode::Convex,
+            round_voxel: 0.0,
+            round_simplify: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ArrayParams {
     pub count: [u32; 3],
@@ -153,6 +199,7 @@ pub struct App {
     pub measure: MeasureState,
     pub cut: CutState,
     pub array: ArrayParams,
+    pub mesh_tools: MeshTools,
     pub add_dialog: Option<Primitive>,
     pub show_settings: bool,
     pub show_about: bool,
@@ -200,6 +247,7 @@ impl App {
             tool: Tool::Select,
             measure: MeasureState { snap_vertices: true, ..Default::default() },
             cut: CutState { axis: 2, offset: 0.0, keep: CutKeep::Both },
+            mesh_tools: MeshTools::default(),
             array: ArrayParams { count: [3, 1, 1], spacing: Vec3::new(25.0, 25.0, 25.0) },
             add_dialog: None,
             show_settings: false,
@@ -820,6 +868,110 @@ impl App {
                 out.push((id, m));
             }
             JobOutput::ReplaceMeshes { label: "Repair".into(), meshes: out, message: format!("Repair: {}", logs.join("; ")) }
+        });
+    }
+
+    /// Selected objects' local meshes (transform kept) with the largest scale factor.
+    fn selected_local(&self) -> Vec<(ObjectId, Mesh, f32)> {
+        self.selection
+            .iter()
+            .filter_map(|id| self.scene.get(*id))
+            .map(|o| (o.id, (*o.mesh.mesh).clone(), o.transform.scale.abs().max_element().max(1e-6)))
+            .collect()
+    }
+
+    pub fn simplify_selected(&mut self, ctx: &egui::Context) {
+        let objs = self.selected_local();
+        if objs.is_empty() {
+            return;
+        }
+        let (pct, err) = (self.mesh_tools.simplify_pct, self.mesh_tools.simplify_err);
+        self.spawn_job(ctx, "Simplifying…", move || {
+            let (mut before, mut after) = (0, 0);
+            let meshes = objs
+                .into_iter()
+                .map(|(id, mut m, scale)| {
+                    before += m.triangles.len();
+                    let target = ((m.triangles.len() as f32) * pct / 100.0) as usize;
+                    simplify::simplify(&mut m, SimplifyOptions { target_triangles: target, max_error: (err / scale) as f64 });
+                    after += m.triangles.len();
+                    (id, m)
+                })
+                .collect();
+            JobOutput::ReplaceMeshes { label: "Simplify".into(), meshes, message: format!("Simplified {before} to {after} triangles") }
+        });
+    }
+
+    pub fn smooth_selected(&mut self, ctx: &egui::Context) {
+        let objs = self.selected_local();
+        if objs.is_empty() {
+            return;
+        }
+        let t = self.mesh_tools.clone();
+        let crease = t.keep_sharp.then_some(t.crease_deg);
+        if t.smooth_mode != SmoothMode::Relax {
+            let est: usize = objs.iter().map(|o| o.1.triangles.len() << (2 * t.smooth_levels)).sum();
+            if est > 8_000_000 {
+                self.error(format!("That would create {est} triangles — simplify first or use fewer levels"));
+                return;
+            }
+        }
+        self.spawn_job(ctx, "Smoothing…", move || {
+            let mut total = 0;
+            let meshes = objs
+                .into_iter()
+                .map(|(id, m, _)| {
+                    let out = match t.smooth_mode {
+                        SmoothMode::Subdivide => smooth::subdivide_loop(&m, t.smooth_levels, crease),
+                        SmoothMode::SubdivideFlat => smooth::subdivide_flat(&m, t.smooth_levels),
+                        SmoothMode::Relax => {
+                            let mut m = m;
+                            smooth::taubin(&mut m, t.relax_iters, crease);
+                            m
+                        }
+                    };
+                    total += out.triangles.len();
+                    (id, out)
+                })
+                .collect();
+            JobOutput::ReplaceMeshes { label: "Smooth".into(), meshes, message: format!("Smoothed: {total} triangles") }
+        });
+    }
+
+    pub fn round_selected(&mut self, ctx: &egui::Context) {
+        let objs: Vec<_> =
+            self.selection.iter().filter_map(|id| self.scene.get(*id)).map(|o| (o.id, o.name.clone(), o.color, o.world_mesh())).collect();
+        if objs.is_empty() {
+            return;
+        }
+        let t = self.mesh_tools.clone();
+        let opts = RoundOptions {
+            radius: t.round_radius,
+            mode: t.round_mode,
+            voxel: t.round_voxel,
+            simplify: t.round_simplify,
+            ..Default::default()
+        };
+        self.spawn_job(ctx, "Rounding edges…", move || {
+            let mut add = vec![];
+            let mut remove = vec![];
+            let mut info = vec![];
+            for (id, name, color, m) in objs {
+                match sdf::round_edges(&m, opts) {
+                    Ok((out, h)) => {
+                        let lost = m.connected_components().len() > out.connected_components().len();
+                        info.push(format!(
+                            "{name}: {} triangles (detail {h:.2} mm){}",
+                            out.triangles.len(),
+                            if lost { " — some thin parts disappeared" } else { "" }
+                        ));
+                        remove.push(id);
+                        add.push((name, out, color));
+                    }
+                    Err(e) => return JobOutput::Error(format!("Round edges failed on {name}: {e}")),
+                }
+            }
+            JobOutput::Replace { label: "Round edges".into(), remove, add, message: format!("Rounded edges — {}", info.join("; ")) }
         });
     }
 

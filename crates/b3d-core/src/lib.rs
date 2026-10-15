@@ -13,6 +13,9 @@ pub mod mesh;
 pub mod primitives;
 pub mod repair;
 pub mod scene;
+pub mod sdf;
+pub mod simplify;
+pub mod smooth;
 
 pub use glam;
 pub use mesh::{Aabb, Mesh};

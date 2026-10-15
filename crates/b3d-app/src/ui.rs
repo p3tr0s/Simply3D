@@ -29,12 +29,6 @@ pub fn apply_theme(ctx: &egui::Context, dark: bool) {
 
 pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     let sc = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
-    if sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || sc(Modifiers::COMMAND, Key::Y) {
-        app.redo();
-    }
-    if sc(Modifiers::COMMAND, Key::Z) {
-        app.undo();
-    }
     if sc(Modifiers::COMMAND, Key::O) {
         app.open_dialog(ctx);
     }
@@ -44,16 +38,23 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if sc(Modifiers::COMMAND, Key::S) {
         app.save(ctx);
     }
+    // editing shortcuts belong to the text field while one is focused
+    if ctx.egui_wants_keyboard_input() {
+        return;
+    }
+    if sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || sc(Modifiers::COMMAND, Key::Y) {
+        app.redo();
+    }
+    if sc(Modifiers::COMMAND, Key::Z) {
+        app.undo();
+    }
     if sc(Modifiers::COMMAND, Key::D) {
         app.duplicate_selected();
     }
     if sc(Modifiers::COMMAND, Key::A) {
         app.select_all();
     }
-    // single-key shortcuts only when no text field is focused
-    if ctx.egui_wants_keyboard_input() {
-        return;
-    }
+    // single-key shortcuts
     let key = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
     if key(Key::Delete) || key(Key::Backspace) {
         app.delete_selected();
@@ -706,6 +707,9 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         });
     });
 
+    // ----- mesh tools -----
+    egui::CollapsingHeader::new("Mesh tools").default_open(true).show(ui, |ui| mesh_tools(app, ui, &ctx));
+
     // ----- analysis & repair -----
     egui::CollapsingHeader::new("Analysis & repair").default_open(true).show(ui, |ui| {
         if let Some(r) = app.primary_report() {
@@ -749,6 +753,115 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::DragValue::new(&mut app.settings.weld_tolerance).speed(0.0001).range(0.0..=1.0).max_decimals(5).suffix(" mm"));
         });
     });
+}
+
+fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
+    use crate::app::SmoothMode;
+    use b3d_core::sdf::RoundMode;
+    let tris: usize = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| o.mesh.mesh.triangles.len()).sum();
+    let t = &mut app.mesh_tools;
+
+    ui.label(RichText::new("Simplify").strong());
+    ui.horizontal(|ui| {
+        ui.label("Keep");
+        ui.add(egui::Slider::new(&mut t.simplify_pct, 1.0..=99.0).suffix(" %").max_decimals(0));
+        ui.weak(format!("≈ {} tris", (tris as f32 * t.simplify_pct / 100.0) as usize));
+    });
+    ui.horizontal(|ui| {
+        ui.label("Max deviation");
+        ui.add(egui::DragValue::new(&mut t.simplify_err).speed(0.005).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+            .on_hover_text("Stop before the surface moves more than this. 0 = no limit");
+    });
+    let simplify =
+        ui.button("Simplify").on_hover_text("Quadric edge-collapse decimation; keeps the mesh closed and sharp edges crisp").clicked();
+
+    ui.add_space(6.0);
+    ui.label(RichText::new("Smooth").strong());
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut t.smooth_mode, SmoothMode::Subdivide, "Subdivide")
+            .on_hover_text("Loop subdivision: rounder surface, 4× triangles per level");
+        ui.selectable_value(&mut t.smooth_mode, SmoothMode::Relax, "Relax")
+            .on_hover_text("Taubin smoothing: removes facets/noise, same triangle count, no shrinking");
+        ui.selectable_value(&mut t.smooth_mode, SmoothMode::SubdivideFlat, "Refine")
+            .on_hover_text("Split triangles without changing the shape");
+    });
+    ui.horizontal(|ui| match t.smooth_mode {
+        SmoothMode::Relax => {
+            ui.label("Iterations");
+            ui.add(egui::DragValue::new(&mut t.relax_iters).range(1..=200));
+        }
+        _ => {
+            ui.label("Levels");
+            ui.add(egui::DragValue::new(&mut t.smooth_levels).range(1..=4));
+            ui.weak(format!("gives {} tris", tris << (2 * t.smooth_levels)));
+        }
+    });
+    if t.smooth_mode != SmoothMode::SubdivideFlat {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut t.keep_sharp, "Keep edges sharper than");
+            ui.add_enabled(t.keep_sharp, egui::DragValue::new(&mut t.crease_deg).range(1.0..=179.0).suffix("°"));
+        });
+    }
+    let smooth = ui.button("Smooth").clicked();
+
+    ui.add_space(6.0);
+    ui.label(RichText::new("Round edges (bevel)").strong());
+    ui.horizontal(|ui| {
+        ui.label("Radius");
+        ui.add(egui::DragValue::new(&mut t.round_radius).speed(0.05).range(0.05..=100.0).max_decimals(2).suffix(" mm"));
+    });
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut t.round_mode, RoundMode::Convex, "Outside").on_hover_text("Round convex edges and corners");
+        ui.selectable_value(&mut t.round_mode, RoundMode::Concave, "Inside").on_hover_text("Fill concave edges with a fillet");
+        ui.selectable_value(&mut t.round_mode, RoundMode::Both, "Both");
+    });
+    ui.horizontal(|ui| {
+        ui.label("Detail");
+        ui.add(egui::DragValue::new(&mut t.round_voxel).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+            .on_hover_text("Voxel size. Smaller = more accurate and slower. 0 = automatic");
+        if t.round_voxel == 0.0 {
+            let b = app.scene.bounds_of(&app.selection);
+            if !b.is_empty() {
+                ui.weak(format!("auto ≈ {:.2} mm", b3d_core::sdf::auto_voxel(t.round_radius, &b)));
+            }
+        }
+    });
+    ui.checkbox(&mut t.round_simplify, "Reduce triangles afterwards");
+    let round = ui
+        .button("Round edges")
+        .on_hover_text("Works on any closed mesh: every edge sharper than the radius becomes a fillet. The surface is rebuilt, so tiny details below the detail size are lost.")
+        .clicked();
+
+    if simplify {
+        app.simplify_selected(ctx);
+    }
+    if smooth {
+        app.smooth_selected(ctx);
+    }
+    if round {
+        app.round_selected(ctx);
+    }
+}
+
+fn edge_controls(ui: &mut egui::Ui, edge: &mut b3d_core::primitives::Edge) {
+    use b3d_core::primitives::EdgeKind;
+    ui.label("Edges");
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut edge.kind, EdgeKind::Sharp, "Sharp");
+        ui.selectable_value(&mut edge.kind, EdgeKind::Fillet, "Fillet");
+        ui.selectable_value(&mut edge.kind, EdgeKind::Chamfer, "Chamfer");
+    });
+    ui.end_row();
+    if edge.kind != EdgeKind::Sharp {
+        ui.label(if edge.kind == EdgeKind::Fillet { "Radius" } else { "Chamfer" });
+        ui.add(egui::DragValue::new(&mut edge.size).speed(0.1).range(0.0..=1000.0).suffix(" mm"));
+        ui.end_row();
+    }
+    if edge.kind == EdgeKind::Fillet {
+        ui.label("Round segments");
+        ui.add(egui::DragValue::new(&mut edge.segments).range(2..=64));
+        ui.end_row();
+    }
 }
 
 impl App {
@@ -842,7 +955,11 @@ fn cut_panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     ui.horizontal(|ui| {
         ui.label("Plane normal");
         for a in 0..3 {
-            let t = if app.cut.axis == a { RichText::new(AXIS_NAMES[a]).strong().color(Color32::WHITE) } else { RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a]) };
+            let t = if app.cut.axis == a {
+                RichText::new(AXIS_NAMES[a]).strong().color(Color32::WHITE)
+            } else {
+                RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a])
+            };
             if ui.selectable_label(app.cut.axis == a, t).clicked() {
                 app.cut.axis = a;
                 app.cut.offset = b.center()[a];
@@ -894,15 +1011,22 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                         ui.end_row();
                     };
                     match &mut p {
-                        Primitive::Box { size } | Primitive::Wedge { size } => {
+                        Primitive::Box { size, edge } => {
+                            mm(ui, "Width (X)", &mut size.x);
+                            mm(ui, "Depth (Y)", &mut size.y);
+                            mm(ui, "Height (Z)", &mut size.z);
+                            edge_controls(ui, edge);
+                        }
+                        Primitive::Wedge { size } => {
                             mm(ui, "Width (X)", &mut size.x);
                             mm(ui, "Depth (Y)", &mut size.y);
                             mm(ui, "Height (Z)", &mut size.z);
                         }
-                        Primitive::Cylinder { radius, height, segments } => {
+                        Primitive::Cylinder { radius, height, segments, edge } => {
                             mm(ui, "Radius", radius);
                             mm(ui, "Height", height);
                             segs(ui, "Segments", segments);
+                            edge_controls(ui, edge);
                         }
                         Primitive::Cone { bottom_radius, top_radius, height, segments } => {
                             mm(ui, "Bottom radius", bottom_radius);
