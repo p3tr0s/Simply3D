@@ -42,6 +42,15 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if sc(Modifiers::COMMAND, Key::K) || sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::P) || sc(Modifiers::NONE, Key::F3) {
         app.palette = if app.palette.is_some() { None } else { Some(crate::commands::Palette::new()) };
     }
+    if sc(Modifiers::NONE, Key::F12) {
+        app.debug.toggle();
+        let msg = match (&app.debug.on, &app.debug.path) {
+            (true, Some(p)) => format!("Input diagnostics on — logging to {}", p.display()),
+            (true, None) => "Input diagnostics on".to_string(),
+            _ => "Input diagnostics off".to_string(),
+        };
+        app.info(msg);
+    }
     if app.palette.is_some() {
         return; // the palette owns the keyboard
     }

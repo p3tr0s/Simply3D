@@ -187,7 +187,9 @@ mod pick_sweep {
         let mut s = Scene::default();
         for (i, p) in ["Box", "Sphere", "Cylinder", "Torus"].iter().enumerate() {
             let m = Primitive::default_for(p).build();
-            s.add_object(*p, m, Transform { translation: Vec3::new(i as f32 * 40.0 - 60.0, 0.0, 10.0), ..Default::default() }, None);
+            let rotation = glam::Quat::from_euler(glam::EulerRot::XYZ, 0.5 * i as f32, 0.3, 0.7 * i as f32);
+            let scale = Vec3::new(1.0 + 0.3 * i as f32, 0.8, 1.2);
+            s.add_object(*p, m, Transform { translation: Vec3::new(i as f32 * 40.0 - 60.0, 0.0, 10.0), rotation, scale }, None);
         }
         let mut cam = OrbitCamera::default();
         cam.fit(&s.bounds(), 1.5);

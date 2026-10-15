@@ -130,11 +130,15 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
             app.text_rt.hover = None;
         }
     }
+    crate::debug::frame(app, ui, crate::debug::Probe { response: &response, gizmo_focused: gizmo_busy, moved, total_tris });
     if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text) && response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else if matches!(app.drag, DragMode::Move { .. }) {
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-    } else if app.tool == Tool::Select && app.settings.drag_moves_objects && app.hovered.is_some() && !gizmo_busy && response.hovered() {
+    } else if gizmo_busy && response.hovered() {
+        // over a gizmo handle: dragging moves/rotates/scales with the gizmo
+        ui.ctx().set_cursor_icon(CursorIcon::Move);
+    } else if app.tool == Tool::Select && app.settings.drag_moves_objects && app.hovered.is_some() && response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Grab);
     }
 
@@ -187,7 +191,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
 
     // ---------- clicks ----------
     let cmd = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-    if response.clicked() && !gizmo_busy {
+    if response.clicked() && !app.gizmo_used {
         if let Some((o, d)) = ray {
             match app.tool {
                 Tool::Select | Tool::Cut => match pick(app, o, d, false) {
@@ -290,6 +294,9 @@ fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View, viewport_hovered: bo
     if !pointer_down {
         app.gizmo_dragging = false;
     }
+    if ui.input(|i| i.pointer.primary_pressed()) {
+        app.gizmo_used = false;
+    }
     if app.tool != Tool::Select || app.gizmo_kind == GizmoKind::Off || app.selection.is_empty() || app.any_locked_selected() {
         return false;
     }
@@ -328,6 +335,20 @@ fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View, viewport_hovered: bo
         })
         .collect();
     if let Some((result, new)) = gizmo_interact(&mut app.gizmo, ui, view.rect, &targets, viewport_hovered || app.gizmo_dragging) {
+        // a press on a handle that hasn't moved anything yet is not an edit (no undo step,
+        // and the click still selects what's under the cursor)
+        let changed = app.selection.iter().zip(&new).any(|(id, t)| {
+            app.scene.get(*id).is_some_and(|o| {
+                let (tr, ro, sc) = (t.translation, t.rotation, t.scale);
+                (DVec3::new(tr.x, tr.y, tr.z).as_vec3() - o.transform.translation).length() > 1e-5
+                    || DQuat::from_xyzw(ro.v.x, ro.v.y, ro.v.z, ro.s).as_quat().angle_between(o.transform.rotation) > 1e-5
+                    || (DVec3::new(sc.x, sc.y, sc.z).as_vec3() - o.transform.scale).length() > 1e-5
+            })
+        });
+        if !app.gizmo_dragging && !changed {
+            return true;
+        }
+        app.gizmo_used = true;
         if !app.gizmo_dragging {
             app.gizmo_start = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| (o.id, o.transform)).collect();
             app.gizmo_start_bounds = app.selection_bounds();

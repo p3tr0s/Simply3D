@@ -281,6 +281,8 @@ pub struct App {
     pub gizmo: Gizmo,
     pub gizmo_kind: GizmoKind,
     pub gizmo_dragging: bool,
+    /// The gizmo changed something during the current mouse press (so it isn't a click).
+    pub gizmo_used: bool,
     pub tool: Tool,
     pub measure: MeasureState,
     pub cut: CutState,
@@ -335,6 +337,7 @@ pub struct App {
     pub section: SectionState,
     pub preview: Option<crate::preview::Preview>,
     pub text_rt: crate::text_tool::TextRuntime,
+    pub debug: crate::debug::DebugHud,
 }
 
 impl App {
@@ -360,6 +363,7 @@ impl App {
             gizmo: Gizmo::default(),
             gizmo_kind: GizmoKind::Move,
             gizmo_dragging: false,
+            gizmo_used: false,
             tool: Tool::Select,
             measure: MeasureState { snap_vertices: true, ..Default::default() },
             cut: CutState { axis: 2, offset: 0.0, keep: CutKeep::Both },
@@ -406,6 +410,7 @@ impl App {
             section: SectionState { enabled: false, axis: 2, offset: 0.0, flip: false },
             preview: None,
             text_rt: Default::default(),
+            debug: Default::default(),
             encode_srgb,
         };
         app.text_rt.load_fonts();

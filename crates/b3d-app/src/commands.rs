@@ -174,6 +174,7 @@ pub fn all() -> Vec<Command> {
         // help
         cmd!("Help", "Keyboard & mouse", "", always, |a, _| a.show_shortcuts = true),
         cmd!("Help", "About", "", always, |a, _| a.show_about = true),
+        cmd!("Help", "Input diagnostics (debug)", "F12", always, |a, _| a.debug.toggle()),
     ];
     // add-shape entries
     for (name, label) in [
