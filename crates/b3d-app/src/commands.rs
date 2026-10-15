@@ -168,6 +168,10 @@ pub fn all() -> Vec<Command> {
         cmd!("View", "Section view", "X", has_objects, |a, _| a.toggle_section()),
         // organise
         cmd!("Organise", "Group", "Ctrl+G", two_sel, |a, _| a.group_selected()),
+        cmd!("Combine", "Make hole (negative object)", "", has_sel, |a, _| a.set_hole_selected(true)),
+        cmd!("Combine", "Make solid", "", has_sel, |a, _| a.set_hole_selected(false)),
+        cmd!("Combine", "Apply holes (make the cut permanent)", "", |a| a.scene.objects.iter().any(|o| o.hole), |a, c| a
+            .apply_holes_selected(c)),
         cmd!("Organise", "Ungroup", "Ctrl+Shift+G", |a| a.can_ungroup(), |a, _| a.ungroup_selected()),
         cmd!("Organise", "Hide selected", "H", has_sel, |a, _| a.hide_selected()),
         cmd!("Organise", "Show all", "Shift+H", |a| a.any_hidden(), |a, _| a.show_all()),

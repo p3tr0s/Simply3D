@@ -52,6 +52,14 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     if item(ui, true, if app.isolated.is_some() { "Show the others" } else { "Isolate" }, "I") {
         app.toggle_isolate();
     }
+    let all_holes = app.selection.iter().all(|id| app.scene.get(*id).is_some_and(|o| o.hole));
+    if item(ui, true, if all_holes { "Make solid" } else { "Make hole" }, "") {
+        app.set_hole_selected(!all_holes);
+    }
+    let has_cuts = app.any_hole_selected() || app.selection.iter().any(|id| app.holes.cuts.contains_key(id));
+    if item(ui, has_cuts, "Apply holes (make permanent)", "") {
+        app.apply_holes_selected(ctx);
+    }
     let locked = app.any_locked_selected();
     if item(ui, true, if locked { "Unlock" } else { "Lock" }, "Ctrl+L") {
         if locked {

@@ -24,6 +24,49 @@ pub struct IoObject {
     pub locked: bool,
     /// Written by Builder3D: positions are meaningful as-is.
     pub keep_position: bool,
+    /// A negative object: removes material from the solids it overlaps, never printed.
+    pub hole: bool,
+}
+
+/// How holes are written to 3MF files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SaveOptions {
+    /// Cut the holes into the solids (works in every slicer) instead of writing them as
+    /// negative parts (Bambu Studio / OrcaSlicer).
+    pub cut_holes: bool,
+}
+
+/// Bake every hole into the solids it overlaps (world space) and drop the holes.
+/// Names, colours, groups and flags of the solids are kept.
+pub fn apply_holes(objects: &[IoObject]) -> Result<Vec<IoObject>> {
+    let holes: Vec<(Mesh, crate::Aabb)> = objects
+        .iter()
+        .filter(|o| o.hole)
+        .map(|o| {
+            let m = o.world_mesh();
+            let b = m.bounds();
+            (m, b)
+        })
+        .collect();
+    let mut out = vec![];
+    for o in objects.iter().filter(|o| !o.hole) {
+        let mut mesh = o.world_mesh();
+        let b = mesh.bounds();
+        let cutters: Vec<Mesh> = holes.iter().filter(|(_, hb)| overlaps(&b, hb)).map(|(m, _)| m.clone()).collect();
+        if !cutters.is_empty() {
+            mesh = crate::csg::boolean_many(&mesh, &cutters, crate::csg::BoolOp::Subtract)?;
+        }
+        if mesh.is_empty() {
+            continue;
+        }
+        out.push(IoObject { mesh, transform: None, ..o.clone() });
+    }
+    Ok(out)
+}
+
+/// Bounding boxes overlap (with a little tolerance).
+pub fn overlaps(a: &crate::Aabb, b: &crate::Aabb) -> bool {
+    (0..3).all(|k| a.min[k] < b.max[k] + 1e-4 && b.min[k] < a.max[k] + 1e-4)
 }
 
 impl IoObject {
@@ -98,20 +141,30 @@ pub fn load_bytes(bytes: &[u8], fmt: Format, name: &str) -> Result<Vec<IoObject>
 }
 
 pub fn save(path: &Path, objects: &[IoObject]) -> Result<()> {
+    save_with(path, objects, SaveOptions::default())
+}
+
+pub fn save_with(path: &Path, objects: &[IoObject], opts: SaveOptions) -> Result<()> {
     let fmt = Format::from_path(path).ok_or_else(|| Error::Unsupported(path.display().to_string()))?;
-    let bytes = save_bytes(objects, fmt, path)?;
+    let bytes = save_bytes_with(objects, fmt, path, opts)?;
     std::fs::write(path, bytes)?;
     Ok(())
 }
 
 /// Encode. For OBJ a companion `.mtl` is written next to `path` when colours exist.
 pub fn save_bytes(objects: &[IoObject], fmt: Format, path: &Path) -> Result<Vec<u8>> {
+    save_bytes_with(objects, fmt, path, SaveOptions::default())
+}
+
+pub fn save_bytes_with(objects: &[IoObject], fmt: Format, path: &Path, opts: SaveOptions) -> Result<Vec<u8>> {
     if fmt == Format::ThreeMf {
-        return threemf::write(objects);
+        return threemf::write_with(objects, opts);
     }
-    // the other formats have no placements: bake them
-    let baked: Vec<IoObject> =
-        objects.iter().map(|o| IoObject { name: o.name.clone(), mesh: o.world_mesh(), color: o.color, ..Default::default() }).collect();
+    // the other formats have no placements or holes: bake them
+    let baked: Vec<IoObject> = apply_holes(objects)?
+        .into_iter()
+        .map(|o| IoObject { name: o.name.clone(), mesh: o.world_mesh(), color: o.color, ..Default::default() })
+        .collect();
     let objects = &baked[..];
     Ok(match fmt {
         Format::Stl => {

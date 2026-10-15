@@ -477,6 +477,14 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
             if ui.add_enabled(app.can_ungroup(), egui::Button::new("Ungroup")).on_hover_text("Ctrl+Shift+G").clicked() {
                 app.ungroup_selected();
             }
+            let all_holes = !app.selection.is_empty() && app.selection.iter().all(|id| app.scene.get(*id).is_some_and(|o| o.hole));
+            if ui
+                .add_enabled(!app.selection.is_empty(), egui::Button::selectable(all_holes, "○ Hole"))
+                .on_hover_text("Turn the selection into a hole: it cuts whatever it overlaps and stays movable. Click again for a solid.")
+                .clicked()
+            {
+                app.toggle_hole_selected();
+            }
             ui.separator();
             ui.menu_button("➕ Add shape", |ui| {
                 for name in Primitive::ALL_NAMES {
@@ -515,6 +523,11 @@ fn status_bar(app: &mut App, ui: &mut egui::Ui) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let tris: usize = app.scene.objects.iter().map(|o| o.mesh.mesh.triangles.len()).sum();
                 ui.label(format!("{} objects · {} triangles", app.scene.objects.len(), tris));
+                if app.holes.busy {
+                    ui.separator();
+                    ui.spinner();
+                    ui.weak("cutting holes");
+                }
                 if let Some(p) = app.cursor_plate {
                     ui.separator();
                     ui.monospace(format!("X {:>8.2}  Y {:>8.2}", p.x, p.y));
@@ -797,6 +810,22 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                 app.set_color_selected(c);
                 app.pending_edit = None;
             }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Type");
+        let holes = app.selection.iter().filter(|id| app.scene.get(**id).is_some_and(|o| o.hole)).count();
+        if ui.selectable_label(holes == 0, "Solid").clicked() && holes > 0 {
+            app.set_hole_selected(false);
+        }
+        if ui.selectable_label(holes == n, "○ Hole").on_hover_text("Cuts whatever it overlaps; stays movable").clicked() && holes < n {
+            app.set_hole_selected(true);
+        }
+        let any_cut = app.selection.iter().any(|id| app.holes.cuts.contains_key(id)) || holes > 0;
+        if any_cut && ui.small_button("Apply holes").on_hover_text("Make the cut permanent (removes the holes that are used up)").clicked()
+        {
+            let ctx = ui.ctx().clone();
+            app.apply_holes_selected(&ctx);
         }
     });
     ui.add_space(6.0);
@@ -1637,6 +1666,15 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     .on_hover_text("CAD style: right-drag orbits, middle-drag pans");
             });
             ui.checkbox(&mut app.settings.drag_moves_objects, "Left-drag on an object moves it");
+            ui.separator();
+            ui.label(RichText::new("Holes in saved 3MF files").strong());
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut app.settings.holes_cut, false, "Negative parts")
+                    .on_hover_text("Bambu Studio and OrcaSlicer keep them as editable negative parts");
+                ui.selectable_value(&mut app.settings.holes_cut, true, "Cut")
+                    .on_hover_text("Cut into the model: works in every slicer (PrusaSlicer, Cura, …)");
+            });
+            ui.weak("Either way Builder3D reopens the file with the holes still editable.");
             ui.checkbox(&mut app.settings.snap_objects, "Snap to other objects while moving");
             ui.separator();
             ui.horizontal(|ui| {

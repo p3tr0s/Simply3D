@@ -270,6 +270,11 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
             files.insert(norm_path(&n), parse_model(&b)?);
         }
     }
+    // our own editable copy (holes kept) wins over the slicer-facing model
+    if let Some(b) = read_entry(&mut zip, PROJECT_COPY) {
+        files.insert(PROJECT_COPY.to_string(), parse_model(&b)?);
+        main = PROJECT_COPY.to_string();
+    }
     let pkg = Package { files };
     let mf = pkg.files.get(&main).ok_or_else(|| Error::Parse(format!("3MF: missing {main}")))?;
     let ours = mf.meta.get("Application").is_some_and(|a| a.starts_with("Builder3D"));
@@ -301,6 +306,7 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
                         group: Some(gname.clone()),
                         hidden: cmeta("hidden").is_some_and(|v| v == "1"),
                         locked: cmeta("locked").is_some_and(|v| v == "1"),
+                        hole: cmeta("hole").is_some_and(|v| v == "1"),
                         keep_position: ours,
                         ..Default::default()
                     };
@@ -341,6 +347,7 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
             group: meta("group").filter(|g| !g.is_empty()),
             hidden: meta("hidden").is_some_and(|v| v == "1"),
             locked: meta("locked").is_some_and(|v| v == "1"),
+            hole: meta("hole").is_some_and(|v| v == "1"),
             keep_position: ours,
             ..Default::default()
         };
@@ -383,6 +390,59 @@ fn esc(s: &str) -> String {
 }
 
 pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
+    write_with(objects, super::SaveOptions::default())
+}
+
+/// Where Builder3D keeps the fully editable scene (with holes) inside a 3MF. Not a
+/// `.model` file, so slicers ignore it.
+const PROJECT_COPY: &str = "Metadata/builder3d_project.xml";
+
+/// Write a 3MF. Groups become one object made of parts. Holes are written as negative
+/// parts (Bambu Studio / OrcaSlicer read these from `Metadata/model_settings.config`) or,
+/// with `cut_holes`, cut into the solids. With holes, the editable scene is stored too.
+pub fn write_with(objects: &[IoObject], opts: super::SaveOptions) -> Result<Vec<u8>> {
+    let has_holes = objects.iter().any(|o| o.hole);
+    let (main, config) = if !has_holes {
+        model_xml(objects, false)
+    } else if opts.cut_holes {
+        model_xml(&super::apply_holes(objects)?, false)
+    } else {
+        model_xml(objects, true)
+    };
+    let mut zw = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let opt = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    zw.start_file("[Content_Types].xml", opt)?;
+    zw.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/></Types>"#)?;
+    zw.start_file("_rels/.rels", opt)?;
+    zw.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>"#)?;
+    zw.start_file("3D/3dmodel.model", opt)?;
+    zw.write_all(main.as_bytes())?;
+    if !config.is_empty() {
+        zw.start_file("Metadata/model_settings.config", opt)?;
+        zw.write_all(config.as_bytes())?;
+    }
+    if has_holes {
+        zw.start_file(PROJECT_COPY, opt)?;
+        zw.write_all(model_xml(objects, false).0.as_bytes())?;
+    }
+    Ok(zw.finish()?.into_inner())
+}
+
+/// A printable unit: a group's members, or one ungrouped solid, plus attached holes.
+struct Unit {
+    name: String,
+    group: Option<String>,
+    parts: Vec<usize>,
+    holes: Vec<usize>,
+}
+
+/// The model XML, plus Bambu/Orca's `model_settings.config` (part names and types) when
+/// there are multi-part objects. `negative`: holes become negative parts of the units
+/// they overlap; otherwise every object (holes included, flagged `b3d:hole`) is written
+/// as-is — the editable layout.
+fn model_xml(objects: &[IoObject], negative: bool) -> (String, String) {
     let mut model = String::with_capacity(1 << 20);
     model.push_str(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -399,13 +459,16 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
     model.push_str("</basematerials>\n");
     for (i, o) in objects.iter().enumerate() {
         let _ = writeln!(model, r#"<object id="{}" type="model" name="{}" pid="1" pindex="{}">"#, i + 2, esc(&o.name), i);
-        if o.hidden || o.locked {
+        if o.hidden || o.locked || o.hole {
             model.push_str("<metadatagroup>");
             if o.hidden {
                 model.push_str(r#"<metadata name="b3d:hidden">1</metadata>"#);
             }
             if o.locked {
                 model.push_str(r#"<metadata name="b3d:locked">1</metadata>"#);
+            }
+            if o.hole {
+                model.push_str(r#"<metadata name="b3d:hole">1</metadata>"#);
             }
             model.push_str("</metadatagroup>\n");
         }
@@ -419,43 +482,78 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
         }
         model.push_str("</triangles></mesh></object>\n");
     }
-    // each group becomes one object made of parts (components), so slicers keep the
-    // parts together as one model and let you pick a filament per part
-    let mut groups: Vec<(String, Vec<usize>)> = vec![];
+
+    // units: groups (all members, holes included) and single objects
+    let mut units: Vec<Unit> = vec![];
     for (i, o) in objects.iter().enumerate() {
-        if let Some(g) = &o.group {
-            match groups.iter_mut().find(|(n, _)| n == g) {
-                Some((_, v)) => v.push(i),
-                None => groups.push((g.clone(), vec![i])),
+        let in_group = o.group.as_ref().filter(|g| objects.iter().filter(|x| x.group.as_ref() == Some(g)).count() >= 2);
+        match in_group {
+            Some(g) => {
+                let u = match units.iter().position(|u| u.group.as_ref() == Some(g)) {
+                    Some(k) => &mut units[k],
+                    None => {
+                        units.push(Unit { name: g.clone(), group: Some(g.clone()), parts: vec![], holes: vec![] });
+                        units.last_mut().unwrap()
+                    }
+                };
+                if negative && o.hole {
+                    u.holes.push(i);
+                } else {
+                    u.parts.push(i);
+                }
+            }
+            None if negative && o.hole => {} // attached below
+            None => units.push(Unit { name: o.name.clone(), group: None, parts: vec![i], holes: vec![] }),
+        }
+    }
+    units.retain(|u| !u.parts.is_empty());
+    if negative {
+        // a loose hole cuts every unit it overlaps
+        let wb: Vec<crate::Aabb> = objects.iter().map(|o| o.world_mesh().bounds()).collect();
+        for (h, o) in objects.iter().enumerate() {
+            if !o.hole || units.iter().any(|u| u.holes.contains(&h)) {
+                continue;
+            }
+            for u in units.iter_mut() {
+                if u.parts.iter().any(|&p| super::overlaps(&wb[p], &wb[h])) {
+                    u.holes.push(h);
+                }
             }
         }
     }
-    groups.retain(|(_, v)| v.len() >= 2);
-    let mut group_items: Vec<(usize, Mat4)> = vec![];
-    for (gi, (gname, members)) in groups.iter().enumerate() {
-        let gid = objects.len() + 2 + gi;
-        // the group's origin: bottom centre of its parts
-        let b = members.iter().fold(crate::Aabb::EMPTY, |b, &i| b.union(&objects[i].world_mesh().bounds()));
+
+    let mut config = String::new();
+    let mut items: Vec<(usize, Option<Mat4>)> = vec![];
+    let mut next_id = objects.len() + 2;
+    for u in &units {
+        if u.parts.len() == 1 && u.holes.is_empty() {
+            let i = u.parts[0];
+            items.push((i + 2, objects[i].transform));
+            continue;
+        }
+        // one object made of parts; origin at the bottom centre of its solid parts
+        let gid = next_id;
+        next_id += 1;
+        let b = u.parts.iter().fold(crate::Aabb::EMPTY, |b, &i| b.union(&objects[i].world_mesh().bounds()));
         let origin = Mat4::from_translation(Vec3::new(b.center().x, b.center().y, b.min.z));
         let inv = origin.inverse();
-        let _ = writeln!(model, r#"<object id="{gid}" type="model" name="{}"><components>"#, esc(gname));
-        for &i in members {
+        let _ = writeln!(model, r#"<object id="{gid}" type="model" name="{}"><components>"#, esc(&u.name));
+        let _ = writeln!(config, r#"  <object id="{gid}">"#);
+        let _ = writeln!(config, r#"    <metadata key="name" value="{}"/>"#, esc(&u.name));
+        for (&i, kind) in
+            u.parts.iter().map(|i| (i, "normal_part")).chain(u.holes.iter().map(|i| (i, "negative_part"))).collect::<Vec<_>>().iter()
+        {
             let m = inv * objects[i].transform.unwrap_or(Mat4::IDENTITY);
             let _ = writeln!(model, r#"<component objectid="{}" transform="{}"/>"#, i + 2, mat_attr(&m));
+            let _ = writeln!(config, r#"    <part id="{}" subtype="{kind}">"#, i + 2);
+            let _ = writeln!(config, r#"      <metadata key="name" value="{}"/>"#, esc(&objects[i].name));
+            let _ = writeln!(config, "    </part>");
         }
         model.push_str("</components></object>\n");
-        group_items.push((gid, origin));
+        config.push_str("  </object>\n");
+        items.push((gid, Some(origin)));
     }
     model.push_str("</resources>\n<build>\n");
-    // keep the original order: a group goes where its first part was
-    let mut items: Vec<(usize, Option<Mat4>)> = vec![];
-    for (i, o) in objects.iter().enumerate() {
-        match groups.iter().position(|(_, v)| v.contains(&i)) {
-            Some(g) if groups[g].1[0] == i => items.push((group_items[g].0, Some(group_items[g].1))),
-            Some(_) => {}
-            None => items.push((i + 2, o.transform)),
-        }
-    }
     for (id, xf) in items {
         match xf {
             Some(m) => {
@@ -467,18 +565,9 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
         }
     }
     model.push_str("</build>\n</model>\n");
-
-    let mut zw = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let opt = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    zw.start_file("[Content_Types].xml", opt)?;
-    zw.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>"#)?;
-    zw.start_file("_rels/.rels", opt)?;
-    zw.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>"#)?;
-    zw.start_file("3D/3dmodel.model", opt)?;
-    zw.write_all(model.as_bytes())?;
-    Ok(zw.finish()?.into_inner())
+    let config =
+        if config.is_empty() { config } else { format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n{config}</config>\n") };
+    (model, config)
 }
 
 #[cfg(test)]
@@ -528,6 +617,64 @@ mod tests {
         assert_eq!(a.color, Some([1, 2, 3, 255]));
         assert_eq!(back[2].group.as_deref(), Some("Group <A>"));
         assert!(back[2].transform.unwrap().abs_diff_eq(Mat4::from_translation(Vec3::new(40.0, 0.0, 1.0)), 1e-4));
+    }
+
+    fn read_model(bytes: &[u8], name: &str) -> Option<String> {
+        let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut s = String::new();
+        z.by_name(name).ok()?.read_to_string(&mut s).unwrap();
+        Some(s)
+    }
+
+    #[test]
+    fn holes_as_negative_parts_or_cut() {
+        let block = crate::primitives::cuboid(Vec3::new(20.0, 20.0, 10.0));
+        let pin = crate::primitives::cuboid(Vec3::new(4.0, 4.0, 30.0));
+        let objs = vec![
+            IoObject {
+                name: "Block".into(),
+                mesh: block.clone(),
+                transform: Some(Mat4::from_translation(Vec3::new(0.0, 0.0, 5.0))),
+                ..Default::default()
+            },
+            IoObject {
+                name: "Hole".into(),
+                mesh: pin.clone(),
+                transform: Some(Mat4::from_translation(Vec3::new(3.0, 0.0, 5.0))),
+                hole: true,
+                ..Default::default()
+            },
+            IoObject {
+                name: "Far".into(),
+                mesh: block.clone(),
+                transform: Some(Mat4::from_translation(Vec3::new(100.0, 0.0, 5.0))),
+                ..Default::default()
+            },
+        ];
+        // negative parts: the block becomes block + negative hole; the far block is untouched
+        let bytes = write_with(&objs, crate::io::SaveOptions { cut_holes: false }).unwrap();
+        let cfg = read_model(&bytes, "Metadata/model_settings.config").unwrap();
+        assert_eq!(cfg.matches("negative_part").count(), 1, "{cfg}");
+        assert_eq!(cfg.matches("normal_part").count(), 1, "{cfg}");
+        let main = read_model(&bytes, "3D/3dmodel.model").unwrap();
+        assert_eq!(main.matches("<item ").count(), 2);
+        // Builder3D reads back the editable scene: the hole is still a hole
+        let back = read(&bytes).unwrap();
+        assert_eq!(back.len(), 3);
+        assert!(back[1].hole && !back[0].hole && back[1].group.is_none());
+
+        // cut: the slicer model has the hole cut out, no negative parts
+        let bytes = write_with(&objs, crate::io::SaveOptions { cut_holes: true }).unwrap();
+        assert!(read_model(&bytes, "Metadata/model_settings.config").is_none());
+        let main = read_model(&bytes, "3D/3dmodel.model").unwrap();
+        assert_eq!(main.matches("<item ").count(), 2);
+        let back = read(&bytes).unwrap();
+        assert!(back.iter().any(|o| o.hole), "editable copy keeps the hole");
+        // the cut geometry, as a slicer sees it
+        let cut = crate::io::apply_holes(&objs).unwrap();
+        assert_eq!(cut.len(), 2);
+        let expect = 20.0 * 20.0 * 10.0 - 4.0 * 4.0 * 10.0;
+        assert!((cut[0].mesh.volume() - expect).abs() < 1e-3, "{}", cut[0].mesh.volume());
     }
 
     /// Production-extension layout: build item -> component in a separate model file, with transforms.

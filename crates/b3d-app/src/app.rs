@@ -51,6 +51,8 @@ pub struct Settings {
     pub image: crate::image_tool::ImageSettings,
     /// Objects that overlap the selection are drawn see-through.
     pub see_through: bool,
+    /// Save holes into 3MF already cut (any slicer) instead of as negative parts.
+    pub holes_cut: bool,
 }
 
 impl Default for Settings {
@@ -78,6 +80,7 @@ impl Default for Settings {
             text: Default::default(),
             image: Default::default(),
             see_through: true,
+            holes_cut: false,
         }
     }
 }
@@ -350,6 +353,7 @@ pub struct App {
     pub img_rt: crate::image_tool::ImageRuntime,
     /// Objects drawn see-through this frame (they overlap the selection).
     pub see_through: Vec<ObjectId>,
+    pub holes: crate::holes::HoleCache,
 }
 
 impl App {
@@ -425,6 +429,7 @@ impl App {
             debug: Default::default(),
             img_rt: Default::default(),
             see_through: vec![],
+            holes: Default::default(),
             encode_srgb,
         };
         app.text_rt.load_fonts();
@@ -554,8 +559,9 @@ impl App {
                 let mut new_ids = vec![];
                 // results take the list position of the first removed object
                 let insert_at = remove.iter().filter_map(|id| self.scene.objects.iter().position(|o| o.id == *id)).min();
-                // one-for-one replacements (round edges, emboss) stay in their group / lock state
-                let one_for_one = remove.len() == add.len();
+                // replacements (round edges, emboss, booleans, apply holes) take the group and
+                // lock state of the object they replace
+                let one_for_one = remove.len() >= add.len();
                 let carry: Vec<_> = remove.iter().map(|id| self.scene.get(*id).map(|o| (o.group, o.locked))).collect();
                 for (i, (name, mesh, color)) in add.into_iter().enumerate() {
                     if mesh.is_empty() {
@@ -711,6 +717,7 @@ impl App {
             if let Some(ob) = self.scene.get_mut(id) {
                 ob.visible = !o.hidden;
                 ob.locked = o.locked;
+                ob.hole = o.hole;
             }
             if let Some(g) = o.group {
                 match groups.iter_mut().find(|(n, _)| *n == g) {
@@ -768,10 +775,11 @@ impl App {
                         hidden: !o.visible,
                         locked: o.locked,
                         keep_position: true,
+                        hole: o.hole,
                     }
                 } else {
                     // plain export: world meshes; 3MF still keeps groups as multi-part objects
-                    IoObject { group: group(o), ..IoObject::new(o.name.clone(), o.world_mesh(), Some(o.color)) }
+                    IoObject { group: group(o), hole: o.hole, ..IoObject::new(o.name.clone(), o.world_mesh(), Some(o.color)) }
                 }
             })
             .collect()
@@ -812,7 +820,8 @@ impl App {
             self.error("Nothing to save");
             return;
         }
-        self.spawn_job(ctx, format!("Saving {}", path.display()), move |_p| match io::save(&path, &objs) {
+        let opts = io::SaveOptions { cut_holes: self.settings.holes_cut };
+        self.spawn_job(ctx, format!("Saving {}", path.display()), move |_p| match io::save_with(&path, &objs, opts) {
             Ok(()) => JobOutput::Saved { path },
             Err(e) => JobOutput::Error(format!("Save failed: {e}")),
         });
@@ -1160,7 +1169,7 @@ impl App {
         }
         let sel: Vec<Aabb> = self.selection.clone().into_iter().filter_map(|id| self.object_bounds(id)).collect();
         let others: Vec<ObjectId> =
-            self.scene.objects.iter().filter(|o| o.visible && !self.selection.contains(&o.id)).map(|o| o.id).collect();
+            self.scene.objects.iter().filter(|o| o.visible && !o.hole && !self.selection.contains(&o.id)).map(|o| o.id).collect();
         let eps = 0.01;
         for id in others {
             let Some(b) = self.object_bounds(id) else { continue };
@@ -1181,8 +1190,10 @@ impl App {
     pub fn plate_issues(&mut self) -> (Vec<ObjectId>, Vec<ObjectId>) {
         let half = self.settings.plate * 0.5;
         let tol = 0.01;
-        let ids: Vec<ObjectId> = self.scene.objects.iter().filter(|o| o.visible).map(|o| o.id).collect();
-        self.bounds_cache.retain(|k, _| ids.contains(k));
+        let all: Vec<ObjectId> = self.scene.objects.iter().map(|o| o.id).collect();
+        self.bounds_cache.retain(|k, _| all.contains(k));
+        // holes are never printed: they may stick out of the plate or below it
+        let ids: Vec<ObjectId> = self.scene.objects.iter().filter(|o| o.visible && !o.hole).map(|o| o.id).collect();
         let (mut off, mut below) = (vec![], vec![]);
         for id in ids {
             let Some(b) = self.object_bounds(id) else { continue };
@@ -1293,6 +1304,7 @@ impl eframe::App for App {
         self.tick_preview(ctx);
         self.tick_text(ctx);
         self.tick_image(ctx);
+        self.tick_holes(ctx);
         self.tick_autosave(ctx);
         self.handle_close(ctx);
         if self.job.is_some() {

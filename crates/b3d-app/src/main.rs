@@ -7,6 +7,7 @@ mod commands;
 mod context;
 mod debug;
 mod expr;
+mod holes;
 mod image_tool;
 mod organize;
 mod preview;

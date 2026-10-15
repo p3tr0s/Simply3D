@@ -78,6 +78,8 @@ pub struct Object {
     /// Locked objects can't be picked or moved in the viewport.
     pub locked: bool,
     pub group: Option<GroupId>,
+    /// Negative object: cuts the solids it overlaps, never printed.
+    pub hole: bool,
 }
 
 pub type GroupId = u64;
@@ -145,6 +147,7 @@ impl Scene {
             visible: true,
             locked: false,
             group: None,
+            hole: false,
         });
         id
     }

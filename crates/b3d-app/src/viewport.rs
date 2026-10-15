@@ -67,6 +67,11 @@ fn mint_mat(m: glam::DMat4) -> mint::RowMatrix4<f64> {
 /// Clicks go through see-through objects to a selected object inside them.
 fn pick(app: &App, o: Vec3, d: Vec3, include_locked: bool) -> Option<PickHit> {
     let sec = app.section;
+    // holes are drawn see-through and usually sit inside solids: they win when hit
+    let hole = app.scene.pick_filtered(o, d, |ob| ob.hole && (include_locked || !ob.locked), |p| sec.keeps(p));
+    if hole.is_some() {
+        return hole;
+    }
     let hit = app.scene.pick_filtered(o, d, |ob| include_locked || !ob.locked, |p| sec.keeps(p));
     match hit {
         Some(h) if app.see_through.contains(&h.id) => {
@@ -498,12 +503,25 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
         .filter(|o| o.visible)
         .filter_map(|o| {
             let m = o.matrix();
-            if app.see_through.contains(&o.id) {
-                let c = lin(o.color);
-                ghosts.push(DrawItem { mesh: o.mesh.clone(), model: m, color: [c[0], c[1], c[2], 0.3], params: [0.0; 4] });
+            if o.hole {
+                // glass-like, visible through solids
+                let sel = app.is_selected(o.id) || app.hovered == Some(o.id);
+                let color = if sel { [0.45, 0.65, 1.0, 0.45] } else { [0.62, 0.65, 0.72, 0.32] };
+                ghosts.push(DrawItem { mesh: o.mesh.clone(), model: m, color, params: [0.55, 0.0, 0.0, 0.0] });
                 return None;
             }
-            let mut mesh = o.mesh.clone();
+            // live cut by the holes it overlaps
+            let mesh_override = app.display_mesh(o.id);
+            if let Some(None) = mesh_override {
+                return None; // fully cut away
+            }
+            if app.see_through.contains(&o.id) {
+                let c = lin(o.color);
+                let mesh = mesh_override.clone().flatten().unwrap_or_else(|| o.mesh.clone());
+                ghosts.push(DrawItem { mesh, model: m, color: [c[0], c[1], c[2], 0.3], params: [0.0; 4] });
+                return None;
+            }
+            let mut mesh = mesh_override.flatten().unwrap_or_else(|| o.mesh.clone());
             if let Some(r) = pv {
                 if r.hide.contains(&o.id) {
                     if pv_kind == Some(PreviewKind::Round) {
