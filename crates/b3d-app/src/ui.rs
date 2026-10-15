@@ -348,6 +348,7 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 ui.checkbox(&mut app.settings.show_plate, "Build plate");
                 ui.checkbox(&mut app.settings.show_dimensions, "Dimensions");
                 ui.checkbox(&mut app.settings.show_problems, "Highlight mesh problems");
+                ui.checkbox(&mut app.settings.see_through, "See through objects overlapping the selection");
                 if ui.checkbox(&mut app.section.enabled.clone(), "Section view (X)").clicked() {
                     app.toggle_section();
                 }

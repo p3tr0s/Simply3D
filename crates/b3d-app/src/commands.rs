@@ -144,6 +144,7 @@ pub fn all() -> Vec<Command> {
         cmd!("View", "Toggle orthographic", "O", always, |a, _| a.settings.camera.ortho = !a.settings.camera.ortho),
         cmd!("View", "Frame selection", "F", always, |a, _| a.frame_selection()),
         cmd!("View", "Frame all", "Home", always, |a, _| a.frame_all()),
+        cmd!("View", "Toggle see-through for overlapping objects", "", always, |a, _| a.settings.see_through = !a.settings.see_through),
         cmd!("View", "Toggle build plate", "", always, |a, _| a.settings.show_plate = !a.settings.show_plate),
         cmd!("View", "Toggle dimensions", "", always, |a, _| a.settings.show_dimensions = !a.settings.show_dimensions),
         cmd!("View", "Toggle dark theme", "", always, |a, c| {

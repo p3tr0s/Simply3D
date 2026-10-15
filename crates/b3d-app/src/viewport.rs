@@ -64,9 +64,16 @@ fn mint_mat(m: glam::DMat4) -> mint::RowMatrix4<f64> {
 }
 
 /// Pick what is visible: respects the section plane; locked objects only if asked.
+/// Clicks go through see-through objects to a selected object inside them.
 fn pick(app: &App, o: Vec3, d: Vec3, include_locked: bool) -> Option<PickHit> {
     let sec = app.section;
-    app.scene.pick_filtered(o, d, |ob| include_locked || !ob.locked, |p| sec.keeps(p))
+    let hit = app.scene.pick_filtered(o, d, |ob| include_locked || !ob.locked, |p| sec.keeps(p));
+    match hit {
+        Some(h) if app.see_through.contains(&h.id) => {
+            app.scene.pick_filtered(o, d, |ob| app.selection.contains(&ob.id) && (include_locked || !ob.locked), |p| sec.keeps(p)).or(hit)
+        }
+        _ => hit,
+    }
 }
 
 fn plate_hit(o: Vec3, d: Vec3) -> Option<Vec3> {
@@ -91,6 +98,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     let slot = painter.add(Shape::Noop);
 
     let view = View { rect, aspect: app.viewport_aspect, cam: app.settings.camera };
+    app.update_see_through();
     let pointer = response.hover_pos();
     let ray = pointer.map(|p| view.ray(p));
     app.cursor_plate = ray.and_then(|(o, d)| plate_hit(o, d));
@@ -490,6 +498,11 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
         .filter(|o| o.visible)
         .filter_map(|o| {
             let m = o.matrix();
+            if app.see_through.contains(&o.id) {
+                let c = lin(o.color);
+                ghosts.push(DrawItem { mesh: o.mesh.clone(), model: m, color: [c[0], c[1], c[2], 0.3], params: [0.0; 4] });
+                return None;
+            }
             let mut mesh = o.mesh.clone();
             if let Some(r) = pv {
                 if r.hide.contains(&o.id) {

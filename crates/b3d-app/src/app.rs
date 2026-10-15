@@ -49,6 +49,8 @@ pub struct Settings {
     pub snap_objects: bool,
     pub text: crate::text_tool::TextSettings,
     pub image: crate::image_tool::ImageSettings,
+    /// Objects that overlap the selection are drawn see-through.
+    pub see_through: bool,
 }
 
 impl Default for Settings {
@@ -75,6 +77,7 @@ impl Default for Settings {
             snap_objects: true,
             text: Default::default(),
             image: Default::default(),
+            see_through: true,
         }
     }
 }
@@ -345,6 +348,8 @@ pub struct App {
     pub text_rt: crate::text_tool::TextRuntime,
     pub debug: crate::debug::DebugHud,
     pub img_rt: crate::image_tool::ImageRuntime,
+    /// Objects drawn see-through this frame (they overlap the selection).
+    pub see_through: Vec<ObjectId>,
 }
 
 impl App {
@@ -419,6 +424,7 @@ impl App {
             text_rt: Default::default(),
             debug: Default::default(),
             img_rt: Default::default(),
+            see_through: vec![],
             encode_srgb,
         };
         app.text_rt.load_fonts();
@@ -1143,6 +1149,26 @@ impl App {
         let b = o.world_bounds();
         self.bounds_cache.insert(id, (o.mesh.id, o.transform, b));
         Some(b)
+    }
+
+    /// Unselected objects that overlap the selection: drawn see-through so the selected
+    /// object stays visible where it sinks into them.
+    pub fn update_see_through(&mut self) {
+        self.see_through.clear();
+        if !self.settings.see_through || self.selection.is_empty() {
+            return;
+        }
+        let sel: Vec<Aabb> = self.selection.clone().into_iter().filter_map(|id| self.object_bounds(id)).collect();
+        let others: Vec<ObjectId> =
+            self.scene.objects.iter().filter(|o| o.visible && !self.selection.contains(&o.id)).map(|o| o.id).collect();
+        let eps = 0.01;
+        for id in others {
+            let Some(b) = self.object_bounds(id) else { continue };
+            // real overlap, not just touching
+            if sel.iter().any(|s| (0..3).all(|a| s.min[a] < b.max[a] - eps && b.min[a] < s.max[a] - eps)) {
+                self.see_through.push(id);
+            }
+        }
     }
 
     /// Bounds of every visible object except the given ones (snap targets).
