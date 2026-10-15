@@ -166,7 +166,24 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     app.update_wrap_ghost();
-    if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image) && response.hovered() {
+    // ---------- paint tool: what's under the brush ----------
+    if app.tool == Tool::Paint {
+        if moved || app.paint_rt.hover.is_none() {
+            app.paint_rt.hover = ray.and_then(|(o, d)| pick(app, o, d, false)).map(|h| crate::paint_tool::PaintHover {
+                id: h.id,
+                point: h.point,
+                normal: h.normal,
+                tri: h.tri,
+            });
+        }
+        if let Some(h) = app.paint_rt.hover {
+            app.paint_rt.last_obj = Some(h.id);
+        }
+        if pointer.is_none() {
+            app.paint_rt.hover = None;
+        }
+    }
+    if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image | Tool::Paint) && response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else if matches!(app.drag, DragMode::Move { .. }) {
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
@@ -200,10 +217,18 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                     update_move(app, &view, p, shift, ctrl);
                 }
             }
+            DragMode::Paint => {
+                if let (true, Some(h)) = (moved, app.paint_rt.hover) {
+                    app.paint_at(h, false);
+                }
+            }
             _ => {}
         }
     }
     if response.drag_stopped() {
+        if matches!(app.drag, DragMode::Paint) {
+            app.end_paint_stroke();
+        }
         if let DragMode::Box { start, additive } = app.drag.clone() {
             if let Some(end) = ui.input(|i| i.pointer.latest_pos()) {
                 finish_box_select(app, &view, start, end, additive);
@@ -244,6 +269,18 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                         }
                         (_, Some(h)) => app.apply_image_on_surface(&ctx, h),
                         _ => {}
+                    }
+                }
+                Tool::Paint => {
+                    if let Some(h) = pick(app, o, d, false) {
+                        let h = crate::paint_tool::PaintHover { id: h.id, point: h.point, normal: h.normal, tri: h.tri };
+                        if ctrl {
+                            app.pick_paint_color(h);
+                        } else {
+                            app.begin_paint_stroke();
+                            app.paint_at(h, true);
+                            app.end_paint_stroke();
+                        }
                     }
                 }
                 Tool::Text => {
@@ -623,6 +660,34 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
     let mut tris = vec![];
     let mut lines = vec![];
     let mut overlay = vec![];
+    // paint brush cursor
+    if let (Tool::Paint, Some(h)) = (app.tool, app.paint_rt.hover) {
+        let s = &app.settings.paint;
+        let c = if s.erase { lin_rgba(1.0, 1.0, 1.0, 0.9) } else { lin([s.color[0], s.color[1], s.color[2], 255]) };
+        let n = h.normal.normalize_or(Vec3::Z);
+        match s.mode {
+            crate::paint_tool::PaintMode::Brush => {
+                let (u, v) = (n.any_orthonormal_vector(), n.cross(n.any_orthonormal_vector()));
+                let at = |k: usize| {
+                    let a = k as f32 / 48.0 * std::f32::consts::TAU;
+                    h.point + n * 0.05 + (u * a.cos() + v * a.sin()) * s.radius
+                };
+                for k in 0..48 {
+                    overlay.push(LineVertex::new(at(k), c));
+                    overlay.push(LineVertex::new(at(k + 1), c));
+                }
+            }
+            _ => {
+                if let Some(o) = app.scene.get(h.id).filter(|o| h.tri < o.mesh.mesh.triangles.len()) {
+                    let q = o.mesh.mesh.tri(h.tri).map(|p| o.matrix().transform_point3(p) + n * 0.05);
+                    for k in 0..3 {
+                        overlay.push(LineVertex::new(q[k], c));
+                        overlay.push(LineVertex::new(q[(k + 1) % 3], c));
+                    }
+                }
+            }
+        }
+    }
     if app.settings.show_plate {
         let h = app.settings.plate * 0.5;
         let pc = if dark { lin_rgba(0.35, 0.42, 0.55, 0.22) } else { lin_rgba(0.3, 0.38, 0.5, 0.12) };
@@ -858,6 +923,11 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             TextMode::Emboss => "Emboss picture: click a face",
             TextMode::Engrave => "Engrave picture: click a face",
         }),
+        Tool::Paint => Some(match app.settings.paint.mode {
+            crate::paint_tool::PaintMode::Brush => "Paint: drag on the model · drag off it to orbit · Ctrl+click picks a colour",
+            crate::paint_tool::PaintMode::Fill => "Fill: click a face · Ctrl+click picks a colour",
+            crate::paint_tool::PaintMode::Triangle => "Paint triangles: click or drag · Ctrl+click picks a colour",
+        }),
         Tool::Select => None,
     };
     if let Some(h) = hint {
@@ -949,6 +1019,15 @@ fn plate_warnings(app: &mut App, ui: &mut egui::Ui, view: &View) {
 
 /// Decide what a left-drag does, based on what is under the press point and modifiers.
 fn start_primary_drag(app: &mut App, view: &View, origin: Pos2, shift: bool, alt: bool, ctrl: bool, cad: bool) -> DragMode {
+    if app.tool == Tool::Paint && !alt && !ctrl {
+        let (o, d) = view.ray(origin);
+        if let Some(h) = pick(app, o, d, false).filter(|h| app.scene.get(h.id).is_some_and(|o| !o.hole)) {
+            app.begin_paint_stroke();
+            app.paint_at(crate::paint_tool::PaintHover { id: h.id, point: h.point, normal: h.normal, tri: h.tri }, true);
+            return DragMode::Paint;
+        }
+        return DragMode::Orbit;
+    }
     if !matches!(app.tool, Tool::Select | Tool::Cut) {
         return DragMode::Orbit;
     }

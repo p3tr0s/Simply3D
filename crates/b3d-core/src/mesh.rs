@@ -76,11 +76,41 @@ impl Aabb {
 pub struct Mesh {
     pub positions: Vec<Vec3>,
     pub triangles: Vec<[u32; 3]>,
+    /// Painted colour per triangle (packed sRGBA, see [`crate::paint::pack`]; 0 = the
+    /// object's own colour). Empty = not painted. Ignored unless it has one entry per
+    /// triangle, so operations that rebuild triangles simply drop it.
+    pub paint: Vec<u32>,
 }
 
 impl Mesh {
     pub fn new(positions: Vec<Vec3>, triangles: Vec<[u32; 3]>) -> Self {
-        Self { positions, triangles }
+        Self { positions, triangles, paint: vec![] }
+    }
+
+    /// Whether any triangle is painted.
+    pub fn is_painted(&self) -> bool {
+        self.paint.len() == self.triangles.len() && self.paint.iter().any(|&c| c != 0)
+    }
+    /// Paint of triangle `i` (0 = none).
+    pub fn paint_of(&self, i: usize) -> u32 {
+        if self.paint.len() == self.triangles.len() {
+            self.paint[i]
+        } else {
+            0
+        }
+    }
+    /// Make sure there is one paint entry per triangle (keeping valid paint).
+    pub fn paint_mut(&mut self) -> &mut Vec<u32> {
+        if self.paint.len() != self.triangles.len() {
+            self.paint = vec![0; self.triangles.len()];
+        }
+        &mut self.paint
+    }
+    /// Drop paint that doesn't match the triangles, or that is all blank.
+    pub fn tidy_paint(&mut self) {
+        if !self.is_painted() {
+            self.paint.clear();
+        }
     }
 
     /// Build from a triangle soup (3 positions per triangle). Vertices are welded exactly.
@@ -161,6 +191,13 @@ impl Mesh {
         }
     }
     pub fn append(&mut self, other: &Mesh) {
+        if self.is_painted() || other.is_painted() {
+            let mut p: Vec<u32> = (0..self.triangles.len()).map(|i| self.paint_of(i)).collect();
+            p.extend((0..other.triangles.len()).map(|i| other.paint_of(i)));
+            self.paint = p;
+        } else {
+            self.paint.clear();
+        }
         let off = self.positions.len() as u32;
         self.positions.extend_from_slice(&other.positions);
         self.triangles.extend(other.triangles.iter().map(|t| [t[0] + off, t[1] + off, t[2] + off]));
@@ -241,16 +278,22 @@ impl Mesh {
                 }
             }
         }
-        let mut groups: std::collections::BTreeMap<u32, Vec<[u32; 3]>> = Default::default();
-        for t in &self.triangles {
+        let painted = self.is_painted();
+        let mut groups: std::collections::BTreeMap<u32, (Vec<[u32; 3]>, Vec<u32>)> = Default::default();
+        for (i, t) in self.triangles.iter().enumerate() {
             let r = find(&mut parent, t[0]);
-            groups.entry(r).or_default().push(*t);
+            let g = groups.entry(r).or_default();
+            g.0.push(*t);
+            if painted {
+                g.1.push(self.paint[i]);
+            }
         }
         groups
             .into_values()
-            .map(|tris| {
-                let mut m = Mesh { positions: self.positions.clone(), triangles: tris };
+            .map(|(tris, paint)| {
+                let mut m = Mesh { positions: self.positions.clone(), triangles: tris, paint };
                 m.compact();
+                m.tidy_paint();
                 m
             })
             .collect()

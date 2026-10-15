@@ -14,6 +14,7 @@ pub mod history;
 pub mod image3d;
 pub mod io;
 pub mod mesh;
+pub mod paint;
 pub mod primitives;
 pub mod progress;
 pub mod repair;

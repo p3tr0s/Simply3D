@@ -54,7 +54,10 @@ pub fn apply_holes(objects: &[IoObject]) -> Result<Vec<IoObject>> {
         let b = mesh.bounds();
         let cutters: Vec<Mesh> = holes.iter().filter(|(_, hb)| overlaps(&b, hb)).map(|(m, _)| m.clone()).collect();
         if !cutters.is_empty() {
-            mesh = crate::csg::boolean_many(&mesh, &cutters, crate::csg::BoolOp::Subtract)?;
+            let before = mesh;
+            mesh = crate::csg::boolean_many(&before, &cutters, crate::csg::BoolOp::Subtract)?;
+            let tol = (mesh.bounds().size().length() * 0.002).clamp(0.05, 0.5);
+            crate::paint::transfer(&before, &mut mesh, tol);
         }
         if mesh.is_empty() {
             continue;

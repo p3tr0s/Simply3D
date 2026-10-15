@@ -161,6 +161,9 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         app.settings.text.mode = TextMode::Emboss;
         app.start_text_tool();
     }
+    if item(ui, true, "Paint colours…", "P") {
+        app.start_paint_tool();
+    }
     ui.separator();
     if item(ui, true, "Frame", "F") {
         app.frame_selection();

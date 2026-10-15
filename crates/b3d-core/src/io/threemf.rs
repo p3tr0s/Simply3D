@@ -18,6 +18,8 @@ struct Obj3mf {
     prop: Option<(u32, u32)>,
     components: Vec<(Option<String>, u32, Mat4)>,
     meta: HashMap<String, String>,
+    /// Per triangle while parsing: its own material (pid, p1) and painted filament.
+    tri_paint: Vec<(Option<(u32, u32)>, u32)>,
 }
 
 #[derive(Default)]
@@ -69,7 +71,8 @@ fn unit_scale(u: &str) -> f32 {
     }
 }
 
-fn parse_model(xml: &[u8]) -> Result<ModelFile> {
+/// `filaments`: colours of the slicer's filament slots (for painted triangles).
+fn parse_model(xml: &[u8], filaments: &[[u8; 4]]) -> Result<ModelFile> {
     let mut r = Reader::from_reader(xml);
     r.config_mut().trim_text(false); // keep spaces inside metadata values
     let mut buf = Vec::new();
@@ -130,6 +133,14 @@ fn parse_model(xml: &[u8]) -> Result<ModelFile> {
                             }
                             if let (Some(m), Some(v1), Some(v2), Some(v3)) = (&mut o.mesh, id("v1"), id("v2"), id("v3")) {
                                 m.triangles.push([v1, v2, v3]);
+                                let own = id("pid").map(|p| (p, id("p1").unwrap_or(0)));
+                                // Bambu Studio / OrcaSlicer, else PrusaSlicer
+                                let state = a
+                                    .get("paint_color")
+                                    .or_else(|| a.get("mmu_segmentation"))
+                                    .map(|v| crate::paint::bambu_decode(v))
+                                    .unwrap_or(0);
+                                o.tri_paint.push((own, state));
                             }
                         }
                     }
@@ -188,7 +199,8 @@ fn parse_model(xml: &[u8]) -> Result<ModelFile> {
                     }
                 }
                 "object" => {
-                    if let Some((id, o)) = cur_obj.take() {
+                    if let Some((id, mut o)) = cur_obj.take() {
+                        resolve_paint(&mut o, &mf.colors, filaments);
                         mf.objects.insert(id, o);
                     }
                 }
@@ -201,6 +213,88 @@ fn parse_model(xml: &[u8]) -> Result<ModelFile> {
         buf.clear();
     }
     Ok(mf)
+}
+
+/// Turn the per-triangle materials / painted filaments into the mesh's paint.
+fn resolve_paint(o: &mut Obj3mf, colors: &HashMap<u32, Vec<[u8; 4]>>, filaments: &[[u8; 4]]) {
+    let tp = std::mem::take(&mut o.tri_paint);
+    let Some(m) = &mut o.mesh else { return };
+    if tp.len() != m.triangles.len() || tp.iter().all(|(own, st)| *st == 0 && (own.is_none() || *own == o.prop)) {
+        return;
+    }
+    let paint: Vec<u32> = tp
+        .iter()
+        .map(|(own, state)| match own {
+            Some(p) if Some(*p) != o.prop => {
+                colors.get(&p.0).and_then(|c| c.get(p.1 as usize)).map(|c| crate::paint::pack(*c)).unwrap_or(0)
+            }
+            _ if *state > 0 => crate::paint::pack(filament(filaments, *state)),
+            _ => 0,
+        })
+        .collect();
+    m.paint = paint;
+    m.tidy_paint();
+}
+
+/// Colour of filament slot `k` (1-based); a default palette when the file has none.
+fn filament(filaments: &[[u8; 4]], k: u32) -> [u8; 4] {
+    let i = k.max(1) as usize - 1;
+    filaments.get(i).copied().unwrap_or(crate::scene::PALETTE[i % crate::scene::PALETTE.len()])
+}
+
+/// Filament colours from Bambu / Orca's `project_settings.config` (JSON).
+fn parse_filaments(json: &str) -> Vec<[u8; 4]> {
+    let Some(i) = json.find("\"filament_colour\"") else { return vec![] };
+    let rest = &json[i..];
+    let (Some(a), Some(b)) = (rest.find('['), rest.find(']')) else { return vec![] };
+    if b < a {
+        return vec![];
+    }
+    rest[a + 1..b].split(',').filter_map(|v| parse_hex_color(v.trim().trim_matches('"'))).collect()
+}
+
+/// Extruder numbers from `model_settings.config`: (per object id, per part id).
+fn parse_extruders(xml: &str) -> (HashMap<u32, u32>, HashMap<u32, u32>) {
+    let (mut objs, mut parts) = (HashMap::new(), HashMap::new());
+    let mut r = Reader::from_str(xml);
+    let mut cur: Option<(bool, u32)> = None; // (is part, id)
+    let mut obj: Option<u32> = None;
+    loop {
+        match r.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let a = attrs(e);
+                let id = a.get("id").and_then(|v| v.parse().ok());
+                match e.local_name().as_ref() {
+                    "object" => {
+                        obj = id;
+                        cur = id.map(|i| (false, i));
+                    }
+                    "part" | "volume" => cur = id.map(|i| (true, i)),
+                    "metadata" if a.get("key").map(|k| k.as_str()) == Some("extruder") => {
+                        if let (Some((part, i)), Some(v)) = (cur, a.get("value").and_then(|v| v.parse().ok())) {
+                            if part {
+                                parts.insert(i, v)
+                            } else {
+                                objs.insert(i, v)
+                            };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => match e.local_name().as_ref() {
+                "part" | "volume" => cur = obj.map(|i| (false, i)),
+                "object" => {
+                    obj = None;
+                    cur = None;
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    (objs, parts)
 }
 
 struct Package {
@@ -262,17 +356,29 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
             }
         }
     }
+    let filaments =
+        read_entry(&mut zip, "Metadata/project_settings.config").map(|b| parse_filaments(&String::from_utf8_lossy(&b))).unwrap_or_default();
+    let (obj_ext, part_ext) =
+        read_entry(&mut zip, "Metadata/model_settings.config").map(|b| parse_extruders(&String::from_utf8_lossy(&b))).unwrap_or_default();
+    // the slicer's filament colour for an object / part, when the file says which
+    let ext_color = |part: Option<u32>, obj: u32| -> Option<[u8; 4]> {
+        if filaments.is_empty() {
+            return None;
+        }
+        let k = part.and_then(|p| part_ext.get(&p)).or_else(|| obj_ext.get(&obj))?;
+        Some(filament(&filaments, *k))
+    };
     let names: Vec<String> =
         zip.file_names().flatten().map(|c| c.into_owned()).filter(|n| n.to_ascii_lowercase().ends_with(".model")).collect();
     let mut files = HashMap::new();
     for n in names {
         if let Some(b) = read_entry(&mut zip, &n) {
-            files.insert(norm_path(&n), parse_model(&b)?);
+            files.insert(norm_path(&n), parse_model(&b, &filaments)?);
         }
     }
     // our own editable copy (holes kept) wins over the slicer-facing model
     if let Some(b) = read_entry(&mut zip, PROJECT_COPY) {
-        files.insert(PROJECT_COPY.to_string(), parse_model(&b)?);
+        files.insert(PROJECT_COPY.to_string(), parse_model(&b, &filaments)?);
         main = PROJECT_COPY.to_string();
     }
     let pkg = Package { files };
@@ -329,6 +435,9 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
                             part.color = color;
                         }
                     }
+                    if let Some(c) = ext_color(Some(*cid), *oid) {
+                        part.color = Some(c);
+                    }
                     if part.color.is_none() {
                         if let Some((g, gi)) = o.prop {
                             part.color = f.colors.get(&g).and_then(|cl| cl.get(gi as usize)).copied();
@@ -373,6 +482,10 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
                 pkg.flatten(&path, *oid, *xf, 0, &mut io.mesh, &mut color);
                 io.color = color;
             }
+        }
+        let only_part = obj.filter(|o| o.components.len() == 1).map(|o| o.components[0].1);
+        if let Some(c) = ext_color(only_part, *oid) {
+            io.color = Some(c);
         }
         out.push(io);
     }
@@ -442,11 +555,19 @@ struct Unit {
 /// there are multi-part objects. `negative`: holes become negative parts of the units
 /// they overlap; otherwise every object (holes included, flagged `b3d:hole`) is written
 /// as-is — the editable layout.
+/// Filament slots for a painted scene (see [`crate::paint::slots`]).
+pub fn filament_slots(objects: &[IoObject]) -> Vec<u32> {
+    let solids: Vec<&IoObject> = objects.iter().filter(|o| !o.hole).collect();
+    crate::paint::slots(solids.iter().map(|o| o.color.unwrap_or([200, 200, 200, 255])), solids.iter().map(|o| &o.mesh))
+}
+
+use crate::paint::slot_of;
+
 fn model_xml(objects: &[IoObject], negative: bool) -> (String, String) {
     let mut model = String::with_capacity(1 << 20);
     model.push_str(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:b3d="https://builder3d.app/3mf/2026">
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:b3d="https://builder3d.app/3mf/2026" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">
 <metadata name="Application">Builder3D</metadata>
 <resources>
 <basematerials id="1">
@@ -455,6 +576,18 @@ fn model_xml(objects: &[IoObject], negative: bool) -> (String, String) {
     for o in objects {
         let c = o.color.unwrap_or([200, 200, 200, 255]);
         let _ = writeln!(model, r##"<base name="{}" displaycolor="#{:02X}{:02X}{:02X}{:02X}"/>"##, esc(&o.name), c[0], c[1], c[2], c[3]);
+    }
+    // painted colours: standard 3MF materials (p1) and slicer filament slots (paint_color)
+    let slots = filament_slots(objects);
+    let mut paint_index: HashMap<u32, usize> = HashMap::new();
+    for o in objects {
+        for c in crate::paint::colors(&o.mesh) {
+            if !paint_index.contains_key(&c) {
+                paint_index.insert(c, objects.len() + paint_index.len());
+                let [r, g, b, _] = crate::paint::unpack(c);
+                let _ = writeln!(model, r##"<base name="Paint {}" displaycolor="#{r:02X}{g:02X}{b:02X}FF"/>"##, paint_index.len());
+            }
+        }
     }
     model.push_str("</basematerials>\n");
     for (i, o) in objects.iter().enumerate() {
@@ -477,8 +610,19 @@ fn model_xml(objects: &[IoObject], negative: bool) -> (String, String) {
             let _ = writeln!(model, r#"<vertex x="{}" y="{}" z="{}"/>"#, p.x, p.y, p.z);
         }
         model.push_str("</vertices><triangles>\n");
-        for t in &o.mesh.triangles {
-            let _ = writeln!(model, r#"<triangle v1="{}" v2="{}" v3="{}"/>"#, t[0], t[1], t[2]);
+        let painted = o.mesh.is_painted();
+        for (ti, t) in o.mesh.triangles.iter().enumerate() {
+            let c = if painted { o.mesh.paint[ti] } else { 0 };
+            if c == 0 {
+                let _ = writeln!(model, r#"<triangle v1="{}" v2="{}" v3="{}"/>"#, t[0], t[1], t[2]);
+            } else {
+                let code = crate::paint::bambu_encode(slot_of(&slots, c));
+                let _ = writeln!(
+                    model,
+                    r#"<triangle v1="{}" v2="{}" v3="{}" pid="1" p1="{}" paint_color="{code}" slic3rpe:mmu_segmentation="{code}"/>"#,
+                    t[0], t[1], t[2], paint_index[&c]
+                );
+            }
         }
         model.push_str("</triangles></mesh></object>\n");
     }
@@ -525,10 +669,28 @@ fn model_xml(objects: &[IoObject], negative: bool) -> (String, String) {
     let mut config = String::new();
     let mut items: Vec<(usize, Option<Mat4>)> = vec![];
     let mut next_id = objects.len() + 2;
+    // which filament slot prints each object (only for painted scenes)
+    let extruder = |i: usize| -> String {
+        if slots.is_empty() {
+            return String::new();
+        }
+        let c = crate::paint::pack(objects[i].color.unwrap_or([200, 200, 200, 255]));
+        format!("\n      <metadata key=\"extruder\" value=\"{}\"/>", slot_of(&slots, c))
+    };
     for u in &units {
         if u.parts.len() == 1 && u.holes.is_empty() {
             let i = u.parts[0];
             items.push((i + 2, objects[i].transform));
+            if !slots.is_empty() {
+                let _ = writeln!(config, r#"  <object id="{}">"#, i + 2);
+                let _ = writeln!(
+                    config,
+                    r#"    <metadata key="name" value="{}"/>{}"#,
+                    esc(&objects[i].name),
+                    extruder(i).replace("\n  ", "\n")
+                );
+                config.push_str("  </object>\n");
+            }
             continue;
         }
         // one object made of parts; origin at the bottom centre of its solid parts
@@ -546,7 +708,8 @@ fn model_xml(objects: &[IoObject], negative: bool) -> (String, String) {
             let m = inv * objects[i].transform.unwrap_or(Mat4::IDENTITY);
             let _ = writeln!(model, r#"<component objectid="{}" transform="{}"/>"#, i + 2, mat_attr(&m));
             let _ = writeln!(config, r#"    <part id="{}" subtype="{kind}">"#, i + 2);
-            let _ = writeln!(config, r#"      <metadata key="name" value="{}"/>"#, esc(&objects[i].name));
+            let ext = if kind == &"normal_part" { extruder(i) } else { String::new() };
+            let _ = writeln!(config, r#"      <metadata key="name" value="{}"/>{ext}"#, esc(&objects[i].name));
             let _ = writeln!(config, "    </part>");
         }
         model.push_str("</components></object>\n");
@@ -705,5 +868,62 @@ mod tests {
         assert_eq!(objs[0].name, "Part A");
         let c = objs[0].mesh.bounds().center();
         assert!((c - Vec3::new(110.0, 100.0, 1.0)).length() < 1e-4, "{c}");
+    }
+
+    #[test]
+    fn paint_roundtrip_and_slicer_slots() {
+        use crate::paint::pack;
+        let mut m = crate::primitives::cuboid(Vec3::splat(10.0));
+        let (red, blue) = (pack([255, 0, 0, 255]), pack([0, 0, 255, 255]));
+        let p = m.paint_mut();
+        p[0] = red;
+        p[1] = red;
+        p[5] = blue;
+        let objs = vec![
+            IoObject::new("Painted", m.clone(), Some([200, 200, 200, 255])),
+            IoObject::new("Plain", crate::primitives::cuboid(Vec3::splat(5.0)), Some([0, 255, 0, 255])),
+        ];
+        let bytes = write(&objs).unwrap();
+        let main = read_model(&bytes, "3D/3dmodel.model").unwrap();
+        // slots: grey (object 1), green (object 2), red, blue
+        assert_eq!(main.matches(r#"paint_color="0C""#).count(), 2, "red is slot 3");
+        assert_eq!(main.matches(r#"paint_color="1C""#).count(), 1, "blue is slot 4");
+        assert!(main.contains(r#"slic3rpe:mmu_segmentation="0C""#));
+        let cfg = read_model(&bytes, "Metadata/model_settings.config").unwrap();
+        assert!(cfg.contains(r#"<metadata key="extruder" value="2"/>"#), "{cfg}");
+        let back = read(&bytes).unwrap();
+        assert_eq!(back[0].mesh.paint, m.paint);
+        assert!(!back[1].mesh.is_painted());
+        assert_eq!(back[1].color, Some([0, 255, 0, 255]));
+    }
+
+    #[test]
+    fn bambu_paint_and_filament_colours() {
+        let cube = crate::primitives::cuboid(Vec3::splat(2.0));
+        let mut verts = String::new();
+        for p in &cube.positions {
+            let _ = write!(verts, r#"<vertex x="{}" y="{}" z="{}"/>"#, p.x, p.y, p.z);
+        }
+        let mut tris = String::new();
+        for (i, t) in cube.triangles.iter().enumerate() {
+            let paint = if i < 2 { r#" paint_color="8""# } else { "" };
+            let _ = write!(tris, r#"<triangle v1="{}" v2="{}" v3="{}"{paint}/>"#, t[0], t[1], t[2]);
+        }
+        let main = format!(
+            r#"<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="3" name="Cube" type="model"><mesh><vertices>{verts}</vertices><triangles>{tris}</triangles></mesh></object></resources><build><item objectid="3"/></build></model>"#
+        );
+        let mut zw = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opt = zip::write::SimpleFileOptions::default();
+        zw.start_file("3D/3dmodel.model", opt).unwrap();
+        zw.write_all(main.as_bytes()).unwrap();
+        zw.start_file("Metadata/project_settings.config", opt).unwrap();
+        zw.write_all(br##"{ "filament_colour": [ "#FFFFFF", "#FF0000", "#00AE42" ], "other": [1] }"##).unwrap();
+        zw.start_file("Metadata/model_settings.config", opt).unwrap();
+        zw.write_all(br#"<config><object id="3"><metadata key="extruder" value="3"/></object></config>"#).unwrap();
+        let bytes = zw.finish().unwrap().into_inner();
+        let o = &read(&bytes).unwrap()[0];
+        assert_eq!(o.color, Some([0x00, 0xAE, 0x42, 255]), "object prints with filament 3");
+        assert_eq!(o.mesh.paint[0], crate::paint::pack([255, 0, 0, 255]), "painted with filament 2");
+        assert_eq!(o.mesh.paint[2], 0);
     }
 }

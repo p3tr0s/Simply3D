@@ -43,7 +43,7 @@ fn sharp_edges(m: &Mesh, ef: &HashMap<EdgeKey, Vec<(u32, usize)>>, crease_deg: O
 pub fn subdivide_flat(m: &Mesh, levels: u32) -> Mesh {
     let mut cur = m.clone();
     for _ in 0..levels {
-        let mut out = Mesh { positions: cur.positions.clone(), triangles: Vec::with_capacity(cur.triangles.len() * 4) };
+        let mut out = Mesh { positions: cur.positions.clone(), triangles: Vec::with_capacity(cur.triangles.len() * 4), paint: vec![] };
         let mut mids: HashMap<EdgeKey, u32> = HashMap::new();
         let mut mid = |a: u32, b: u32, out: &mut Mesh| {
             *mids.entry(ek(a, b)).or_insert_with(|| {
@@ -118,7 +118,7 @@ pub fn subdivide_loop(m: &Mesh, levels: u32, crease_deg: Option<f32>) -> Mesh {
             let (ab, bc, ca) = (mids[&ek(a, b)], mids[&ek(b, c)], mids[&ek(c, a)]);
             tris.extend([[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]);
         }
-        cur = Mesh { positions, triangles: tris };
+        cur = Mesh { positions, triangles: tris, paint: vec![] };
     }
     cur
 }

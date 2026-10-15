@@ -10,6 +10,7 @@ mod expr;
 mod holes;
 mod image_tool;
 mod organize;
+mod paint_tool;
 mod preview;
 mod render;
 mod snap;

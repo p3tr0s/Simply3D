@@ -173,6 +173,13 @@ impl App {
             self.checkpoint(kind.name());
             for (id, h) in r.swap {
                 if let Some(o) = self.scene.get_mut(id) {
+                    let mut h = h;
+                    if o.mesh.mesh.is_painted() && !h.mesh.is_painted() {
+                        let mut m = (*h.mesh).clone();
+                        let tol = (m.bounds().size().length() * 0.01).clamp(0.1, 2.0);
+                        crate::paint_tool::carry_paint(&o.mesh.mesh, &mut m, o.color, tol);
+                        h = MeshHandle::new(m);
+                    }
                     o.mesh = h;
                 }
             }

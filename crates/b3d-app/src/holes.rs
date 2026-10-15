@@ -74,6 +74,7 @@ impl App {
         for id in std::iter::once(&solid).chain(holes) {
             if let Some(o) = self.scene.get(*id) {
                 o.mesh.id.hash(&mut h);
+                o.mesh.paint_rev.hash(&mut h);
                 format!("{:?}", o.transform).hash(&mut h);
             }
         }
@@ -123,7 +124,11 @@ impl App {
                 // a failed boolean shows the solid uncut rather than nothing
                 let cut = match cut {
                     Some(c) if c.is_empty() => None,
-                    Some(c) => Some(c),
+                    Some(mut c) => {
+                        let tol = (c.bounds().size().length() * 0.002).clamp(0.05, 0.5);
+                        b3d_core::paint::transfer(&m, &mut c, tol);
+                        Some(c)
+                    }
                     None => Some(m),
                 };
                 out.push((s, key, cut));

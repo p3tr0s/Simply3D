@@ -49,6 +49,7 @@ pub struct Settings {
     pub snap_objects: bool,
     pub text: crate::text_tool::TextSettings,
     pub image: crate::image_tool::ImageSettings,
+    pub paint: crate::paint_tool::PaintSettings,
     /// Objects that overlap the selection are drawn see-through.
     pub see_through: bool,
     /// Save holes into 3MF already cut (any slicer) instead of as negative parts.
@@ -79,6 +80,7 @@ impl Default for Settings {
             snap_objects: true,
             text: Default::default(),
             image: Default::default(),
+            paint: Default::default(),
             see_through: true,
             holes_cut: false,
         }
@@ -104,6 +106,8 @@ pub enum DragMode {
         start: egui::Pos2,
         additive: bool,
     },
+    /// Painting a stroke.
+    Paint,
     Move {
         grab: Vec3,
         start: Vec<(ObjectId, Transform)>,
@@ -120,6 +124,7 @@ pub enum Tool {
     Cut,
     Text,
     Image,
+    Paint,
 }
 
 /// Section view: everything on the far side of a plane is cut away (display only).
@@ -353,6 +358,7 @@ pub struct App {
     pub debug: crate::debug::DebugHud,
     pub img_rt: crate::image_tool::ImageRuntime,
     pub wrap: crate::text_tool::WrapCache,
+    pub paint_rt: crate::paint_tool::PaintRuntime,
     /// Objects drawn see-through this frame (they overlap the selection).
     pub see_through: Vec<ObjectId>,
     pub holes: crate::holes::HoleCache,
@@ -431,6 +437,7 @@ impl App {
             debug: Default::default(),
             img_rt: Default::default(),
             wrap: Default::default(),
+            paint_rt: Default::default(),
             see_through: vec![],
             holes: Default::default(),
             encode_srgb,
@@ -566,9 +573,15 @@ impl App {
                 // lock state of the object they replace
                 let one_for_one = remove.len() >= add.len();
                 let carry: Vec<_> = remove.iter().map(|id| self.scene.get(*id).map(|o| (o.group, o.locked))).collect();
-                for (i, (name, mesh, color)) in add.into_iter().enumerate() {
+                // paint (and, for unions, each object's colour) carries over to the result
+                let src = self.paint_source(&remove, matches!(label.as_str(), "Union" | "Intersect"));
+                for (i, (name, mut mesh, color)) in add.into_iter().enumerate() {
                     if mesh.is_empty() {
                         continue;
+                    }
+                    if let Some(src) = &src {
+                        let tol = (mesh.bounds().size().length() * 0.002).clamp(0.05, 0.5);
+                        crate::paint_tool::carry_paint(src, &mut mesh, color, tol);
                     }
                     let id = self.scene.add_world_mesh(name, mesh, Some(color));
                     if let (true, Some(Some((g, locked)))) = (one_for_one, carry.get(i)) {
@@ -596,8 +609,12 @@ impl App {
             }
             JobOutput::ReplaceMeshes { label, meshes, message } => {
                 self.checkpoint(&label);
-                for (id, mesh) in meshes {
+                for (id, mut mesh) in meshes {
                     if let Some(o) = self.scene.get_mut(id) {
+                        if o.mesh.mesh.is_painted() {
+                            let tol = (mesh.bounds().size().length() * 0.01).clamp(0.1, 2.0);
+                            crate::paint_tool::carry_paint(&o.mesh.mesh, &mut mesh, o.color, tol);
+                        }
                         o.mesh = MeshHandle::new(mesh);
                     }
                 }
@@ -1063,9 +1080,16 @@ impl App {
         let mut all = Mesh::default();
         for id in &self.selection {
             if let Some(o) = self.scene.get(*id) {
-                all.append(&o.world_mesh());
+                let mut w = o.world_mesh();
+                // other colours stay as paint
+                if o.color != first.color {
+                    let c = b3d_core::paint::pack(o.color);
+                    w.paint_mut().iter_mut().filter(|p| **p == 0).for_each(|p| *p = c);
+                }
+                all.append(&w);
             }
         }
+        all.tidy_paint();
         for id in std::mem::take(&mut self.selection) {
             self.scene.remove(id);
         }

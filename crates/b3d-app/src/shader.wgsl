@@ -20,13 +20,16 @@ struct Model {
 struct VOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) world: vec3<f32>,
+    // painted colour (sRGB), alpha 0 = use the object colour
+    @location(1) @interpolate(flat) paint: vec4<f32>,
 };
 
 @vertex
-fn vs_mesh(@location(0) p: vec3<f32>) -> VOut {
+fn vs_mesh(@location(0) p: vec3<f32>, @location(1) paint: vec4<f32>) -> VOut {
     var out: VOut;
     let w = obj.model * vec4<f32>(p, 1.0);
     out.world = w.xyz;
+    out.paint = paint;
     out.pos = cam.view_proj * w;
     return out;
 }
@@ -42,6 +45,19 @@ fn encode(c: vec3<f32>) -> vec3<f32> {
         return to_srgb(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)));
     }
     return c;
+}
+
+fn to_linear(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+fn surface_color(in: VOut) -> vec3<f32> {
+    if (in.paint.a > 0.5) {
+        return to_linear(in.paint.rgb);
+    }
+    return obj.color.rgb;
 }
 
 fn section_on() -> bool {
@@ -100,13 +116,14 @@ fn fs_mesh(in: VOut, @builtin(front_facing) ff_raw: bool) -> @location(0) vec4<f
     if (!ff && section_on()) {
         // inside of a solid seen through the section plane: flat hatched cap
         let s = fract((in.pos.x + in.pos.y) / 9.0);
-        var cap = obj.color.rgb * 0.62;
+        let sc = surface_color(in);
+        var cap = sc * 0.62;
         if (s < 0.3) {
-            cap = obj.color.rgb * 0.40;
+            cap = sc * 0.40;
         }
         return vec4<f32>(encode(cap), 1.0);
     }
-    var base = obj.color.rgb;
+    var base = surface_color(in);
     if (!ff && obj.params.w > 0.5) {
         // looking at the inside of a surface: open / inverted mesh -> show as red
         base = vec3<f32>(0.85, 0.08, 0.08);

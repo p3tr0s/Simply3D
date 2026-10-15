@@ -135,6 +135,9 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if key(Key::T) {
         app.start_text_tool();
     }
+    if key(Key::P) {
+        app.start_paint_tool();
+    }
     if key(Key::H) {
         app.hide_selected();
     }
@@ -323,6 +326,9 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 if ui.button("Picture to 3D…").clicked() {
                     app.image_dialog(&ctx);
                 }
+                if ui.add(egui::Button::new("Paint colours…").shortcut_text("P")).clicked() {
+                    app.start_paint_tool();
+                }
                 ui.separator();
                 if ui.add_enabled(has, egui::Button::new("Repair")).clicked() {
                     app.repair_selected(&ctx);
@@ -443,6 +449,16 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                 } else {
                     app.image_dialog(&ctx);
                 }
+            }
+            if tool_button(
+                ui,
+                app.tool == Tool::Paint,
+                "🎨 Paint",
+                "Paint colours onto the model, for multi-colour printing (AMS / MMU) (P)",
+            )
+            .clicked()
+            {
+                app.start_paint_tool();
             }
             ui.separator();
             if ui
@@ -754,6 +770,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         Tool::Cut => cut_panel(app, ui),
         Tool::Text => crate::text_tool::panel(app, ui),
         Tool::Image => crate::image_tool::panel(app, ui, &ctx),
+        Tool::Paint => crate::paint_tool::panel(app, ui, &ctx),
         Tool::Select => {}
     }
     let Some(&id) = app.selection.first() else {

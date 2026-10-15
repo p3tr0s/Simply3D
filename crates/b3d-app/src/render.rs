@@ -54,8 +54,57 @@ pub struct DrawItem {
 
 struct GpuMesh {
     vbuf: wgpu::Buffer,
-    ibuf: wgpu::Buffer,
+    /// Per-vertex paint (sRGBA8, alpha 0 = object colour).
+    cbuf: wgpu::Buffer,
+    /// None = painted mesh, drawn unindexed with 3 vertices per triangle.
+    ibuf: Option<wgpu::Buffer>,
     count: u32,
+    rev: u64,
+}
+
+impl GpuMesh {
+    fn new(device: &wgpu::Device, h: &MeshHandle) -> GpuMesh {
+        let m = &h.mesh;
+        let init = |label: &str, contents: &[u8], usage: wgpu::BufferUsages| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
+        };
+        let vertex = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        if m.is_painted() {
+            let pos: Vec<glam::Vec3> = m.triangles.iter().flat_map(|t| t.map(|i| m.positions[i as usize])).collect();
+            GpuMesh {
+                vbuf: init("mesh vb", bytemuck::cast_slice(&pos), wgpu::BufferUsages::VERTEX),
+                cbuf: init("mesh paint", bytemuck::cast_slice(&paint_vertices(m)), vertex),
+                ibuf: None,
+                count: pos.len() as u32,
+                rev: h.paint_rev,
+            }
+        } else {
+            GpuMesh {
+                vbuf: init("mesh vb", bytemuck::cast_slice(&m.positions), wgpu::BufferUsages::VERTEX),
+                cbuf: init("mesh paint", &vec![0u8; m.positions.len().max(1) * 4], vertex),
+                ibuf: Some(init("mesh ib", bytemuck::cast_slice(&m.triangles), wgpu::BufferUsages::INDEX)),
+                count: (m.triangles.len() * 3) as u32,
+                rev: h.paint_rev,
+            }
+        }
+    }
+
+    fn draw(&self, pass: &mut wgpu::RenderPass<'static>) {
+        pass.set_vertex_buffer(0, self.vbuf.slice(..));
+        pass.set_vertex_buffer(1, self.cbuf.slice(..));
+        match &self.ibuf {
+            Some(ib) => {
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.count, 0, 0..1);
+            }
+            None => pass.draw(0..self.count, 0..1),
+        }
+    }
+}
+
+/// Paint colour for each of the 3 vertices of every triangle.
+fn paint_vertices(m: &b3d_core::Mesh) -> Vec<u32> {
+    (0..m.triangles.len()).flat_map(|i| [m.paint_of(i); 3]).collect()
 }
 
 struct DynBuf {
@@ -176,11 +225,18 @@ impl ViewportRenderer {
         })];
         let opaque_target = [Some(wgpu::ColorTargetState { format: target, blend: None, write_mask: wgpu::ColorWrites::ALL })];
 
-        let mesh_vb = [Some(wgpu::VertexBufferLayout {
-            array_stride: 12,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3],
-        })];
+        let mesh_vb = [
+            Some(wgpu::VertexBufferLayout {
+                array_stride: 12,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+            }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: 4,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![1 => Unorm8x4],
+            }),
+        ];
         let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("mesh pipeline"),
             layout: Some(&mesh_layout),
@@ -336,22 +392,20 @@ impl egui_wgpu::CallbackTrait for ViewportFrame {
         let mut used = HashSet::new();
         for it in self.items.iter().chain(&self.ghosts) {
             used.insert(it.mesh.id);
-            r.meshes.entry(it.mesh.id).or_insert_with(|| {
-                let m = &it.mesh.mesh;
-                GpuMesh {
-                    vbuf: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("mesh vb"),
-                        contents: bytemuck::cast_slice(&m.positions),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }),
-                    ibuf: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("mesh ib"),
-                        contents: bytemuck::cast_slice(&m.triangles),
-                        usage: wgpu::BufferUsages::INDEX,
-                    }),
-                    count: (m.triangles.len() * 3) as u32,
+            let painted = it.mesh.mesh.is_painted();
+            match r.meshes.get_mut(&it.mesh.id) {
+                Some(g) if g.ibuf.is_none() == painted => {
+                    if g.rev != it.mesh.paint_rev {
+                        if painted {
+                            queue.write_buffer(&g.cbuf, 0, bytemuck::cast_slice(&paint_vertices(&it.mesh.mesh)));
+                        }
+                        g.rev = it.mesh.paint_rev;
+                    }
                 }
-            });
+                _ => {
+                    r.meshes.insert(it.mesh.id, GpuMesh::new(device, &it.mesh));
+                }
+            }
         }
         r.meshes.retain(|k, _| used.contains(k));
 
@@ -396,9 +450,7 @@ impl egui_wgpu::CallbackTrait for ViewportFrame {
         for (mesh_id, offset) in &r.frame {
             let Some(g) = r.meshes.get(mesh_id) else { continue };
             pass.set_bind_group(1, &r.model_bg, &[*offset]);
-            pass.set_vertex_buffer(0, g.vbuf.slice(..));
-            pass.set_index_buffer(g.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..g.count, 0, 0..1);
+            g.draw(pass);
         }
 
         let draw_lines = |pass: &mut wgpu::RenderPass<'static>, pipe: &wgpu::RenderPipeline, range: &std::ops::Range<u32>| {
@@ -416,9 +468,7 @@ impl egui_wgpu::CallbackTrait for ViewportFrame {
             for (mesh_id, offset) in &r.ghost_frame {
                 let Some(g) = r.meshes.get(mesh_id) else { continue };
                 pass.set_bind_group(1, &r.model_bg, &[*offset]);
-                pass.set_vertex_buffer(0, g.vbuf.slice(..));
-                pass.set_index_buffer(g.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..g.count, 0, 0..1);
+                g.draw(pass);
             }
         }
         draw_lines(pass, &r.overlay_pipeline, &r.line_ranges[2]);

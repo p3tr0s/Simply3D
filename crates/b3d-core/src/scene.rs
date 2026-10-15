@@ -12,6 +12,8 @@ pub struct PickHit {
     pub normal: Vec3,
     pub corners: [Vec3; 3],
     pub distance: f32,
+    /// Triangle index in the object's mesh.
+    pub tri: usize,
 }
 
 static NEXT_MESH_ID: AtomicU64 = AtomicU64::new(1);
@@ -21,11 +23,22 @@ static NEXT_MESH_ID: AtomicU64 = AtomicU64::new(1);
 pub struct MeshHandle {
     pub id: u64,
     pub mesh: Arc<Mesh>,
+    /// Changes whenever the paint changes while the geometry (and `id`) stays the same.
+    pub paint_rev: u64,
 }
 
 impl MeshHandle {
     pub fn new(mesh: Mesh) -> Self {
-        Self { id: NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed), mesh: Arc::new(mesh) }
+        let id = NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed);
+        Self { id, mesh: Arc::new(mesh), paint_rev: id }
+    }
+
+    /// Same geometry, new paint (keeps the id so geometry caches stay valid).
+    pub fn repaint(&mut self, f: impl FnOnce(&mut Vec<u32>)) {
+        let m = Arc::make_mut(&mut self.mesh);
+        f(m.paint_mut());
+        m.tidy_paint();
+        self.paint_rev = NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -292,7 +305,7 @@ impl Scene {
                         normal = -normal;
                     }
                     let corners = o.mesh.mesh.tri(tri).map(|p| m.transform_point3(p));
-                    best = Some((dist, PickHit { id: o.id, point, normal, corners, distance: dist }));
+                    best = Some((dist, PickHit { id: o.id, point, normal, corners, distance: dist, tri }));
                 }
             }
         }
