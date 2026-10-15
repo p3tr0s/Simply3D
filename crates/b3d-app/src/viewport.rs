@@ -305,7 +305,15 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
             DrawItem {
                 mesh: o.mesh.clone(),
                 model: m,
-                color: lin(o.color),
+                color: {
+                    let c = lin(o.color);
+                    if app.issues.0.contains(&o.id) || app.issues.1.contains(&o.id) {
+                        // off / below the plate: push toward warning red
+                        [c[0] * 0.35 + 0.65 * 0.9, c[1] * 0.35 + 0.65 * 0.08, c[2] * 0.35 + 0.65 * 0.05, c[3]]
+                    } else {
+                        c
+                    }
+                },
                 params: [
                     app.is_selected(o.id) as u8 as f32,
                     (app.hovered == Some(o.id)) as u8 as f32,
@@ -499,6 +507,7 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
         label(p, rect.center_top() + egui::vec2(0.0, 18.0), h.to_string(), Color32::WHITE);
     }
     axis_triad(app, ui, p, view);
+    plate_warnings(app, ui, view);
 }
 
 fn axis_triad(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
@@ -557,4 +566,44 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         app.select_all();
         ui.close();
     }
+}
+
+/// Floating notice in the viewport's top-right corner with one-click fixes.
+fn plate_warnings(app: &mut App, ui: &mut egui::Ui, view: &View) {
+    let (off, below) = app.issues.clone();
+    if off.is_empty() && below.is_empty() {
+        return;
+    }
+    let n = |v: &Vec<b3d_core::ObjectId>| if v.len() == 1 { "1 object".to_string() } else { format!("{} objects", v.len()) };
+    egui::Area::new(egui::Id::new("plate_warn"))
+        .fixed_pos(view.rect.right_top() + egui::vec2(-12.0, 12.0))
+        .pivot(egui::Align2::RIGHT_TOP)
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).fill(Color32::from_rgba_unmultiplied(70, 28, 24, 235)).show(ui, |ui| {
+                let warn = Color32::from_rgb(255, 170, 140);
+                if !off.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("⚠ {} outside the build plate", n(&off))).color(warn));
+                        if ui.small_button("Move onto plate").clicked() {
+                            app.fit_onto_plate(&off);
+                        }
+                        if ui.small_button("Select").clicked() {
+                            app.selection = off.clone();
+                        }
+                    });
+                }
+                if !below.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("⚠ {} below the plate", n(&below))).color(warn));
+                        if ui.small_button("Drop to plate").clicked() {
+                            app.drop_ids(&below);
+                        }
+                        if ui.small_button("Select").clicked() {
+                            app.selection = below.clone();
+                        }
+                    });
+                }
+            });
+        });
 }

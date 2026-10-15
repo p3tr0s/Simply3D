@@ -12,10 +12,14 @@ use b3d_core::scene::{MeshHandle, ObjectId, Scene, Transform};
 use b3d_core::sdf::{self, RoundOptions};
 use b3d_core::simplify::{self, SimplifyOptions};
 use b3d_core::smooth;
+use b3d_core::Progress;
 use b3d_core::{Aabb, Mesh};
 use glam::{Mat4, Quat, Vec2, Vec3};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::Arc;
 use std::time::Instant;
 use transform_gizmo_egui::Gizmo;
 
@@ -36,6 +40,9 @@ pub struct Settings {
     pub camera: OrbitCamera,
     pub weld_tolerance: f32,
     pub recent: Vec<PathBuf>,
+    /// Minutes between autosaves (0 = off).
+    pub autosave_minutes: f32,
+    pub recent_commands: Vec<String>,
 }
 
 impl Default for Settings {
@@ -55,6 +62,8 @@ impl Default for Settings {
             camera: OrbitCamera::default(),
             weld_tolerance: 1e-4,
             recent: vec![],
+            autosave_minutes: 2.0,
+            recent_commands: vec![],
         }
     }
 }
@@ -176,9 +185,24 @@ pub enum JobOutput {
 }
 
 pub struct Job {
+    pub progress: Progress,
     pub label: String,
     pub rx: Receiver<JobOutput>,
     pub started: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelTab {
+    Object,
+    Arrange,
+    Mesh,
+    Repair,
+}
+
+pub struct RecoveryInfo {
+    pub file: PathBuf,
+    pub original: Option<PathBuf>,
+    pub age_minutes: u64,
 }
 
 pub struct Status {
@@ -219,6 +243,21 @@ pub struct App {
     pub fit_on_next_frame: bool,
     pub last_title: String,
     pub encode_srgb: bool,
+    pub tab: PanelTab,
+    pub palette: Option<crate::commands::Palette>,
+    /// object id -> (mesh id, transform, world bounds)
+    pub bounds_cache: HashMap<ObjectId, (u64, Transform, Aabb)>,
+    pub edit_gen: u64,
+    pub autosaved_gen: u64,
+    pub last_autosave: Instant,
+    pub autosave_busy: Arc<AtomicBool>,
+    pub recovery: Option<RecoveryInfo>,
+    pub close_prompt: bool,
+    pub close_after_save: bool,
+    pub allow_close: bool,
+    pub pending_recovery_target: Option<Option<PathBuf>>,
+    /// (off the plate, below the plate), refreshed every frame
+    pub issues: (Vec<ObjectId>, Vec<ObjectId>),
 }
 
 impl App {
@@ -267,8 +306,22 @@ impl App {
             last_pointer: None,
             fit_on_next_frame: false,
             last_title: String::new(),
+            tab: PanelTab::Object,
+            palette: None,
+            bounds_cache: HashMap::new(),
+            edit_gen: 0,
+            autosaved_gen: 0,
+            last_autosave: Instant::now(),
+            autosave_busy: Arc::new(AtomicBool::new(false)),
+            recovery: None,
+            close_prompt: false,
+            close_after_save: false,
+            allow_close: false,
+            pending_recovery_target: None,
+            issues: (vec![], vec![]),
             encode_srgb,
         };
+        app.recovery = crate::autosave::find_recovery();
         // command-line files
         let files: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| Format::from_path(p).is_some()).collect();
         if !files.is_empty() {
@@ -292,6 +345,7 @@ impl App {
     pub fn checkpoint(&mut self, label: &str) {
         self.history.push(label, &self.scene);
         self.dirty = true;
+        self.edit_gen += 1;
     }
 
     /// Snapshot for continuous edits (drag values): only once per interaction.
@@ -307,6 +361,7 @@ impl App {
             self.info(format!("Undid: {l}"));
             self.prune_selection();
             self.dirty = true;
+            self.edit_gen += 1;
         }
     }
     pub fn redo(&mut self) {
@@ -314,6 +369,7 @@ impl App {
             self.info(format!("Redid: {l}"));
             self.prune_selection();
             self.dirty = true;
+            self.edit_gen += 1;
         }
     }
     fn prune_selection(&mut self) {
@@ -340,20 +396,32 @@ impl App {
 
     // ---------- background jobs ----------
 
-    pub fn spawn_job(&mut self, ctx: &egui::Context, label: impl Into<String>, f: impl FnOnce() -> JobOutput + Send + 'static) {
+    pub fn spawn_job(&mut self, ctx: &egui::Context, label: impl Into<String>, f: impl FnOnce(&Progress) -> JobOutput + Send + 'static) {
         if self.job.is_some() {
             self.error("Another operation is still running");
             return;
         }
         let (tx, rx) = channel();
         let ctx = ctx.clone();
+        let progress = Progress::new();
+        let p = progress.clone();
         std::thread::spawn(move || {
-            let out =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| JobOutput::Error("operation crashed".into()));
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&p)))
+                .unwrap_or_else(|_| JobOutput::Error("operation crashed".into()));
             let _ = tx.send(out);
             ctx.request_repaint();
         });
-        self.job = Some(Job { label: label.into(), rx, started: Instant::now() });
+        self.job = Some(Job { progress, label: label.into(), rx, started: Instant::now() });
+    }
+
+    /// Stop the running operation. Work that can't be interrupted (booleans) finishes
+    /// in the background and its result is discarded.
+    pub fn cancel_job(&mut self) {
+        if let Some(j) = self.job.take() {
+            j.progress.cancel();
+            self.close_after_save = false;
+            self.info(format!("Cancelled: {}", j.label.trim_end_matches('…')));
+        }
     }
 
     pub fn poll_job(&mut self) {
@@ -369,6 +437,11 @@ impl App {
                     sel.extend(self.finish_import(objects, &path));
                 }
                 self.selection = sel;
+                if let Some(orig) = self.pending_recovery_target.take() {
+                    self.current_file = orig;
+                    self.dirty = true;
+                    self.info("Recovered unsaved work — save it to keep it");
+                }
             }
             JobOutput::Replace { label, remove, add, message } => {
                 self.checkpoint(&label);
@@ -412,8 +485,21 @@ impl App {
                     self.dirty = false;
                 }
                 self.push_recent(path);
+                if !self.dirty {
+                    crate::autosave::clear();
+                    self.autosaved_gen = self.edit_gen;
+                }
+                if self.close_after_save {
+                    self.allow_close = true;
+                    self.close_after_save = false;
+                }
             }
-            JobOutput::Error(e) => self.error(e),
+            JobOutput::Error(e) => {
+                self.close_after_save = false;
+                if e != "cancelled" {
+                    self.error(e)
+                }
+            }
         }
     }
 
@@ -441,9 +527,12 @@ impl App {
     pub fn import_files(&mut self, files: Vec<PathBuf>, ctx: &egui::Context) {
         let label =
             format!("Loading {}", files.iter().map(|f| f.file_name().unwrap_or_default().to_string_lossy()).collect::<Vec<_>>().join(", "));
-        self.spawn_job(ctx, label, move || {
+        self.spawn_job(ctx, label, move |p| {
             let mut groups = vec![];
             for f in &files {
+                if p.is_cancelled() {
+                    return JobOutput::Error("cancelled".into());
+                }
                 match io::load(f) {
                     Ok(o) => groups.push((f.clone(), o)),
                     Err(e) => return JobOutput::Error(format!("{}: {e}", f.display())),
@@ -457,9 +546,13 @@ impl App {
         // place the imported group: centred in XY, resting on the plate, beside existing objects
         let group = objects.iter().fold(Aabb::EMPTY, |b, o| b.union(&o.mesh.bounds()));
         let existing = self.scene.bounds();
+        let recovered = crate::autosave::is_recovery_file(path);
         let mut offset = Vec3::new(-group.center().x, -group.center().y, -group.min.z);
         if !existing.is_empty() {
             offset.x = existing.max.x + 10.0 - group.min.x;
+        }
+        if recovered {
+            offset = Vec3::ZERO; // restore the exact layout
         }
         let n = objects.len();
         let tris: usize = objects.iter().map(|o| o.mesh.triangles.len()).sum();
@@ -473,7 +566,9 @@ impl App {
             self.current_file = Some(path.to_path_buf());
             self.dirty = false;
         }
-        self.push_recent(path.to_path_buf());
+        if !recovered {
+            self.push_recent(path.to_path_buf());
+        }
         self.fit_on_next_frame = true;
         self.info(format!("Imported {n} object(s), {tris} triangles from {}", path.display()));
         ids
@@ -522,7 +617,7 @@ impl App {
             self.error("Nothing to save");
             return;
         }
-        self.spawn_job(ctx, format!("Saving {}", path.display()), move || match io::save(&path, &objs) {
+        self.spawn_job(ctx, format!("Saving {}", path.display()), move |_p| match io::save(&path, &objs) {
             Ok(()) => JobOutput::Saved { path },
             Err(e) => JobOutput::Error(format!("Save failed: {e}")),
         });
@@ -534,6 +629,7 @@ impl App {
         self.selection.clear();
         self.current_file = None;
         self.dirty = false;
+        crate::autosave::clear();
     }
 
     // ---------- object actions ----------
@@ -776,7 +872,7 @@ impl App {
         let remove = self.selection.clone();
         let base_mesh = base.world_mesh();
         let name = format!("{op:?}");
-        self.spawn_job(ctx, format!("{name}…"), move || match csg::boolean_many(&base_mesh, &others, op) {
+        self.spawn_job(ctx, format!("{name}…"), move |_p| match csg::boolean_many(&base_mesh, &others, op) {
             Ok(m) if m.is_empty() => JobOutput::Error(format!("{name}: result is empty")),
             Ok(m) => JobOutput::Replace {
                 label: name.clone(),
@@ -799,7 +895,7 @@ impl App {
         let keep = self.cut.keep;
         let objs: Vec<_> =
             self.selection.iter().filter_map(|id| self.scene.get(*id)).map(|o| (o.id, o.name.clone(), o.color, o.world_mesh())).collect();
-        self.spawn_job(ctx, "Cutting…", move || {
+        self.spawn_job(ctx, "Cutting…", move |_p| {
             let mut add = vec![];
             let mut remove = vec![];
             for (id, name, color, m) in objs {
@@ -832,7 +928,7 @@ impl App {
         if objs.is_empty() {
             return;
         }
-        self.spawn_job(ctx, "Splitting…", move || {
+        self.spawn_job(ctx, "Splitting…", move |_p| {
             let mut add = vec![];
             let mut remove = vec![];
             for (id, name, color, m) in objs {
@@ -859,7 +955,7 @@ impl App {
         if objs.is_empty() {
             return;
         }
-        self.spawn_job(ctx, "Repairing…", move || {
+        self.spawn_job(ctx, "Repairing…", move |_p| {
             let mut out = vec![];
             let mut logs = vec![];
             for (id, mut m) in objs {
@@ -886,18 +982,20 @@ impl App {
             return;
         }
         let (pct, err) = (self.mesh_tools.simplify_pct, self.mesh_tools.simplify_err);
-        self.spawn_job(ctx, "Simplifying…", move || {
+        self.spawn_job(ctx, "Simplifying…", move |p| {
             let (mut before, mut after) = (0, 0);
-            let meshes = objs
-                .into_iter()
-                .map(|(id, mut m, scale)| {
-                    before += m.triangles.len();
-                    let target = ((m.triangles.len() as f32) * pct / 100.0) as usize;
-                    simplify::simplify(&mut m, SimplifyOptions { target_triangles: target, max_error: (err / scale) as f64 });
-                    after += m.triangles.len();
-                    (id, m)
-                })
-                .collect();
+            let n = objs.len() as f32;
+            let mut meshes = vec![];
+            for (i, (id, mut m, scale)) in objs.into_iter().enumerate() {
+                before += m.triangles.len();
+                let target = ((m.triangles.len() as f32) * pct / 100.0) as usize;
+                let opts = SimplifyOptions { target_triangles: target, max_error: (err / scale) as f64 };
+                if let Err(e) = simplify::simplify_with(&mut m, opts, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
+                    return JobOutput::Error(e.to_string());
+                }
+                after += m.triangles.len();
+                meshes.push((id, m));
+            }
             JobOutput::ReplaceMeshes { label: "Simplify".into(), meshes, message: format!("Simplified {before} to {after} triangles") }
         });
     }
@@ -916,24 +1014,29 @@ impl App {
                 return;
             }
         }
-        self.spawn_job(ctx, "Smoothing…", move || {
+        self.spawn_job(ctx, "Smoothing…", move |p| {
             let mut total = 0;
-            let meshes = objs
-                .into_iter()
-                .map(|(id, m, _)| {
-                    let out = match t.smooth_mode {
-                        SmoothMode::Subdivide => smooth::subdivide_loop(&m, t.smooth_levels, crease),
-                        SmoothMode::SubdivideFlat => smooth::subdivide_flat(&m, t.smooth_levels),
-                        SmoothMode::Relax => {
-                            let mut m = m;
-                            smooth::taubin(&mut m, t.relax_iters, crease);
-                            m
+            let n = objs.len() as f32;
+            let mut meshes = vec![];
+            for (i, (id, m, _)) in objs.into_iter().enumerate() {
+                if p.is_cancelled() {
+                    return JobOutput::Error("cancelled".into());
+                }
+                p.set(i as f32 / n);
+                let out = match t.smooth_mode {
+                    SmoothMode::Subdivide => smooth::subdivide_loop(&m, t.smooth_levels, crease),
+                    SmoothMode::SubdivideFlat => smooth::subdivide_flat(&m, t.smooth_levels),
+                    SmoothMode::Relax => {
+                        let mut m = m;
+                        if let Err(e) = smooth::taubin_with(&mut m, t.relax_iters, crease, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
+                            return JobOutput::Error(e.to_string());
                         }
-                    };
-                    total += out.triangles.len();
-                    (id, out)
-                })
-                .collect();
+                        m
+                    }
+                };
+                total += out.triangles.len();
+                meshes.push((id, out));
+            }
             JobOutput::ReplaceMeshes { label: "Smooth".into(), meshes, message: format!("Smoothed: {total} triangles") }
         });
     }
@@ -952,12 +1055,13 @@ impl App {
             simplify: t.round_simplify,
             ..Default::default()
         };
-        self.spawn_job(ctx, "Rounding edges…", move || {
+        self.spawn_job(ctx, "Rounding edges…", move |p| {
             let mut add = vec![];
             let mut remove = vec![];
             let mut info = vec![];
-            for (id, name, color, m) in objs {
-                match sdf::round_edges(&m, opts) {
+            let n = objs.len() as f32;
+            for (i, (id, name, color, m)) in objs.into_iter().enumerate() {
+                match sdf::round_edges_with(&m, opts, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
                     Ok((out, h)) => {
                         let lost = m.connected_components().len() > out.connected_components().len();
                         info.push(format!(
@@ -968,11 +1072,114 @@ impl App {
                         remove.push(id);
                         add.push((name, out, color));
                     }
+                    Err(b3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
                     Err(e) => return JobOutput::Error(format!("Round edges failed on {name}: {e}")),
                 }
             }
             JobOutput::Replace { label: "Round edges".into(), remove, add, message: format!("Rounded edges — {}", info.join("; ")) }
         });
+    }
+
+    /// World bounds of an object, cached until its mesh or transform changes.
+    pub fn object_bounds(&mut self, id: ObjectId) -> Option<Aabb> {
+        let o = self.scene.get(id)?;
+        if let Some((mid, t, b)) = self.bounds_cache.get(&id) {
+            if *mid == o.mesh.id && *t == o.transform {
+                return Some(*b);
+            }
+        }
+        let b = o.world_bounds();
+        self.bounds_cache.insert(id, (o.mesh.id, o.transform, b));
+        Some(b)
+    }
+
+    /// (objects sticking out of the plate area, objects below the plate)
+    pub fn plate_issues(&mut self) -> (Vec<ObjectId>, Vec<ObjectId>) {
+        let half = self.settings.plate * 0.5;
+        let tol = 0.01;
+        let ids: Vec<ObjectId> = self.scene.objects.iter().filter(|o| o.visible).map(|o| o.id).collect();
+        self.bounds_cache.retain(|k, _| ids.contains(k));
+        let (mut off, mut below) = (vec![], vec![]);
+        for id in ids {
+            let Some(b) = self.object_bounds(id) else { continue };
+            if b.min.x < -half.x - tol || b.max.x > half.x + tol || b.min.y < -half.y - tol || b.max.y > half.y + tol {
+                off.push(id);
+            }
+            if b.min.z < -tol {
+                below.push(id);
+            }
+        }
+        (off, below)
+    }
+
+    /// Move the given objects (as a group) back inside the plate, keeping their layout.
+    pub fn fit_onto_plate(&mut self, ids: &[ObjectId]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.checkpoint("Move onto plate");
+        let half = self.settings.plate * 0.5;
+        for &id in ids {
+            let Some(b) = self.object_bounds(id) else { continue };
+            let mut d = Vec3::ZERO;
+            for a in 0..2 {
+                if b.size()[a] > half[a] * 2.0 {
+                    d[a] = -b.center()[a]; // too big: centre it
+                } else if b.min[a] < -half[a] {
+                    d[a] = -half[a] - b.min[a];
+                } else if b.max[a] > half[a] {
+                    d[a] = half[a] - b.max[a];
+                }
+            }
+            if let Some(o) = self.scene.get_mut(id) {
+                o.transform.translation += d;
+            }
+        }
+    }
+
+    pub fn drop_ids(&mut self, ids: &[ObjectId]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.checkpoint("Drop to plate");
+        for &id in ids {
+            self.scene.drop_to_plate(id);
+        }
+    }
+
+    // ---------- autosave & closing ----------
+
+    fn tick_autosave(&mut self) {
+        let mins = self.settings.autosave_minutes;
+        if mins <= 0.0 || self.edit_gen == self.autosaved_gen || self.autosave_busy.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.last_autosave.elapsed().as_secs_f32() < mins * 60.0 || self.scene.objects.is_empty() {
+            return;
+        }
+        self.last_autosave = Instant::now();
+        self.autosaved_gen = self.edit_gen;
+        let objs = self.export_objects(false);
+        crate::autosave::write_async(objs, self.current_file.clone(), self.autosave_busy.clone());
+    }
+
+    pub fn recover(&mut self, ctx: &egui::Context) {
+        if let Some(r) = self.recovery.take() {
+            let original = r.original.clone();
+            self.import_files(vec![r.file], ctx);
+            // after loading, treat as unsaved work belonging to the original file
+            self.pending_recovery_target = Some(original);
+        }
+    }
+
+    fn handle_close(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.dirty && !self.allow_close && !self.scene.objects.is_empty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close_prompt = true;
+        }
+        if self.allow_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 
     /// Cached analysis of the primary selection's local mesh.
@@ -996,6 +1203,11 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_job();
+        self.tick_autosave();
+        self.handle_close(ctx);
+        if self.job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // finish coalesced edits once nothing is being dragged or typed into
         if !ctx.egui_is_using_pointer() && !ctx.egui_wants_keyboard_input() {
             self.pending_edit = None;
@@ -1028,5 +1240,12 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, "settings", &self.settings);
+    }
+
+    fn on_exit(&mut self) {
+        // a clean exit leaves nothing to recover
+        if !self.dirty || self.allow_close {
+            crate::autosave::clear();
+        }
     }
 }

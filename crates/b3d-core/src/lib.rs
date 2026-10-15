@@ -11,6 +11,7 @@ pub mod history;
 pub mod io;
 pub mod mesh;
 pub mod primitives;
+pub mod progress;
 pub mod repair;
 pub mod scene;
 pub mod sdf;
@@ -19,6 +20,7 @@ pub mod smooth;
 
 pub use glam;
 pub use mesh::{Aabb, Mesh};
+pub use progress::Progress;
 pub use scene::{Object, ObjectId, Scene, Transform};
 
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +33,8 @@ pub enum Error {
     Unsupported(String),
     #[error("boolean failed: {0}")]
     Boolean(String),
+    #[error("cancelled")]
+    Cancelled,
     #[error("zip error: {0}")]
     Zip(#[from] zip::result::ZipError),
 }

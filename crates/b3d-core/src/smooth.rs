@@ -126,6 +126,11 @@ pub fn subdivide_loop(m: &Mesh, levels: u32, crease_deg: Option<f32>) -> Mesh {
 /// Taubin smoothing (λ = 0.5, μ = -0.53). Boundary vertices stay fixed; with `crease_deg`,
 /// vertices on sharp edges stay fixed too.
 pub fn taubin(m: &mut Mesh, iterations: u32, crease_deg: Option<f32>) {
+    let _ = taubin_with(m, iterations, crease_deg, &crate::Progress::new());
+}
+
+/// [`taubin`] with progress/cancellation (the mesh may be partially smoothed on cancel).
+pub fn taubin_with(m: &mut Mesh, iterations: u32, crease_deg: Option<f32>, prog: &crate::Progress) -> crate::Result<()> {
     let ef = edge_faces(m);
     let sharp = sharp_edges(m, &ef, crease_deg);
     let nv = m.positions.len();
@@ -149,10 +154,13 @@ pub fn taubin(m: &mut Mesh, iterations: u32, crease_deg: Option<f32>) {
             pos[v] = old[v] + (avg - old[v]) * k;
         }
     };
-    for _ in 0..iterations {
+    for it in 0..iterations {
+        prog.check()?;
+        prog.set(it as f32 / iterations.max(1) as f32);
         step(&mut m.positions, 0.5);
         step(&mut m.positions, -0.53);
     }
+    Ok(())
 }
 
 #[cfg(test)]

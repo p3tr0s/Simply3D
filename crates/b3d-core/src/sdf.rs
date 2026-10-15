@@ -6,8 +6,8 @@
 
 use crate::analysis::analyze;
 use crate::mesh::{Aabb, Mesh};
-use crate::simplify::{simplify, SimplifyOptions};
-use crate::{Error, Result};
+use crate::simplify::{simplify_with, SimplifyOptions};
+use crate::{Error, Progress, Result};
 use glam::Vec3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +124,7 @@ fn closest_on_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 }
 
 /// Spread closest points from seeded voxels to the whole grid (two raster sweeps, twice).
-fn propagate(g: &Grid, cp: &mut [Vec3], d2: &mut [f32]) {
+fn propagate(g: &Grid, cp: &mut [Vec3], d2: &mut [f32], prog: &Progress) -> Result<()> {
     let [nx, ny, nz] = g.n;
     let mut offs: Vec<(isize, isize, isize)> = vec![];
     for dz in -1..=1isize {
@@ -137,8 +137,12 @@ fn propagate(g: &Grid, cp: &mut [Vec3], d2: &mut [f32]) {
         }
     }
     let back: Vec<(isize, isize, isize)> = offs.iter().map(|&(a, b, c)| (-a, -b, -c)).collect();
-    let mut sweep = |offs: &[(isize, isize, isize)], forward: bool| {
+    let mut sweep = |offs: &[(isize, isize, isize)], forward: bool, pass: usize| -> Result<()> {
         for kk in 0..nz {
+            if kk % 4 == 0 {
+                prog.check()?;
+                prog.set((pass * nz + kk) as f32 / (4 * nz) as f32);
+            }
             let k = if forward { kk } else { nz - 1 - kk };
             for jj in 0..ny {
                 let j = if forward { jj } else { ny - 1 - jj };
@@ -168,11 +172,13 @@ fn propagate(g: &Grid, cp: &mut [Vec3], d2: &mut [f32]) {
                 }
             }
         }
+        Ok(())
     };
-    for _ in 0..2 {
-        sweep(&offs, true);
-        sweep(&back, false);
+    for round in 0..2 {
+        sweep(&offs, true, round * 2)?;
+        sweep(&back, false, round * 2 + 1)?;
     }
+    Ok(())
 }
 
 /// Inside/outside by ray parity along +X for every (y, z) row.
@@ -233,12 +239,17 @@ fn inside_mask(m: &Mesh, g: &Grid) -> Vec<bool> {
 }
 
 /// Exact signed distance to the mesh (negative inside).
-fn mesh_sdf(m: &Mesh, g: &Grid) -> Field {
+fn mesh_sdf(m: &Mesh, g: &Grid, prog: &Progress) -> Result<Field> {
     let n = g.len();
     let mut cp = vec![Vec3::ZERO; n];
     let mut d2 = vec![f32::INFINITY; n];
     let band = g.h * 1.5;
+    let nt = m.triangles.len().max(1);
     for t in 0..m.triangles.len() {
+        if t % 512 == 0 {
+            prog.check()?;
+            prog.set(0.3 * t as f32 / nt as f32);
+        }
         let [a, b, c] = m.tri(t);
         let lo = ((a.min(b).min(c) - Vec3::splat(band) - g.origin) / g.h).floor().max(Vec3::ZERO);
         let hi = ((a.max(b).max(c) + Vec3::splat(band) - g.origin) / g.h).ceil();
@@ -258,10 +269,11 @@ fn mesh_sdf(m: &Mesh, g: &Grid) -> Field {
             }
         }
     }
-    propagate(g, &mut cp, &mut d2);
+    propagate(g, &mut cp, &mut d2, &prog.range(0.3, 0.9))?;
     let inside = inside_mask(m, g);
+    prog.set(1.0);
     let d = d2.iter().zip(inside).map(|(d, ins)| if ins { -d.sqrt() } else { d.sqrt() }).collect();
-    Field { d, cp, shift: 0.0 }
+    Ok(Field { d, cp, shift: 0.0 })
 }
 
 const CORNERS: [(usize, usize, usize); 8] = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0), (0, 0, 1), (1, 0, 1), (0, 1, 1), (1, 1, 1)];
@@ -317,7 +329,7 @@ fn cell_vertex(g: &Grid, f: &Field, level: f32, i: usize, j: usize, k: usize) ->
 
 /// Distance field to the iso-surface `f.val == level` (negative where f.val < level).
 /// Seeds: edge crossings plus dual-contouring vertices (exact at sharp features).
-fn redistance(g: &Grid, f: &Field, level: f32) -> Field {
+fn redistance(g: &Grid, f: &Field, level: f32, prog: &Progress) -> Result<Field> {
     let n = g.len();
     let mut cp = vec![Vec3::ZERO; n];
     let mut d2 = vec![f32::INFINITY; n];
@@ -330,6 +342,8 @@ fn redistance(g: &Grid, f: &Field, level: f32) -> Field {
         }
     };
     for k in 0..nz {
+        prog.check()?;
+        prog.set(0.25 * k as f32 / nz as f32);
         for j in 0..ny {
             for i in 0..nx {
                 let id = g.idx(i, j, k);
@@ -360,15 +374,15 @@ fn redistance(g: &Grid, f: &Field, level: f32) -> Field {
             }
         }
     }
-    propagate(g, &mut cp, &mut d2);
+    propagate(g, &mut cp, &mut d2, &prog.range(0.25, 1.0))?;
     let d = (0..n).map(|id| if f.val(id) < level { -d2[id].sqrt() } else { d2[id].sqrt() }).collect();
-    Field { d, cp, shift: 0.0 }
+    Ok(Field { d, cp, shift: 0.0 })
 }
 
 /// Extract the zero iso-surface with marching tetrahedra (Kuhn 6-tet split of each
 /// cell). Unlike Surface Nets / classic Marching Cubes this has no ambiguous cases,
 /// so the output is always a closed 2-manifold. Outward-oriented.
-fn extract_surface(g: &Grid, fld: &Field) -> Mesh {
+fn extract_surface(g: &Grid, fld: &Field, prog: &Progress) -> Result<Mesh> {
     use std::collections::HashMap;
     let [nx, ny, nz] = g.n;
     // nudge exact zeros so every crossing lies strictly inside an edge
@@ -384,6 +398,8 @@ fn extract_surface(g: &Grid, fld: &Field) -> Mesh {
     let mut m = Mesh::default();
     let mut verts: HashMap<u64, u32> = HashMap::new();
     for k in 0..nz - 1 {
+        prog.check()?;
+        prog.set(k as f32 / nz as f32);
         for j in 0..ny - 1 {
             for i in 0..nx - 1 {
                 let ids: [usize; 8] = CORNERS.map(|(a, b, c)| g.idx(i + a, j + b, k + c));
@@ -447,7 +463,7 @@ fn extract_surface(g: &Grid, fld: &Field) -> Mesh {
             }
         }
     }
-    m
+    Ok(m)
 }
 
 /// Default detail: ~5 voxels across the radius, but not finer than size/350.
@@ -464,12 +480,13 @@ fn pick_voxel(b: &Aabb, pad: f32, wanted: f32, max_voxels: usize) -> f32 {
     h
 }
 
-fn finish(mut out: Mesh, h: f32, simplify_after: bool) -> Result<Mesh> {
+fn finish(mut out: Mesh, h: f32, simplify_after: bool, prog: &Progress) -> Result<Mesh> {
     if out.is_empty() {
         return Err(Error::Parse("result is empty — the radius is too large for this part".into()));
     }
     if simplify_after {
-        simplify(&mut out, SimplifyOptions { target_triangles: 0, max_error: (h * 0.05) as f64 });
+        prog.stage("Reducing triangles");
+        simplify_with(&mut out, SimplifyOptions { target_triangles: 0, max_error: (h * 0.05) as f64 }, prog)?;
     }
     out.compact();
     if out.volume() < 0.0 {
@@ -488,6 +505,11 @@ fn check_closed(m: &Mesh) -> Result<()> {
 
 /// Round the edges of a closed mesh with radius `opts.radius` (mm). Returns (mesh, voxel size used).
 pub fn round_edges(m: &Mesh, opts: RoundOptions) -> Result<(Mesh, f32)> {
+    round_edges_with(m, opts, &Progress::new())
+}
+
+/// [`round_edges`] with progress reporting and cancellation.
+pub fn round_edges_with(m: &Mesh, opts: RoundOptions, prog: &Progress) -> Result<(Mesh, f32)> {
     check_closed(m)?;
     let r = opts.radius.max(0.0);
     let b = m.bounds();
@@ -495,31 +517,47 @@ pub fn round_edges(m: &Mesh, opts: RoundOptions) -> Result<(Mesh, f32)> {
     let pad = r + wanted * 4.0;
     let h = pick_voxel(&b, pad, wanted, opts.max_voxels);
     let g = Grid::new(&b, pad + 2.0 * h, h);
-    let mut f = mesh_sdf(m, &g);
+    let both = opts.mode == RoundMode::Both;
+    // progress budget: sdf 0-.3, morphology .3-.75, meshing .75-.85, simplify .85-1
+    prog.stage("Distance field");
+    let mut f = mesh_sdf(m, &g, &prog.range(0.0, 0.3))?;
+    let (mid, end) = (if both { 0.525 } else { 0.75 }, 0.75);
     if matches!(opts.mode, RoundMode::Convex | RoundMode::Both) {
         // opening: erode by r, dilate by r
-        f = redistance(&g, &f, -r);
+        prog.stage("Rounding outside edges");
+        f = redistance(&g, &f, -r, &prog.range(0.3, mid))?;
         f.shift = -r;
     }
     if matches!(opts.mode, RoundMode::Concave | RoundMode::Both) {
         // closing: dilate by r, erode by r
-        f = redistance(&g, &f, r);
+        prog.stage("Filling inside edges");
+        f = redistance(&g, &f, r, &prog.range(if both { mid } else { 0.3 }, end))?;
         f.shift = r;
     }
-    Ok((finish(extract_surface(&g, &f), h, opts.simplify)?, h))
+    prog.stage("Building surface");
+    let out = extract_surface(&g, &f, &prog.range(0.75, 0.85))?;
+    drop(f);
+    Ok((finish(out, h, opts.simplify, &prog.range(0.85, 1.0))?, h))
 }
 
 /// Grow (positive) or shrink (negative) a closed mesh by `distance` mm.
 pub fn offset(m: &Mesh, distance: f32, voxel: f32, max_voxels: usize) -> Result<(Mesh, f32)> {
+    offset_with(m, distance, voxel, max_voxels, &Progress::new())
+}
+
+pub fn offset_with(m: &Mesh, distance: f32, voxel: f32, max_voxels: usize, prog: &Progress) -> Result<(Mesh, f32)> {
     check_closed(m)?;
     let b = m.bounds();
     let wanted = if voxel > 0.0 { voxel } else { auto_voxel(distance.abs(), &b) };
     let pad = distance.max(0.0) + wanted * 4.0;
     let h = pick_voxel(&b, pad, wanted, max_voxels);
     let g = Grid::new(&b, pad + 2.0 * h, h);
-    let mut f = mesh_sdf(m, &g);
+    prog.stage("Distance field");
+    let mut f = mesh_sdf(m, &g, &prog.range(0.0, 0.6))?;
     f.shift = -distance;
-    Ok((finish(extract_surface(&g, &f), h, true)?, h))
+    prog.stage("Building surface");
+    let out = extract_surface(&g, &f, &prog.range(0.6, 0.75))?;
+    Ok((finish(out, h, true, &prog.range(0.75, 1.0))?, h))
 }
 
 #[cfg(test)]
@@ -531,7 +569,7 @@ mod tests {
     fn sdf_of_cube_is_exact() {
         let m = cuboid(Vec3::splat(10.0));
         let g = Grid::new(&m.bounds(), 3.0, 0.5);
-        let f = mesh_sdf(&m, &g);
+        let f = mesh_sdf(&m, &g, &Progress::new()).unwrap();
         let [nx, ny, nz] = g.n;
         for k in (0..nz).step_by(3) {
             for j in (0..ny).step_by(3) {
@@ -584,6 +622,14 @@ mod tests {
         let (o, _) = round_edges(&l, RoundOptions { radius: 3.0, mode: RoundMode::Concave, voxel: 0.25, ..Default::default() }).unwrap();
         let fillet = (9.0 - std::f64::consts::PI * 9.0 / 4.0) * 10.0; // (r² - πr²/4) × length
         assert!((o.volume() - (v0 + fillet)).abs() < 3.0, "{} vs {}", o.volume(), v0 + fillet);
+    }
+
+    #[test]
+    fn cancel_stops_early() {
+        let p = Progress::new();
+        p.cancel();
+        let r = round_edges_with(&cuboid(Vec3::splat(20.0)), RoundOptions::default(), &p);
+        assert!(matches!(r, Err(Error::Cancelled)));
     }
 
     #[test]

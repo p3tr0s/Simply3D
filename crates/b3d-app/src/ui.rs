@@ -1,7 +1,8 @@
 //! Panels, menus, dialogs and keyboard shortcuts.
 
-use crate::app::{App, CutKeep, GizmoKind, PosRef, Tool};
+use crate::app::{App, CutKeep, GizmoKind, PanelTab, PosRef, Tool};
 use crate::camera::ViewPreset;
+use crate::expr::{self, Kind};
 use b3d_core::csg::BoolOp;
 use b3d_core::primitives::Primitive;
 use egui::{Color32, Key, KeyboardShortcut, Modifiers, RichText};
@@ -10,6 +11,14 @@ use glam::Vec3;
 pub const ACCENT: Color32 = Color32::from_rgb(56, 132, 255);
 const AXIS_COLORS: [Color32; 3] = [Color32::from_rgb(235, 80, 80), Color32::from_rgb(90, 200, 90), Color32::from_rgb(80, 140, 255)];
 const AXIS_NAMES: [&str; 3] = ["X", "Y", "Z"];
+
+/// DragValue that also accepts typed expressions and units (see expr.rs).
+pub fn num(v: &mut f32, kind: Kind) -> egui::DragValue<'_> {
+    let cur = *v as f64;
+    egui::DragValue::new(v).custom_parser(move |s| expr::eval(s, cur, kind)).update_while_editing(false)
+}
+
+const NUM_TIP: &str = "Type a value or an expression: 20+5, (10+2)*3, 1in, 2.5cm, *2, /4, 50%";
 
 pub fn apply_theme(ctx: &egui::Context, dark: bool) {
     let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
@@ -29,6 +38,12 @@ pub fn apply_theme(ctx: &egui::Context, dark: bool) {
 
 pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     let sc = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
+    if sc(Modifiers::COMMAND, Key::K) || sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::P) || sc(Modifiers::NONE, Key::F3) {
+        app.palette = if app.palette.is_some() { None } else { Some(crate::commands::Palette::new()) };
+    }
+    if app.palette.is_some() {
+        return; // the palette owns the keyboard
+    }
     if sc(Modifiers::COMMAND, Key::O) {
         app.open_dialog(ctx);
     }
@@ -60,6 +75,10 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         app.delete_selected();
     }
     if key(Key::Escape) {
+        if app.job.is_some() {
+            app.cancel_job();
+            return;
+        }
         if app.tool != Tool::Select {
             app.tool = Tool::Select;
         } else {
@@ -126,15 +145,15 @@ impl App {
 }
 
 pub fn draw(app: &mut App, ui: &mut egui::Ui) {
+    app.issues = app.plate_issues();
     menu_bar(app, ui);
     toolbar(app, ui);
     status_bar(app, ui);
     egui::Panel::left("objects").resizable(true).default_size(210.0).show(ui, |ui| object_list(app, ui));
-    egui::Panel::right("props").resizable(true).default_size(300.0).show(ui, |ui| {
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| properties(app, ui));
-    });
+    egui::Panel::right("props").resizable(true).default_size(310.0).show(ui, |ui| properties(app, ui));
     egui::CentralPanel::no_frame().show(ui, |ui| crate::viewport::viewport(app, ui));
     dialogs(app, ui.ctx());
+    crate::commands::show(app, ui.ctx());
 }
 
 fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
@@ -264,6 +283,9 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 }
             });
             ui.menu_button("Help", |ui| {
+                if ui.add(egui::Button::new("Command palette").shortcut_text("Ctrl+K")).clicked() {
+                    app.palette = Some(crate::commands::Palette::new());
+                }
                 if ui.button("Keyboard & mouse").clicked() {
                     app.show_shortcuts = true;
                 }
@@ -283,6 +305,10 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             let ctx = ui.ctx().clone();
+            if ui.button("🔍 Commands").on_hover_text("Search every action (Ctrl+K)").clicked() {
+                app.palette = Some(crate::commands::Palette::new());
+            }
+            ui.separator();
             if ui.button("📂 Open").on_hover_text("Open / import STL, OBJ, PLY, 3MF (Ctrl+O)").clicked() {
                 app.open_dialog(&ctx);
             }
@@ -353,9 +379,21 @@ fn status_bar(app: &mut App, ui: &mut egui::Ui) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
             if let Some(job) = &app.job {
-                ui.spinner();
-                ui.label(format!("{} {:.1}s", job.label, job.started.elapsed().as_secs_f32()));
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                let f = job.progress.fraction();
+                let stage = job.progress.stage_text();
+                let secs = job.started.elapsed().as_secs_f32();
+                let text = if stage.is_empty() { job.label.clone() } else { format!("{} — {stage}", job.label.trim_end_matches('…')) };
+                let bar = egui::ProgressBar::new(f).desired_width(220.0).show_percentage();
+                let bar = if f <= 0.0 { bar.animate(true) } else { bar };
+                ui.add(bar);
+                ui.label(format!("{text}  {secs:.0}s"));
+                let mut cancel = false;
+                if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                    cancel = true;
+                }
+                if cancel {
+                    app.cancel_job();
+                }
             } else if let Some(s) = &app.status {
                 let t = RichText::new(&s.text);
                 ui.label(if s.error { t.color(Color32::from_rgb(255, 110, 100)) } else { t });
@@ -403,6 +441,16 @@ fn object_list(app: &mut App, ui: &mut egui::Ui) {
                 if ui.selectable_label(selected, text).clicked() {
                     clicked = Some(o.id);
                 }
+                let off = app.issues.0.contains(&o.id);
+                let below = app.issues.1.contains(&o.id);
+                if off || below {
+                    let tip = match (off, below) {
+                        (true, true) => "Outside the build plate and below it",
+                        (true, false) => "Outside the build plate",
+                        _ => "Below the build plate",
+                    };
+                    ui.label(RichText::new("⚠").color(Color32::from_rgb(255, 120, 80))).on_hover_text(tip);
+                }
             });
         }
         if let Some(id) = clicked {
@@ -424,7 +472,8 @@ fn object_list(app: &mut App, ui: &mut egui::Ui) {
 
 fn axis_drag(ui: &mut egui::Ui, axis: usize, v: &mut f32, speed: f64, suffix: &str, decimals: usize) -> egui::Response {
     ui.label(RichText::new(AXIS_NAMES[axis]).color(AXIS_COLORS[axis]).strong());
-    ui.add(egui::DragValue::new(v).speed(speed).suffix(suffix).max_decimals(decimals).min_decimals(decimals.min(2)))
+    let kind = if suffix.contains('°') { Kind::Angle } else { Kind::Length };
+    ui.add(num(v, kind).speed(speed).suffix(suffix).max_decimals(decimals).min_decimals(decimals.min(2))).on_hover_text(NUM_TIP)
 }
 
 fn properties(app: &mut App, ui: &mut egui::Ui) {
@@ -449,6 +498,8 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             let s = b.size();
             ui.label(format!("Scene size: {:.1} × {:.1} × {:.1} mm", s.x, s.y, s.z));
         }
+        ui.add_space(12.0);
+        ui.weak("Tip: Ctrl+K searches every command. Number fields accept maths and units, e.g. 20+5, 1in, *2, 50%.");
         return;
     };
     let n = app.selection.len();
@@ -486,273 +537,318 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.add_space(6.0);
 
-    // ----- transform (primary object) -----
-    egui::CollapsingHeader::new("Transform").default_open(true).show(ui, |ui| {
-        if n > 1 {
-            ui.weak("Editing the group's bounding box.");
+    // ----- tabs -----
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let w = (ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0;
+        for (t, label) in
+            [(PanelTab::Object, "Object"), (PanelTab::Arrange, "Arrange"), (PanelTab::Mesh, "Mesh"), (PanelTab::Repair, "Repair")]
+        {
+            let r = ui.add_sized([w, 24.0], egui::Button::selectable(app.tab == t, label));
+            if r.clicked() {
+                app.tab = t;
+            }
         }
-        ui.horizontal(|ui| {
-            ui.label("Position of");
-            egui::ComboBox::from_id_salt("posref")
-                .selected_text(match app.pos_ref {
-                    PosRef::Center => "Center",
-                    PosRef::BottomCenter => "Bottom center",
-                    PosRef::MinCorner => "Min corner",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut app.pos_ref, PosRef::BottomCenter, "Bottom center");
-                    ui.selectable_value(&mut app.pos_ref, PosRef::Center, "Center");
-                    ui.selectable_value(&mut app.pos_ref, PosRef::MinCorner, "Min corner");
+    });
+    ui.separator();
+    let tab = app.tab;
+    egui::ScrollArea::vertical().id_salt("tab_scroll").auto_shrink([false, false]).show(ui, |ui| {
+        // ----- transform (primary object) -----
+        if tab == PanelTab::Object {
+            section(ui, "Transform");
+            ui.scope(|ui| {
+                if n > 1 {
+                    ui.weak("Editing the group's bounding box.");
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Position of");
+                    egui::ComboBox::from_id_salt("posref")
+                        .selected_text(match app.pos_ref {
+                            PosRef::Center => "Center",
+                            PosRef::BottomCenter => "Bottom center",
+                            PosRef::MinCorner => "Min corner",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut app.pos_ref, PosRef::BottomCenter, "Bottom center");
+                            ui.selectable_value(&mut app.pos_ref, PosRef::Center, "Center");
+                            ui.selectable_value(&mut app.pos_ref, PosRef::MinCorner, "Min corner");
+                        });
                 });
-        });
-        let b = app.selection_bounds();
-        let refp = match app.pos_ref {
-            PosRef::Center => b.center(),
-            PosRef::BottomCenter => Vec3::new(b.center().x, b.center().y, b.min.z),
-            PosRef::MinCorner => b.min,
-        };
-        let mut p = refp;
-        let mut changed = false;
-        ui.horizontal(|ui| {
-            for a in 0..3 {
-                changed |= axis_drag(ui, a, &mut p[a], 0.1, " mm", dec).changed();
-            }
-        });
-        if changed {
-            app.checkpoint_coalesced("Move");
-            let d = p - refp;
-            for sid in app.selection.clone() {
-                if let Some(o) = app.scene.get_mut(sid) {
-                    o.transform.translation += d;
-                }
-            }
-        }
-
-        // size
-        let size = b.size();
-        let mut s = size;
-        let mut changed_axis = None;
-        ui.horizontal(|ui| {
-            ui.label("Size");
-            ui.checkbox(&mut app.lock_ratio, "Lock proportions").on_hover_text("Keep proportions");
-        });
-        ui.horizontal(|ui| {
-            for a in 0..3 {
-                if axis_drag(ui, a, &mut s[a], 0.1, " mm", dec).changed() {
-                    changed_axis = Some(a);
-                }
-            }
-        });
-        if let Some(a) = changed_axis {
-            if size[a] > 1e-6 && s[a] > 1e-4 {
-                let k = s[a] / size[a];
-                let factor = if app.lock_ratio {
-                    Vec3::splat(k)
-                } else {
-                    let mut f = Vec3::ONE;
-                    f[a] = k;
-                    f
+                let b = app.selection_bounds();
+                let refp = match app.pos_ref {
+                    PosRef::Center => b.center(),
+                    PosRef::BottomCenter => Vec3::new(b.center().x, b.center().y, b.min.z),
+                    PosRef::MinCorner => b.min,
                 };
-                app.scale_selection(factor, "Resize");
-            }
-        }
-        // percentage scale
-        ui.horizontal(|ui| {
-            ui.label("Scale");
-            let mut pct = 100.0f32;
-            if ui.add(egui::DragValue::new(&mut pct).speed(0.5).suffix(" %").range(1.0..=10000.0)).changed() && (pct - 100.0).abs() > 1e-3 {
-                app.scale_selection(Vec3::splat(pct / 100.0), "Scale");
-            }
-            for (t, f) in [("50%", 0.5), ("200%", 2.0), ("in to mm", 25.4), ("mm to in", 1.0 / 25.4)] {
-                if ui.small_button(t).clicked() {
-                    app.pending_edit = None;
-                    app.scale_selection(Vec3::splat(f), "Scale");
-                    app.pending_edit = None;
-                }
-            }
-        });
-
-        // rotation (single object)
-        if n == 1 {
-            if let Some(o) = app.scene.get(id) {
-                let r0 = o.transform.euler_deg();
-                let mut r = r0;
+                let mut p = refp;
                 let mut changed = false;
-                ui.label("Rotation");
                 ui.horizontal(|ui| {
                     for a in 0..3 {
-                        changed |= axis_drag(ui, a, &mut r[a], 0.5, "°", 2).changed();
+                        changed |= axis_drag(ui, a, &mut p[a], 0.1, " mm", dec).changed();
                     }
                 });
                 if changed {
-                    app.checkpoint_coalesced("Rotate");
-                    if let Some(o) = app.scene.get_mut(id) {
-                        o.transform.set_euler_deg(r);
+                    app.checkpoint_coalesced("Move");
+                    let d = p - refp;
+                    for sid in app.selection.clone() {
+                        if let Some(o) = app.scene.get_mut(sid) {
+                            o.transform.translation += d;
+                        }
                     }
                 }
-            }
+
+                // size
+                let size = b.size();
+                let mut s = size;
+                let mut changed_axis = None;
+                ui.horizontal(|ui| {
+                    ui.label("Size");
+                    ui.checkbox(&mut app.lock_ratio, "Lock proportions").on_hover_text("Keep proportions");
+                });
+                ui.horizontal(|ui| {
+                    for a in 0..3 {
+                        if axis_drag(ui, a, &mut s[a], 0.1, " mm", dec).changed() {
+                            changed_axis = Some(a);
+                        }
+                    }
+                });
+                if let Some(a) = changed_axis {
+                    if size[a] > 1e-6 && s[a] > 1e-4 {
+                        let k = s[a] / size[a];
+                        let factor = if app.lock_ratio {
+                            Vec3::splat(k)
+                        } else {
+                            let mut f = Vec3::ONE;
+                            f[a] = k;
+                            f
+                        };
+                        app.scale_selection(factor, "Resize");
+                    }
+                }
+                // percentage scale
+                ui.horizontal(|ui| {
+                    ui.label("Scale");
+                    let mut pct = 100.0f32;
+                    if ui.add(num(&mut pct, Kind::Plain).speed(0.5).suffix(" %").range(1.0..=10000.0)).on_hover_text(NUM_TIP).changed()
+                        && (pct - 100.0).abs() > 1e-3
+                    {
+                        app.scale_selection(Vec3::splat(pct / 100.0), "Scale");
+                    }
+                    for (t, f) in [("50%", 0.5), ("200%", 2.0), ("in to mm", 25.4), ("mm to in", 1.0 / 25.4)] {
+                        if ui.small_button(t).clicked() {
+                            app.pending_edit = None;
+                            app.scale_selection(Vec3::splat(f), "Scale");
+                            app.pending_edit = None;
+                        }
+                    }
+                });
+
+                // rotation (single object)
+                if n == 1 {
+                    if let Some(o) = app.scene.get(id) {
+                        let r0 = o.transform.euler_deg();
+                        let mut r = r0;
+                        let mut changed = false;
+                        ui.label("Rotation");
+                        ui.horizontal(|ui| {
+                            for a in 0..3 {
+                                changed |= axis_drag(ui, a, &mut r[a], 0.5, "°", 2).changed();
+                            }
+                        });
+                        if changed {
+                            app.checkpoint_coalesced("Rotate");
+                            if let Some(o) = app.scene.get_mut(id) {
+                                o.transform.set_euler_deg(r);
+                            }
+                        }
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Rotate 90°");
+                    for a in 0..3 {
+                        if ui.small_button(RichText::new(format!("{}+", AXIS_NAMES[a])).color(AXIS_COLORS[a])).clicked() {
+                            app.rotate_selection(a, 90.0);
+                        }
+                        if ui.small_button(RichText::new(format!("{}−", AXIS_NAMES[a])).color(AXIS_COLORS[a])).clicked() {
+                            app.rotate_selection(a, -90.0);
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Drop to plate").on_hover_text("D").clicked() {
+                        app.drop_selected();
+                    }
+                    if ui.button("Center on plate").clicked() {
+                        app.center_selected_on_plate();
+                    }
+                    if ui.button("Reset rot/scale").clicked() {
+                        app.reset_transform_selected();
+                    }
+                    if ui.button("Apply transform").on_hover_text("Bake rotation and scale into the mesh").clicked() {
+                        app.bake_selected();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Mirror");
+                    for a in 0..3 {
+                        if ui.small_button(RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a])).clicked() {
+                            app.mirror_selected(a);
+                        }
+                    }
+                });
+            });
         }
-        ui.horizontal(|ui| {
-            ui.label("Rotate 90°");
-            for a in 0..3 {
-                if ui.small_button(RichText::new(format!("{}+", AXIS_NAMES[a])).color(AXIS_COLORS[a])).clicked() {
-                    app.rotate_selection(a, 90.0);
-                }
-                if ui.small_button(RichText::new(format!("{}−", AXIS_NAMES[a])).color(AXIS_COLORS[a])).clicked() {
-                    app.rotate_selection(a, -90.0);
-                }
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Drop to plate").on_hover_text("D").clicked() {
-                app.drop_selected();
-            }
-            if ui.button("Center on plate").clicked() {
-                app.center_selected_on_plate();
-            }
-            if ui.button("Reset rot/scale").clicked() {
-                app.reset_transform_selected();
-            }
-            if ui.button("Apply transform").on_hover_text("Bake rotation and scale into the mesh").clicked() {
-                app.bake_selected();
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Mirror");
-            for a in 0..3 {
-                if ui.small_button(RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a])).clicked() {
-                    app.mirror_selected(a);
-                }
-            }
-        });
-    });
 
-    // ----- arrange -----
-    egui::CollapsingHeader::new("Arrange").default_open(n > 1).show(ui, |ui| {
-        ui.add_enabled_ui(n >= 2, |ui| {
-            egui::Grid::new("align").num_columns(4).show(ui, |ui| {
-                for a in 0..3 {
-                    ui.label(RichText::new(format!("Align {}", AXIS_NAMES[a])).color(AXIS_COLORS[a]));
-                    if ui.small_button("Min").clicked() {
-                        app.align(a, 0);
-                    }
-                    if ui.small_button("Center").clicked() {
-                        app.align(a, 1);
-                    }
-                    if ui.small_button("Max").clicked() {
-                        app.align(a, 2);
-                    }
-                    ui.end_row();
+        // ----- arrange -----
+        if tab == PanelTab::Arrange {
+            section(ui, "Align & distribute");
+            ui.scope(|ui| {
+                if n < 2 {
+                    ui.weak("Select two or more objects to align them.");
                 }
+                ui.add_enabled_ui(n >= 2, |ui| {
+                    egui::Grid::new("align").num_columns(4).show(ui, |ui| {
+                        for a in 0..3 {
+                            ui.label(RichText::new(format!("Align {}", AXIS_NAMES[a])).color(AXIS_COLORS[a]));
+                            if ui.small_button("Min").clicked() {
+                                app.align(a, 0);
+                            }
+                            if ui.small_button("Center").clicked() {
+                                app.align(a, 1);
+                            }
+                            if ui.small_button("Max").clicked() {
+                                app.align(a, 2);
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+                ui.add_enabled_ui(n >= 3, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Distribute");
+                        for a in 0..3 {
+                            if ui.small_button(AXIS_NAMES[a]).clicked() {
+                                app.distribute(a);
+                            }
+                        }
+                    });
+                });
+                section(ui, "Array copies");
+                ui.horizontal(|ui| {
+                    for a in 0..3 {
+                        ui.label(RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a]));
+                        ui.add(egui::DragValue::new(&mut app.array.count[a]).range(1..=100).suffix("×"));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Pitch");
+                    for a in 0..3 {
+                        ui.add(num(&mut app.array.spacing[a], Kind::Length).speed(0.5).suffix(" mm")).on_hover_text(NUM_TIP);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Create array").clicked() {
+                        app.array_selected();
+                    }
+                    if ui.small_button("Fit pitch to size").clicked() {
+                        let s = app.selection_bounds().size();
+                        app.array.spacing = s + Vec3::splat(5.0);
+                    }
+                });
             });
-        });
-        ui.add_enabled_ui(n >= 3, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Distribute");
-                for a in 0..3 {
-                    if ui.small_button(AXIS_NAMES[a]).clicked() {
-                        app.distribute(a);
+
+            section(ui, "Combine & split");
+            ui.scope(|ui| {
+                ui.weak("Booleans use the first selected object as the base.");
+                ui.horizontal_wrapped(|ui| {
+                    let many = n >= 2;
+                    if ui.add_enabled(many, egui::Button::new("Union")).clicked() {
+                        app.boolean_selected(&ctx, BoolOp::Union);
                     }
-                }
+                    if ui.add_enabled(many, egui::Button::new("Subtract")).clicked() {
+                        app.boolean_selected(&ctx, BoolOp::Subtract);
+                    }
+                    if ui.add_enabled(many, egui::Button::new("Intersect")).clicked() {
+                        app.boolean_selected(&ctx, BoolOp::Intersect);
+                    }
+                    if ui.add_enabled(many, egui::Button::new("Merge")).on_hover_text("Combine meshes without a boolean").clicked() {
+                        app.merge_selected();
+                    }
+                    if ui.button("Split parts").on_hover_text("Separate disconnected shells into objects").clicked() {
+                        app.split_selected(&ctx);
+                    }
+                    if ui.button("Cut…").clicked() {
+                        app.start_cut();
+                    }
+                });
             });
-        });
-        ui.separator();
-        ui.label("Array copies");
-        ui.horizontal(|ui| {
-            for a in 0..3 {
-                ui.label(RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a]));
-                ui.add(egui::DragValue::new(&mut app.array.count[a]).range(1..=100).suffix("×"));
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Pitch");
-            for a in 0..3 {
-                ui.add(egui::DragValue::new(&mut app.array.spacing[a]).speed(0.5).suffix(" mm"));
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Create array").clicked() {
-                app.array_selected();
-            }
-            if ui.small_button("Fit pitch to size").clicked() {
-                let s = app.selection_bounds().size();
-                app.array.spacing = s + Vec3::splat(5.0);
-            }
-        });
-    });
-
-    // ----- combine -----
-    egui::CollapsingHeader::new("Combine & split").default_open(true).show(ui, |ui| {
-        ui.weak("Booleans use the first selected object as the base.");
-        ui.horizontal_wrapped(|ui| {
-            let many = n >= 2;
-            if ui.add_enabled(many, egui::Button::new("Union")).clicked() {
-                app.boolean_selected(&ctx, BoolOp::Union);
-            }
-            if ui.add_enabled(many, egui::Button::new("Subtract")).clicked() {
-                app.boolean_selected(&ctx, BoolOp::Subtract);
-            }
-            if ui.add_enabled(many, egui::Button::new("Intersect")).clicked() {
-                app.boolean_selected(&ctx, BoolOp::Intersect);
-            }
-            if ui.add_enabled(many, egui::Button::new("Merge")).on_hover_text("Combine meshes without a boolean").clicked() {
-                app.merge_selected();
-            }
-            if ui.button("Split parts").on_hover_text("Separate disconnected shells into objects").clicked() {
-                app.split_selected(&ctx);
-            }
-            if ui.button("Cut…").clicked() {
-                app.start_cut();
-            }
-        });
-    });
-
-    // ----- mesh tools -----
-    egui::CollapsingHeader::new("Mesh tools").default_open(true).show(ui, |ui| mesh_tools(app, ui, &ctx));
-
-    // ----- analysis & repair -----
-    egui::CollapsingHeader::new("Analysis & repair").default_open(true).show(ui, |ui| {
-        if let Some(r) = app.primary_report() {
-            egui::Grid::new("report").num_columns(2).striped(true).show(ui, |ui| {
-                ui.label("Triangles");
-                ui.label(r.triangles.to_string());
-                ui.end_row();
-                ui.label("Vertices");
-                ui.label(r.vertices.to_string());
-                ui.end_row();
-                ui.label("Shells");
-                ui.label(r.components.to_string());
-                ui.end_row();
-                ui.label("Volume");
-                ui.label(format!("{:.2} cm³", r.volume_mm3 / 1000.0));
-                ui.end_row();
-                ui.label("Surface");
-                ui.label(format!("{:.2} cm²", r.area_mm2 / 100.0));
-                ui.end_row();
-                if let Some(b) = r.bounds {
-                    let s = b.size();
-                    ui.label("Bounds");
-                    ui.label(format!("{:.2} × {:.2} × {:.2} mm", s.x, s.y, s.z));
-                    ui.end_row();
-                }
-            });
-            let probs = r.problems();
-            if probs.is_empty() {
-                ui.label(RichText::new("✔ Watertight, ready to print").color(Color32::from_rgb(110, 210, 120)));
-            } else {
-                for p in probs {
-                    ui.label(RichText::new(format!("⚠ {p}")).color(Color32::from_rgb(255, 170, 80)));
-                }
-            }
         }
-        ui.horizontal(|ui| {
-            if ui.button("🔧 Repair").on_hover_text("Weld, remove degenerate/duplicate faces, fix orientation, fill holes").clicked() {
-                app.repair_selected(&ctx);
-            }
-            ui.label("Weld tol.");
-            ui.add(egui::DragValue::new(&mut app.settings.weld_tolerance).speed(0.0001).range(0.0..=1.0).max_decimals(5).suffix(" mm"));
-        });
+
+        // ----- mesh tools -----
+        if tab == PanelTab::Mesh {
+            mesh_tools(app, ui, &ctx);
+        }
+
+        // ----- analysis & repair -----
+        if tab == PanelTab::Repair {
+            section(ui, "Analysis");
+            ui.scope(|ui| {
+                if let Some(r) = app.primary_report() {
+                    egui::Grid::new("report").num_columns(2).striped(true).show(ui, |ui| {
+                        ui.label("Triangles");
+                        ui.label(r.triangles.to_string());
+                        ui.end_row();
+                        ui.label("Vertices");
+                        ui.label(r.vertices.to_string());
+                        ui.end_row();
+                        ui.label("Shells");
+                        ui.label(r.components.to_string());
+                        ui.end_row();
+                        ui.label("Volume");
+                        ui.label(format!("{:.2} cm³", r.volume_mm3 / 1000.0));
+                        ui.end_row();
+                        ui.label("Surface");
+                        ui.label(format!("{:.2} cm²", r.area_mm2 / 100.0));
+                        ui.end_row();
+                        if let Some(b) = r.bounds {
+                            let s = b.size();
+                            ui.label("Bounds");
+                            ui.label(format!("{:.2} × {:.2} × {:.2} mm", s.x, s.y, s.z));
+                            ui.end_row();
+                        }
+                    });
+                    let probs = r.problems();
+                    if probs.is_empty() {
+                        ui.label(RichText::new("✔ Watertight, ready to print").color(Color32::from_rgb(110, 210, 120)));
+                    } else {
+                        for p in probs {
+                            ui.label(RichText::new(format!("⚠ {p}")).color(Color32::from_rgb(255, 170, 80)));
+                        }
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("🔧 Repair")
+                        .on_hover_text("Weld, remove degenerate/duplicate faces, fix orientation, fill holes")
+                        .clicked()
+                    {
+                        app.repair_selected(&ctx);
+                    }
+                    ui.label("Weld tol.");
+                    ui.add(
+                        num(&mut app.settings.weld_tolerance, Kind::Length).speed(0.0001).range(0.0..=1.0).max_decimals(5).suffix(" mm"),
+                    )
+                    .on_hover_text(NUM_TIP);
+                });
+            });
+        }
     });
+}
+
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(title).strong());
+    ui.add_space(2.0);
 }
 
 fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -769,7 +865,7 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     });
     ui.horizontal(|ui| {
         ui.label("Max deviation");
-        ui.add(egui::DragValue::new(&mut t.simplify_err).speed(0.005).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+        ui.add(num(&mut t.simplify_err, Kind::Length).speed(0.005).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
             .on_hover_text("Stop before the surface moves more than this. 0 = no limit");
     });
     let simplify =
@@ -799,7 +895,7 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     if t.smooth_mode != SmoothMode::SubdivideFlat {
         ui.horizontal(|ui| {
             ui.checkbox(&mut t.keep_sharp, "Keep edges sharper than");
-            ui.add_enabled(t.keep_sharp, egui::DragValue::new(&mut t.crease_deg).range(1.0..=179.0).suffix("°"));
+            ui.add_enabled(t.keep_sharp, num(&mut t.crease_deg, Kind::Angle).range(1.0..=179.0).suffix("°"));
         });
     }
     let smooth = ui.button("Smooth").clicked();
@@ -808,7 +904,7 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     ui.label(RichText::new("Round edges (bevel)").strong());
     ui.horizontal(|ui| {
         ui.label("Radius");
-        ui.add(egui::DragValue::new(&mut t.round_radius).speed(0.05).range(0.05..=100.0).max_decimals(2).suffix(" mm"));
+        ui.add(num(&mut t.round_radius, Kind::Length).speed(0.05).range(0.05..=100.0).max_decimals(2).suffix(" mm")).on_hover_text(NUM_TIP);
     });
     ui.horizontal(|ui| {
         ui.selectable_value(&mut t.round_mode, RoundMode::Convex, "Outside").on_hover_text("Round convex edges and corners");
@@ -817,7 +913,7 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     });
     ui.horizontal(|ui| {
         ui.label("Detail");
-        ui.add(egui::DragValue::new(&mut t.round_voxel).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+        ui.add(num(&mut t.round_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
             .on_hover_text("Voxel size. Smaller = more accurate and slower. 0 = automatic");
         if t.round_voxel == 0.0 {
             let b = app.scene.bounds_of(&app.selection);
@@ -854,7 +950,7 @@ fn edge_controls(ui: &mut egui::Ui, edge: &mut b3d_core::primitives::Edge) {
     ui.end_row();
     if edge.kind != EdgeKind::Sharp {
         ui.label(if edge.kind == EdgeKind::Fillet { "Radius" } else { "Chamfer" });
-        ui.add(egui::DragValue::new(&mut edge.size).speed(0.1).range(0.0..=1000.0).suffix(" mm"));
+        ui.add(num(&mut edge.size, Kind::Length).speed(0.1).range(0.0..=1000.0).suffix(" mm")).on_hover_text(NUM_TIP);
         ui.end_row();
     }
     if edge.kind == EdgeKind::Fillet {
@@ -990,6 +1086,85 @@ fn cut_panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
 }
 
 fn dialogs(app: &mut App, ctx: &egui::Context) {
+    if app.recovery.is_some() {
+        let mut choice = None;
+        let r = app.recovery.as_ref().unwrap();
+        egui::Modal::new(egui::Id::new("recovery")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Recover unsaved work?");
+            ui.add_space(4.0);
+            let age = if r.age_minutes < 1 { "less than a minute".to_string() } else { format!("{} min", r.age_minutes) };
+            let what = r
+                .original
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "an untitled project".into());
+            ui.label(format!("Builder3D didn't close normally last time. An autosave of {what} from {age} ago is available."));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("Recover").strong()).clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Discard").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        match choice {
+            Some(true) => app.recover(ctx),
+            Some(false) => {
+                crate::autosave::clear();
+                app.recovery = None;
+            }
+            None => {}
+        }
+    }
+
+    if app.close_prompt {
+        let mut choice = None;
+        let name = app
+            .current_file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".into());
+        egui::Modal::new(egui::Id::new("close_prompt")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading("Save changes?");
+            ui.label(format!("{name} has unsaved changes."));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("Save").strong()).clicked() {
+                    choice = Some(0);
+                }
+                if ui.button("Don't save").clicked() {
+                    choice = Some(1);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(2);
+                }
+            });
+        });
+        match choice {
+            Some(0) => {
+                app.close_prompt = false;
+                app.close_after_save = true;
+                app.save(ctx);
+                if app.job.is_none() {
+                    app.close_after_save = false; // save dialog cancelled
+                }
+            }
+            Some(1) => {
+                app.close_prompt = false;
+                crate::autosave::clear();
+                app.allow_close = true;
+            }
+            Some(2) => app.close_prompt = false,
+            _ => {}
+        }
+    }
+
     if let Some(mut p) = app.add_dialog {
         let mut open = true;
         let mut add = false;
@@ -1002,7 +1177,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                 egui::Grid::new("prim").num_columns(2).show(ui, |ui| {
                     let mm = |ui: &mut egui::Ui, label: &str, v: &mut f32| {
                         ui.label(label);
-                        ui.add(egui::DragValue::new(v).speed(0.2).range(0.01..=10000.0).suffix(" mm"));
+                        ui.add(num(v, Kind::Length).speed(0.2).range(0.01..=10000.0).suffix(" mm")).on_hover_text(NUM_TIP);
                         ui.end_row();
                     };
                     let segs = |ui: &mut egui::Ui, label: &str, v: &mut u32| {
@@ -1031,7 +1206,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                         Primitive::Cone { bottom_radius, top_radius, height, segments } => {
                             mm(ui, "Bottom radius", bottom_radius);
                             ui.label("Top radius");
-                            ui.add(egui::DragValue::new(top_radius).speed(0.2).range(0.0..=10000.0).suffix(" mm"));
+                            ui.add(num(top_radius, Kind::Length).speed(0.2).range(0.0..=10000.0).suffix(" mm"));
                             ui.end_row();
                             mm(ui, "Height", height);
                             segs(ui, "Segments", segments);
@@ -1080,22 +1255,26 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
             egui::Grid::new("settings").num_columns(2).show(ui, |ui| {
                 let s = &mut app.settings;
                 ui.label("Build plate X");
-                ui.add(egui::DragValue::new(&mut s.plate.x).range(10.0..=2000.0).suffix(" mm"));
+                ui.add(num(&mut s.plate.x, Kind::Length).range(10.0..=2000.0).suffix(" mm"));
                 ui.end_row();
                 ui.label("Build plate Y");
-                ui.add(egui::DragValue::new(&mut s.plate.y).range(10.0..=2000.0).suffix(" mm"));
+                ui.add(num(&mut s.plate.y, Kind::Length).range(10.0..=2000.0).suffix(" mm"));
                 ui.end_row();
                 ui.label("Grid spacing");
-                ui.add(egui::DragValue::new(&mut s.grid_step).range(0.5..=100.0).suffix(" mm"));
+                ui.add(num(&mut s.grid_step, Kind::Length).range(0.5..=100.0).suffix(" mm"));
                 ui.end_row();
                 ui.label("Snap: move");
-                ui.add(egui::DragValue::new(&mut s.snap_move).range(0.01..=100.0).suffix(" mm"));
+                ui.add(num(&mut s.snap_move, Kind::Length).range(0.01..=100.0).suffix(" mm"));
                 ui.end_row();
                 ui.label("Snap: rotate");
-                ui.add(egui::DragValue::new(&mut s.snap_angle_deg).range(0.1..=90.0).suffix("°"));
+                ui.add(num(&mut s.snap_angle_deg, Kind::Angle).range(0.1..=90.0).suffix("°"));
                 ui.end_row();
                 ui.label("Snap: scale");
-                ui.add(egui::DragValue::new(&mut s.snap_scale).range(0.01..=1.0));
+                ui.add(num(&mut s.snap_scale, Kind::Plain).range(0.01..=1.0));
+                ui.end_row();
+                ui.label("Autosave every");
+                ui.add(num(&mut s.autosave_minutes, Kind::Plain).range(0.0..=60.0).suffix(" min"))
+                    .on_hover_text("0 = off. Recovery files are kept until you save or close normally.");
                 ui.end_row();
                 ui.label("Decimals shown");
                 ui.add(egui::DragValue::new(&mut s.decimals).range(0..=4));
@@ -1140,7 +1319,9 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("O", "Toggle orthographic"),
                     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                     ("Ctrl+D, Del", "Duplicate, delete"),
-                    ("Esc", "Leave tool / clear selection"),
+                    ("Ctrl+K / F3", "Command palette: search every action"),
+                    ("Esc", "Cancel running operation / leave tool / clear selection"),
+                    ("In number fields", "20+5, (10+2)*3, 1in, 2.5cm, 45°, *2, /4, 50%"),
                 ] {
                     ui.label(RichText::new(k).monospace());
                     ui.label(d);

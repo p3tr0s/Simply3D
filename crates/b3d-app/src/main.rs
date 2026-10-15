@@ -1,7 +1,10 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod autosave;
 mod camera;
+mod commands;
+mod expr;
 mod render;
 mod ui;
 mod viewport;

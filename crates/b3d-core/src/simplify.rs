@@ -202,10 +202,15 @@ impl State {
 
 /// Decimate in place. Returns the number of triangles removed.
 pub fn simplify(m: &mut Mesh, opts: SimplifyOptions) -> usize {
+    simplify_with(m, opts, &crate::Progress::new()).unwrap_or(0)
+}
+
+/// Like [`simplify`], reporting progress; on cancellation the mesh is left unchanged.
+pub fn simplify_with(m: &mut Mesh, opts: SimplifyOptions, progress: &crate::Progress) -> crate::Result<usize> {
     let nv = m.positions.len();
     let nt = m.triangles.len();
     if nt <= opts.target_triangles || nt < 8 {
-        return 0;
+        return Ok(0);
     }
     let mut st = State {
         pos: m.positions.iter().map(|p| p.as_dvec3()).collect(),
@@ -264,7 +269,14 @@ pub fn simplify(m: &mut Mesh, opts: SimplifyOptions) -> usize {
 
     let max_cost = if opts.max_error > 0.0 { opts.max_error * opts.max_error } else { f64::INFINITY };
     let mut remaining = nt;
+    let goal = (nt - opts.target_triangles).max(1) as f32;
+    let mut iter = 0u32;
     while remaining > opts.target_triangles {
+        iter = iter.wrapping_add(1);
+        if iter % 4096 == 0 {
+            progress.check()?;
+            progress.set((nt - remaining) as f32 / goal);
+        }
         let Some(c) = heap.pop() else { break };
         if c.cost > max_cost {
             break;
@@ -286,7 +298,8 @@ pub fn simplify(m: &mut Mesh, opts: SimplifyOptions) -> usize {
     m.positions = st.pos.iter().map(|p| p.as_vec3()).collect();
     m.triangles = st.tris.iter().zip(&st.tri_alive).filter(|(_, a)| **a).map(|(t, _)| *t).collect();
     m.compact();
-    nt - m.triangles.len()
+    progress.set(1.0);
+    Ok(nt - m.triangles.len())
 }
 
 #[cfg(test)]
