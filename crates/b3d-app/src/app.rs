@@ -174,6 +174,7 @@ pub struct CutState {
     pub axis: usize,
     pub offset: f32,
     pub keep: CutKeep,
+    pub conn: b3d_core::connectors::ConnectorOptions,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -351,6 +352,7 @@ pub struct App {
     pub text_rt: crate::text_tool::TextRuntime,
     pub debug: crate::debug::DebugHud,
     pub img_rt: crate::image_tool::ImageRuntime,
+    pub wrap: crate::text_tool::WrapCache,
     /// Objects drawn see-through this frame (they overlap the selection).
     pub see_through: Vec<ObjectId>,
     pub holes: crate::holes::HoleCache,
@@ -382,7 +384,7 @@ impl App {
             gizmo_used: false,
             tool: Tool::Select,
             measure: MeasureState { snap_vertices: true, ..Default::default() },
-            cut: CutState { axis: 2, offset: 0.0, keep: CutKeep::Both },
+            cut: CutState { axis: 2, offset: 0.0, keep: CutKeep::Both, conn: Default::default() },
             mesh_tools: MeshTools::default(),
             array: ArrayParams { count: [3, 1, 1], spacing: Vec3::new(25.0, 25.0, 25.0) },
             add_dialog: None,
@@ -428,6 +430,7 @@ impl App {
             text_rt: Default::default(),
             debug: Default::default(),
             img_rt: Default::default(),
+            wrap: Default::default(),
             see_through: vec![],
             holes: Default::default(),
             encode_srgb,
@@ -841,7 +844,11 @@ impl App {
     pub fn add_primitive(&mut self, p: Primitive) {
         self.checkpoint(&format!("Add {}", p.name()));
         let mesh = p.build();
-        let name = self.scene.unique_name(p.name());
+        let label = match p {
+            Primitive::Fastener(f) => f.label(),
+            _ => p.name().to_string(),
+        };
+        let name = self.scene.unique_name(&label);
         let existing = self.scene.bounds();
         let size = mesh.bounds().size();
         let mut pos = Vec3::new(0.0, 0.0, size.z * 0.5);
@@ -851,6 +858,14 @@ impl App {
         }
         let id = self.scene.add_object(name, mesh, Transform { translation: pos, ..Default::default() }, None);
         self.selection = vec![id];
+        if let Primitive::Fastener(f) = p {
+            if f.kind == b3d_core::threads::FastenerKind::ThreadedHole {
+                if let Some(o) = self.scene.get_mut(id) {
+                    o.hole = true;
+                }
+                self.info("Threaded hole added as a hole: move it into a part and it cuts the thread there");
+            }
+        }
     }
 
     pub fn delete_selected(&mut self) {

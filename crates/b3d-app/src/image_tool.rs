@@ -4,7 +4,7 @@
 use crate::app::{App, Tool};
 use crate::expr::Kind;
 use crate::preview::BgTask;
-use crate::text_tool::{surface_frame, surface_preview, TextHover, TextMode};
+use crate::text_tool::{surface_frame, TextHover, TextMode};
 use crate::ui::num;
 use b3d_core::image3d::{self, Gray, ImageMode, ImageOptions};
 use b3d_core::scene::MeshHandle;
@@ -33,6 +33,8 @@ pub struct ImageSettings {
     pub reduce: bool,
     pub place: TextMode,
     pub angle: f32,
+    /// Bend the picture around curved surfaces.
+    pub wrap: bool,
 }
 
 impl Default for ImageSettings {
@@ -53,6 +55,7 @@ impl Default for ImageSettings {
             reduce: true,
             place: TextMode::Object,
             angle: 0.0,
+            wrap: true,
         }
     }
 }
@@ -217,10 +220,6 @@ impl App {
         surface_frame(point, normal, cam_up, self.settings.image.angle)
     }
 
-    pub fn image_surface_preview(&self, frame: Mat4) -> Mat4 {
-        surface_preview(frame, self.settings.image.height, self.settings.image.place == TextMode::Engrave)
-    }
-
     /// Add the picture as a new object (final build in the background, reduced if asked).
     pub fn add_image_object(&mut self, ctx: &egui::Context, at: Option<Vec3>) {
         let Some(src) = &self.img_rt.source else {
@@ -259,7 +258,7 @@ impl App {
         let label = if engrave { "Engrave picture" } else { "Emboss picture" };
         let reach = s.width * 0.3;
         let depth = s.height;
-        self.apply_on_surface(ctx, hover, &unit.mesh, depth, engrave, reach, label);
+        self.apply_on_surface(ctx, hover, &unit, depth, engrave, reach, label);
     }
 }
 
@@ -413,6 +412,8 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         }
         _ => {
             ui.label("Hover over a face to preview, click to apply.");
+            ui.checkbox(&mut app.settings.image.wrap, "Follow curved surfaces")
+                .on_hover_text("Bend the picture around cylinders and spheres");
         }
     }
     if ui.button("Done").clicked() {

@@ -288,6 +288,12 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                         app.add_dialog = Some(Primitive::default_for(name));
                     }
                 }
+                ui.separator();
+                for name in Primitive::FASTENER_NAMES {
+                    if ui.button(name).clicked() {
+                        app.add_dialog = Some(Primitive::default_for(name));
+                    }
+                }
             });
             ui.menu_button("Object", |ui| {
                 let has = !app.selection.is_empty();
@@ -488,6 +494,12 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
             ui.separator();
             ui.menu_button("➕ Add shape", |ui| {
                 for name in Primitive::ALL_NAMES {
+                    if ui.button(name).clicked() {
+                        app.add_dialog = Some(Primitive::default_for(name));
+                    }
+                }
+                ui.separator();
+                for name in Primitive::FASTENER_NAMES {
                     if ui.button(name).clicked() {
                         app.add_dialog = Some(Primitive::default_for(name));
                     }
@@ -1440,6 +1452,39 @@ fn cut_panel(app: &mut App, ui: &mut egui::Ui) {
         ui.selectable_value(&mut app.cut.keep, CutKeep::Above, "Upper");
         ui.selectable_value(&mut app.cut.keep, CutKeep::Below, "Lower");
     });
+    {
+        use b3d_core::connectors::ConnectorKind;
+        let c = &mut app.cut.conn;
+        ui.horizontal(|ui| {
+            ui.label("Connectors");
+            ui.selectable_value(&mut c.kind, ConnectorKind::None, "None");
+            ui.selectable_value(&mut c.kind, ConnectorKind::Pegs, "Pegs")
+                .on_hover_text("Pegs on the lower part, matching holes in the upper part");
+            ui.selectable_value(&mut c.kind, ConnectorKind::Dowels, "Dowels").on_hover_text("Holes in both parts and separate dowel pins");
+        });
+        if c.kind != ConnectorKind::None {
+            egui::Grid::new("conn").num_columns(2).show(ui, |ui| {
+                ui.label("Diameter");
+                ui.add(num(&mut c.diameter, Kind::Length).speed(0.1).range(1.0..=50.0).suffix(" mm"));
+                ui.end_row();
+                ui.label("Depth");
+                ui.add(num(&mut c.depth, Kind::Length).speed(0.1).range(1.0..=100.0).suffix(" mm")).on_hover_text("How far into each part");
+                ui.end_row();
+                ui.label("Clearance");
+                ui.add(num(&mut c.clearance, Kind::Length).speed(0.01).range(0.0..=1.0).suffix(" mm"))
+                    .on_hover_text("Play in the holes so printed parts fit (0.15–0.3 mm)");
+                ui.end_row();
+                ui.label("How many");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut c.count, 0, "Auto");
+                    for k in 1..=4u32 {
+                        ui.selectable_value(&mut c.count, k, k.to_string());
+                    }
+                });
+                ui.end_row();
+            });
+        }
+    }
     if app.preview.as_ref().is_none_or(|p| p.kind != PreviewKind::Cut) {
         app.start_preview(PreviewKind::Cut);
     }
@@ -1601,6 +1646,46 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                         Primitive::Pyramid { base, height } => {
                             mm(ui, "Base", base);
                             mm(ui, "Height", height);
+                        }
+                        Primitive::Fastener(f) => {
+                            use b3d_core::threads::{FastenerKind, Head, SIZES};
+                            ui.label("Type");
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(&mut f.kind, FastenerKind::Bolt, "Bolt");
+                                ui.selectable_value(&mut f.kind, FastenerKind::Nut, "Nut");
+                                ui.selectable_value(&mut f.kind, FastenerKind::Rod, "Rod");
+                                ui.selectable_value(&mut f.kind, FastenerKind::ThreadedHole, "Hole").on_hover_text(
+                                    "A threaded hole: added as a hole object that cuts the thread into whatever it overlaps",
+                                );
+                            });
+                            ui.end_row();
+                            ui.label("Size");
+                            egui::ComboBox::from_id_salt("thread_size").selected_text(f.spec().name).show_ui(ui, |ui| {
+                                for (i, s) in SIZES.iter().enumerate() {
+                                    ui.selectable_value(&mut f.size, i, format!("{}  (pitch {} mm)", s.name, s.pitch));
+                                }
+                            });
+                            ui.end_row();
+                            if f.kind != FastenerKind::Nut {
+                                ui.label(if f.kind == FastenerKind::ThreadedHole { "Depth" } else { "Thread length" });
+                                ui.add(num(&mut f.length, Kind::Length).speed(0.5).range(1.0..=500.0).suffix(" mm")).on_hover_text(NUM_TIP);
+                                ui.end_row();
+                            }
+                            if f.kind == FastenerKind::Bolt {
+                                ui.label("Head");
+                                ui.horizontal(|ui| {
+                                    ui.selectable_value(&mut f.head, Head::Hex, "Hex");
+                                    ui.selectable_value(&mut f.head, Head::Socket, "Socket");
+                                    ui.selectable_value(&mut f.head, Head::None, "None");
+                                });
+                                ui.end_row();
+                            }
+                            if matches!(f.kind, FastenerKind::Nut | FastenerKind::ThreadedHole) {
+                                ui.label("Clearance");
+                                ui.add(num(&mut f.clearance, Kind::Length).speed(0.01).range(0.0..=1.0).suffix(" mm"))
+                                    .on_hover_text("Extra room on the internal thread so printed parts fit (0.15–0.3 mm is typical)");
+                                ui.end_row();
+                            }
                         }
                     }
                 });

@@ -3,7 +3,6 @@
 //! when you press Apply.
 
 use crate::app::{App, CutKeep, JobOutput, SmoothMode, Tool};
-use b3d_core::csg;
 use b3d_core::scene::MeshHandle;
 use b3d_core::sdf::{self, RoundOptions};
 use b3d_core::simplify::{self, SimplifyOptions};
@@ -423,30 +422,48 @@ impl App {
                 let objs = world();
                 let (point, normal) = self.cut_plane();
                 let keep = self.cut.keep;
+                let conn = self.cut.conn;
                 (
                     "Cutting…".into(),
                     Box::new(move |p: &Progress| {
                         let mut add = vec![];
                         let mut remove = vec![];
+                        let mut short = false;
                         let n = objs.len() as f32;
                         for (i, (id, name, color, m)) in objs.into_iter().enumerate() {
                             if p.is_cancelled() {
                                 return JobOutput::Error("cancelled".into());
                             }
                             p.set(i as f32 / n);
-                            match csg::cut_by_plane(&m, point, normal) {
-                                Ok((above, below)) => {
-                                    if above.is_empty() || below.is_empty() {
+                            let b = m.bounds();
+                            match b3d_core::connectors::cut_with_connectors(
+                                &m,
+                                point,
+                                normal,
+                                &conn,
+                                &p.range(i as f32 / n, (i + 1) as f32 / n),
+                            ) {
+                                Ok(r) => {
+                                    if r.above.is_empty() || r.below.is_empty() {
                                         continue; // plane misses this object
+                                    }
+                                    if conn.kind != b3d_core::connectors::ConnectorKind::None && r.placed == 0 {
+                                        short = true;
                                     }
                                     remove.push(id);
                                     if keep != CutKeep::Below {
-                                        add.push((format!("{name} (top)"), above, color));
+                                        add.push((format!("{name} (top)"), r.above, color));
                                     }
                                     if keep != CutKeep::Above {
-                                        add.push((format!("{name} (bottom)"), below, color));
+                                        add.push((format!("{name} (bottom)"), r.below, color));
+                                    }
+                                    // dowel pins stand beside the object
+                                    for (k, mut d) in r.dowels.into_iter().enumerate() {
+                                        d.translate(glam::Vec3::new(b.max.x + 6.0 + k as f32 * (conn.diameter + 4.0), b.min.y, 0.0));
+                                        add.push((format!("{name} dowel {}", k + 1), d, color));
                                     }
                                 }
+                                Err(b3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
                                 Err(e) => return JobOutput::Error(format!("Cut failed on {name}: {e}")),
                             }
                         }
@@ -454,7 +471,8 @@ impl App {
                             return JobOutput::Error("The cut plane does not touch the selection".into());
                         }
                         let n = add.len();
-                        JobOutput::Replace { label: "Cut".into(), remove, add, message: format!("Cut into {n} pieces") }
+                        let note = if short { " — the section is too small for connectors of that size" } else { "" };
+                        JobOutput::Replace { label: "Cut".into(), remove, add, message: format!("Cut into {n} pieces{note}") }
                     }),
                 )
             }

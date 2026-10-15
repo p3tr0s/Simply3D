@@ -130,11 +130,14 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     if app.tool == Tool::Text {
         if moved || app.text_rt.hover.is_none() {
             app.text_rt.hover = ray.and_then(|(o, d)| match app.settings.text.mode {
-                TextMode::Object => plate_hit(o, d).map(|p| TextHover { target: None, point: p, frame: glam::Mat4::IDENTITY }),
-                _ => pick(app, o, d, false).map(|h| TextHover {
-                    target: Some(h.id),
-                    point: h.point,
-                    frame: app.surface_frame(h.point, h.normal, view.cam.right_up().1),
+                TextMode::Object => plate_hit(o, d).map(TextHover::on_plate),
+                _ => pick(app, o, d, false).map(|h| {
+                    let frame = app.surface_frame(h.point, h.normal, view.cam.right_up().1);
+                    let bend = match app.text_base() {
+                        Some(b) if app.settings.text.wrap => app.fit_bend(h.id, frame, App::shape_half(&b.mesh)),
+                        _ => b3d_core::wrap::Bend::FLAT,
+                    };
+                    TextHover { target: Some(h.id), point: h.point, frame, bend }
                 }),
             });
         }
@@ -147,11 +150,14 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     if app.tool == Tool::Image {
         if moved || app.img_rt.hover.is_none() {
             app.img_rt.hover = ray.and_then(|(o, d)| match app.settings.image.place {
-                TextMode::Object => plate_hit(o, d).map(|p| TextHover { target: None, point: p, frame: glam::Mat4::IDENTITY }),
-                _ => pick(app, o, d, false).map(|h| TextHover {
-                    target: Some(h.id),
-                    point: h.point,
-                    frame: app.image_surface_frame(h.point, h.normal, view.cam.right_up().1),
+                TextMode::Object => plate_hit(o, d).map(TextHover::on_plate),
+                _ => pick(app, o, d, false).map(|h| {
+                    let frame = app.image_surface_frame(h.point, h.normal, view.cam.right_up().1);
+                    let bend = match &app.img_rt.unit {
+                        Some(u) if app.settings.image.wrap => app.fit_bend(h.id, frame, App::shape_half(&u.mesh)),
+                        _ => b3d_core::wrap::Bend::FLAT,
+                    };
+                    TextHover { target: Some(h.id), point: h.point, frame, bend }
                 }),
             });
         }
@@ -159,6 +165,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
             app.img_rt.hover = None;
         }
     }
+    app.update_wrap_ghost();
     if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image) && response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else if matches!(app.drag, DragMode::Move { .. }) {
@@ -572,7 +579,13 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
                 app.image_preview_mesh().cloned(),
                 Some(app.image_object_matrix(h.map(|h| h.point).unwrap_or_else(|| app.image_default_spot()))),
             ),
-            (_, Some(h)) if h.target.is_some() => (app.img_rt.unit.clone(), Some(app.image_surface_preview(h.frame))),
+            (_, Some(h)) if h.target.is_some() => match &app.img_rt.unit {
+                Some(u) => {
+                    let (m, model) = app.surface_ghost(u, &h, s.height, s.place == TextMode::Engrave);
+                    (Some(m), Some(model))
+                }
+                None => (None, None),
+            },
             _ => (None, None),
         };
         if let (Some(mesh), Some(model)) = (mesh, model) {
@@ -588,18 +601,20 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
     if app.tool == Tool::Text {
         if let Some(base) = app.text_base() {
             let t = &app.settings.text;
-            let model = match (t.mode, app.text_rt.hover) {
-                (TextMode::Object, h) => app.text_object_matrix(h.map(|h| h.point).unwrap_or_else(|| app.text_default_spot())),
-                (_, Some(h)) if h.target.is_some() => Some(app.text_surface_preview(h.frame)),
+            let ghost = match (t.mode, app.text_rt.hover) {
+                (TextMode::Object, h) => {
+                    app.text_object_matrix(h.map(|h| h.point).unwrap_or_else(|| app.text_default_spot())).map(|m| (base.clone(), m))
+                }
+                (_, Some(h)) if h.target.is_some() => Some(app.surface_ghost(base, &h, t.depth, t.mode == TextMode::Engrave)),
                 _ => None,
             };
-            if let Some(model) = model {
+            if let Some((mesh, model)) = ghost {
                 let color = match t.mode {
                     TextMode::Engrave => [1.0, 0.35, 0.25, 0.55],
                     TextMode::Emboss => [1.0, 0.75, 0.2, 0.6],
                     TextMode::Object => [0.3, 0.6, 1.0, 0.55],
                 };
-                ghosts.push(DrawItem { mesh: base.clone(), model, color, params: [0.45, 0.0, 0.0, 0.0] });
+                ghosts.push(DrawItem { mesh, model, color, params: [0.45, 0.0, 0.0, 0.0] });
             }
         }
     }

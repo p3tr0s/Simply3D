@@ -31,18 +31,53 @@ impl Default for Edge {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Primitive {
-    Box { size: Vec3, edge: Edge },
-    Cylinder { radius: f32, height: f32, segments: u32, edge: Edge },
-    Cone { bottom_radius: f32, top_radius: f32, height: f32, segments: u32 },
-    Sphere { radius: f32, segments: u32, rings: u32 },
-    Torus { major_radius: f32, minor_radius: f32, major_segments: u32, minor_segments: u32 },
-    Tube { outer_radius: f32, inner_radius: f32, height: f32, segments: u32 },
-    Pyramid { base: f32, height: f32 },
-    Wedge { size: Vec3 },
+    Box {
+        size: Vec3,
+        edge: Edge,
+    },
+    Cylinder {
+        radius: f32,
+        height: f32,
+        segments: u32,
+        edge: Edge,
+    },
+    Cone {
+        bottom_radius: f32,
+        top_radius: f32,
+        height: f32,
+        segments: u32,
+    },
+    Sphere {
+        radius: f32,
+        segments: u32,
+        rings: u32,
+    },
+    Torus {
+        major_radius: f32,
+        minor_radius: f32,
+        major_segments: u32,
+        minor_segments: u32,
+    },
+    Tube {
+        outer_radius: f32,
+        inner_radius: f32,
+        height: f32,
+        segments: u32,
+    },
+    Pyramid {
+        base: f32,
+        height: f32,
+    },
+    Wedge {
+        size: Vec3,
+    },
+    /// Bolt, nut, threaded rod or threaded-hole cutter.
+    Fastener(crate::threads::Fastener),
 }
 
 impl Primitive {
     pub const ALL_NAMES: [&'static str; 8] = ["Box", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
+    pub const FASTENER_NAMES: [&'static str; 4] = ["Bolt", "Nut", "Threaded rod", "Threaded hole"];
 
     pub fn default_for(name: &str) -> Primitive {
         match name {
@@ -53,6 +88,16 @@ impl Primitive {
             "Tube" => Primitive::Tube { outer_radius: 10.0, inner_radius: 7.0, height: 20.0, segments: 64 },
             "Pyramid" => Primitive::Pyramid { base: 20.0, height: 20.0 },
             "Wedge" => Primitive::Wedge { size: Vec3::new(20.0, 20.0, 20.0) },
+            "Bolt" | "Nut" | "Threaded rod" | "Threaded hole" => {
+                use crate::threads::{Fastener, FastenerKind};
+                let kind = match name {
+                    "Nut" => FastenerKind::Nut,
+                    "Threaded rod" => FastenerKind::Rod,
+                    "Threaded hole" => FastenerKind::ThreadedHole,
+                    _ => FastenerKind::Bolt,
+                };
+                Primitive::Fastener(Fastener { kind, ..Default::default() })
+            }
             _ => Primitive::Box { size: Vec3::splat(20.0), edge: Edge::default() },
         }
     }
@@ -67,6 +112,12 @@ impl Primitive {
             Primitive::Tube { .. } => "Tube",
             Primitive::Pyramid { .. } => "Pyramid",
             Primitive::Wedge { .. } => "Wedge",
+            Primitive::Fastener(f) => match f.kind {
+                crate::threads::FastenerKind::Bolt => "Bolt",
+                crate::threads::FastenerKind::Nut => "Nut",
+                crate::threads::FastenerKind::Rod => "Threaded rod",
+                crate::threads::FastenerKind::ThreadedHole => "Threaded hole",
+            },
         }
     }
 
@@ -88,6 +139,12 @@ impl Primitive {
             Primitive::Tube { outer_radius, inner_radius, height, segments } => tube(outer_radius, inner_radius, height, segments),
             Primitive::Pyramid { base, height } => pyramid(base, height),
             Primitive::Wedge { size } => wedge(size),
+            Primitive::Fastener(f) => {
+                let mut m = crate::threads::fastener_mesh(&f).unwrap_or_default();
+                let c = m.bounds().center();
+                m.translate(-c);
+                m
+            }
         }
     }
 }

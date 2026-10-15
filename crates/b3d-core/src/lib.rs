@@ -6,6 +6,7 @@
 //! Conventions: millimetres, right-handed, **Z up** (same as 3MF / slicers).
 
 pub mod analysis;
+pub mod connectors;
 pub mod csg;
 pub mod extrude;
 pub mod fonts;
@@ -21,6 +22,8 @@ pub mod sdf;
 pub mod simplify;
 pub mod smooth;
 pub mod text;
+pub mod threads;
+pub mod wrap;
 
 pub use glam;
 pub use mesh::{Aabb, Mesh};
