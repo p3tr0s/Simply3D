@@ -598,6 +598,27 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
         }
     }
 
+    // extrude-down height plane
+    if app.preview.as_ref().is_some_and(|p| p.kind == PreviewKind::ExtrudeDown) && !app.selection.is_empty() {
+        let b = app.selection_bounds();
+        let pad = b.size().max_element() * 0.15 + 5.0;
+        let z = app.mesh_tools.extrude_height;
+        let q = [
+            Vec3::new(b.min.x - pad, b.min.y - pad, z),
+            Vec3::new(b.max.x + pad, b.min.y - pad, z),
+            Vec3::new(b.max.x + pad, b.max.y + pad, z),
+            Vec3::new(b.min.x - pad, b.max.y + pad, z),
+        ];
+        let fill = lin_rgba(0.3, 0.9, 0.5, 0.22);
+        for k in [0, 1, 2, 0, 2, 3] {
+            tris.push(LineVertex::new(q[k], fill));
+        }
+        for k in 0..4 {
+            overlay.push(LineVertex::new(q[k], lin_rgba(0.35, 1.0, 0.55, 1.0)));
+            overlay.push(LineVertex::new(q[(k + 1) % 4], lin_rgba(0.35, 1.0, 0.55, 1.0)));
+        }
+    }
+
     // section plane outline
     if let Some((n, _)) = app.section.plane() {
         let b = app.scene.bounds();
@@ -1051,9 +1072,13 @@ fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
         return;
     }
     let ctx = ui.ctx().clone();
+    // keep clear of the axis triad in the bottom-left corner
+    let mut room = view.rect;
+    room.min.x += 112.0;
     egui::Area::new(egui::Id::new("bottom_bars"))
         .fixed_pos(view.rect.center_bottom() + egui::vec2(0.0, -14.0))
         .pivot(egui::Align2::CENTER_BOTTOM)
+        .constrain_to(room)
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
             if app.section.enabled {
@@ -1095,6 +1120,7 @@ fn preview_bar(app: &mut App, ui: &mut egui::Ui) {
     let fresh = p.result.as_ref().is_some_and(|r| r.key == p.key);
     let mut apply = false;
     let mut cancel = false;
+    let mut new_height = None;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{} preview", kind.name())).strong());
         if let Some(e) = &p.error {
@@ -1111,6 +1137,17 @@ fn preview_bar(app: &mut App, ui: &mut egui::Ui) {
         } else if let Some(r) = &p.result {
             ui.label(&r.message);
         }
+        if kind == PreviewKind::ExtrudeDown {
+            // the height plane right here, so the side panel isn't needed
+            let b = app.scene.bounds_of(&app.selection);
+            if !b.is_empty() {
+                ui.spacing_mut().slider_width = 160.0;
+                let mut h = app.mesh_tools.extrude_height;
+                if ui.add(egui::Slider::new(&mut h, b.min.z..=b.max.z).suffix(" mm").max_decimals(1)).changed() {
+                    new_height = Some(h);
+                }
+            }
+        }
         let label = if kind == PreviewKind::Cut { "✂ Cut" } else { "✔ Apply" };
         if ui.add_enabled(p.error.is_none(), egui::Button::new(egui::RichText::new(label).strong())).on_hover_text("Enter").clicked() {
             apply = true;
@@ -1119,6 +1156,9 @@ fn preview_bar(app: &mut App, ui: &mut egui::Ui) {
             cancel = true;
         }
     });
+    if let Some(h) = new_height {
+        app.mesh_tools.extrude_height = h;
+    }
     if apply {
         app.apply_preview();
     }

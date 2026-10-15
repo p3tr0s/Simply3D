@@ -55,6 +55,7 @@ pub enum PreviewKind {
     Smooth,
     Round,
     Cut,
+    ExtrudeDown,
 }
 
 impl PreviewKind {
@@ -64,6 +65,7 @@ impl PreviewKind {
             PreviewKind::Smooth => "Smooth",
             PreviewKind::Round => "Round edges",
             PreviewKind::Cut => "Cut",
+            PreviewKind::ExtrudeDown => "Extrude down",
         }
     }
 }
@@ -105,9 +107,10 @@ impl App {
             PreviewKind::Smooth => format!("{:?} {} {} {} {}", t.smooth_mode, t.smooth_levels, t.relax_iters, t.keep_sharp, t.crease_deg),
             PreviewKind::Round => format!("{} {:?} {} {}", t.round_radius, t.round_mode, t.round_voxel, t.round_simplify),
             PreviewKind::Cut => format!("{:?}", self.cut),
+            PreviewKind::ExtrudeDown => format!("{}", t.extrude_height),
         };
         params.hash(&mut h);
-        let world = matches!(kind, PreviewKind::Round | PreviewKind::Cut);
+        let world = matches!(kind, PreviewKind::Round | PreviewKind::Cut | PreviewKind::ExtrudeDown);
         for o in self.selection.iter().filter_map(|id| self.scene.get(*id)) {
             o.id.hash(&mut h);
             o.mesh.id.hash(&mut h);
@@ -136,6 +139,15 @@ impl App {
             error: None,
             apply_when_ready: false,
         });
+    }
+
+    /// Extrude down with the plane at a sensible starting height (a quarter of the way up).
+    pub fn start_extrude_down(&mut self) {
+        let b = self.selection_bounds();
+        if !b.is_empty() && (self.mesh_tools.extrude_height <= b.min.z || self.mesh_tools.extrude_height > b.max.z) {
+            self.mesh_tools.extrude_height = b.min.z + b.size().z * 0.25;
+        }
+        self.start_preview(PreviewKind::ExtrudeDown);
     }
 
     pub fn cancel_preview(&mut self) {
@@ -370,6 +382,39 @@ impl App {
                             remove,
                             add,
                             message: format!("Rounded edges — {}", info.join("; ")),
+                        }
+                    }),
+                )
+            }
+            PreviewKind::ExtrudeDown => {
+                let objs = world();
+                let h = t.extrude_height;
+                (
+                    "Extruding down…".into(),
+                    Box::new(move |p: &Progress| {
+                        let mut add = vec![];
+                        let mut remove = vec![];
+                        let n = objs.len() as f32;
+                        for (i, (id, name, color, m)) in objs.into_iter().enumerate() {
+                            match b3d_core::extrude::extrude_down(&m, h, 0.0, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
+                                Ok(out) => {
+                                    remove.push(id);
+                                    add.push((name, out, color));
+                                }
+                                Err(b3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
+                                Err(b3d_core::Error::Parse(_)) => {} // nothing below the height on this one
+                                Err(e) => return JobOutput::Error(format!("Extrude down failed on {name}: {e}")),
+                            }
+                        }
+                        if remove.is_empty() {
+                            return JobOutput::Error("Nothing faces down below that height — raise the plane".into());
+                        }
+                        let n = remove.len();
+                        JobOutput::Replace {
+                            label: "Extrude down".into(),
+                            remove,
+                            add,
+                            message: format!("Extruded {n} object{} down to the plate", if n == 1 { "" } else { "s" }),
                         }
                     }),
                 )

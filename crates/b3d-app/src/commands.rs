@@ -121,6 +121,10 @@ pub fn all() -> Vec<Command> {
             a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::Round)
         }),
+        cmd!("Mesh", "Extrude down to the plate (preview)", "", has_sel, |a, _| {
+            a.tab = PanelTab::Mesh;
+            a.start_extrude_down()
+        }),
         cmd!("Mesh", "Apply preview", "Enter", |a| a.preview.is_some(), |a, _| a.apply_preview()),
         cmd!("Mesh", "Cancel preview", "Esc", |a| a.preview.is_some(), |a, _| a.cancel_preview()),
         cmd!("Mesh", "Repair", "", has_sel, |a, c| {

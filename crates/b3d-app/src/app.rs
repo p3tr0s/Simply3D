@@ -197,6 +197,8 @@ pub struct MeshTools {
     pub round_mode: b3d_core::sdf::RoundMode,
     pub round_voxel: f32,
     pub round_simplify: bool,
+    /// Extrude down: undersides below this height (world Z, mm) go down to the plate.
+    pub extrude_height: f32,
 }
 
 impl Default for MeshTools {
@@ -213,6 +215,7 @@ impl Default for MeshTools {
             round_mode: b3d_core::sdf::RoundMode::Convex,
             round_voxel: 0.0,
             round_simplify: true,
+            extrude_height: 0.0,
         }
     }
 }

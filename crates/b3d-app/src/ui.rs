@@ -321,6 +321,10 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 if ui.add_enabled(has, egui::Button::new("Apply transform")).clicked() {
                     app.bake_selected();
                 }
+                if ui.add_enabled(has, egui::Button::new("Extrude down…")).clicked() {
+                    app.tab = PanelTab::Mesh;
+                    app.start_extrude_down();
+                }
             });
             ui.menu_button("View", |ui| {
                 for (n, v) in [
@@ -1168,8 +1172,27 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui) {
         "Works on any closed mesh: every edge sharper than the radius becomes a fillet. The surface is rebuilt, so tiny details below the detail size are lost.",
     );
 
-    for (clicked, kind) in [(simplify, PreviewKind::Simplify), (smooth, PreviewKind::Smooth), (round, PreviewKind::Round)] {
+    ui.add_space(6.0);
+    ui.label(RichText::new("Extrude down").strong());
+    let sel_b = app.scene.bounds_of(&app.selection);
+    ui.horizontal(|ui| {
+        ui.label("From height");
+        let (lo, hi) = if sel_b.is_empty() { (0.0, 100.0) } else { (sel_b.min.z, sel_b.max.z) };
+        ui.add(egui::Slider::new(&mut app.mesh_tools.extrude_height, lo..=hi).suffix(" mm").max_decimals(2))
+            .on_hover_text("Every underside below this height is extended straight down to the plate");
+    });
+    let extrude = preview_buttons(
+        ui,
+        active,
+        PreviewKind::ExtrudeDown,
+        "Extends the underside of the model straight down to the plate, from the chosen height: a flat base, simple supports under overhangs, floating parts tied to the plate (like 3D Builder).",
+    );
+
+    for (clicked, kind) in
+        [(simplify, PreviewKind::Simplify), (smooth, PreviewKind::Smooth), (round, PreviewKind::Round), (extrude, PreviewKind::ExtrudeDown)]
+    {
         match clicked {
+            Some(PreviewClick::Start) if kind == PreviewKind::ExtrudeDown => app.start_extrude_down(),
             Some(PreviewClick::Start) => app.start_preview(kind),
             Some(PreviewClick::Apply) => app.apply_preview(),
             Some(PreviewClick::Cancel) => app.cancel_preview(),
