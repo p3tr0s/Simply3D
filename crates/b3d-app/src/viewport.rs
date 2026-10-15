@@ -101,7 +101,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     if !matches!(app.drag, DragMode::Move { .. }) {
         app.drag_label = None;
     }
-    let gizmo_focused = run_gizmo(app, ui, &view);
+    let gizmo_focused = run_gizmo(app, ui, &view, response.hovered());
     let gizmo_busy = gizmo_focused || app.gizmo_dragging;
 
     // ---------- hover ----------
@@ -285,7 +285,7 @@ fn background(p: &egui::Painter, r: Rect, dark: bool) {
     p.add(Shape::mesh(m));
 }
 
-fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View) -> bool {
+fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View, viewport_hovered: bool) -> bool {
     let pointer_down = ui.input(|i| i.pointer.primary_down());
     if !pointer_down {
         app.gizmo_dragging = false;
@@ -327,7 +327,7 @@ fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View) -> bool {
             )
         })
         .collect();
-    if let Some((result, new)) = app.gizmo.interact(ui, &targets) {
+    if let Some((result, new)) = gizmo_interact(&mut app.gizmo, ui, view.rect, &targets, viewport_hovered || app.gizmo_dragging) {
         if !app.gizmo_dragging {
             app.gizmo_start = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| (o.id, o.transform)).collect();
             app.gizmo_start_bounds = app.selection_bounds();
@@ -375,6 +375,45 @@ fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View) -> bool {
         app.report_cache = None;
     }
     app.gizmo.is_focused() || app.gizmo_dragging
+}
+
+/// Drive and draw the gizmo with the viewport's own hover state. (The library's
+/// `interact` registers a 1×1 widget under the cursor that steals hover and clicks
+/// from the viewport whenever the mouse is still or moving slowly.)
+fn gizmo_interact(
+    gizmo: &mut Gizmo,
+    ui: &egui::Ui,
+    rect: Rect,
+    targets: &[transform_gizmo_egui::math::Transform],
+    hovered: bool,
+) -> Option<(GizmoResult, Vec<transform_gizmo_egui::math::Transform>)> {
+    let cursor = ui.input(|i| i.pointer.hover_pos()).unwrap_or_default();
+    let result = gizmo.update(
+        GizmoInteraction {
+            cursor_pos: (cursor.x, cursor.y),
+            hovered,
+            drag_started: ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary)),
+            dragging: ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary)),
+        },
+        targets,
+    );
+    let draw = gizmo.draw();
+    let mesh = egui::Mesh {
+        indices: draw.indices,
+        vertices: draw
+            .vertices
+            .into_iter()
+            .zip(draw.colors)
+            .map(|(pos, [r, g, b, a])| egui::epaint::Vertex {
+                pos: pos.into(),
+                uv: Pos2::default(),
+                color: egui::Rgba::from_rgba_premultiplied(r, g, b, a).into(),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect).add(mesh);
+    result
 }
 
 fn build_frame(app: &App, view: &View) -> ViewportFrame {

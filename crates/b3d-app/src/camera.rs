@@ -175,3 +175,46 @@ mod tests {
         assert!((p - o).cross(d).length() < 1e-2);
     }
 }
+
+#[cfg(test)]
+mod pick_sweep {
+    use super::*;
+    use b3d_core::primitives::Primitive;
+    use b3d_core::scene::{Scene, Transform};
+
+    #[test]
+    fn no_holes_in_picking() {
+        let mut s = Scene::default();
+        for (i, p) in ["Box", "Sphere", "Cylinder", "Torus"].iter().enumerate() {
+            let m = Primitive::default_for(p).build();
+            s.add_object(*p, m, Transform { translation: Vec3::new(i as f32 * 40.0 - 60.0, 0.0, 10.0), ..Default::default() }, None);
+        }
+        let mut cam = OrbitCamera::default();
+        cam.fit(&s.bounds(), 1.5);
+        let (w, h) = (300, 200);
+        let hit = |x: i32, y: i32| {
+            let ndc = Vec2::new(x as f32 / w as f32 * 2.0 - 1.0, 1.0 - y as f32 / h as f32 * 2.0);
+            let (o, d) = cam.ray(ndc, 1.5);
+            s.pick(o, d).map(|h| h.0)
+        };
+        let mut holes = 0;
+        let mut total = 0;
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let c = hit(x, y);
+                if c.is_some() {
+                    total += 1;
+                }
+                // a miss surrounded by hits on the same object = hole
+                if c.is_none() {
+                    let n = [hit(x - 1, y), hit(x + 1, y), hit(x, y - 1), hit(x, y + 1)];
+                    if n.iter().all(|v| v.is_some() && *v == n[0]) {
+                        holes += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("hits {total} holes {holes}");
+        assert_eq!(holes, 0);
+    }
+}
