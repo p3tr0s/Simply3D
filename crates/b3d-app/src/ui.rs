@@ -346,8 +346,10 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                 app.start_cut();
             }
             ui.separator();
-            let snap_tip = "Snap moves/rotations to the grid. Hold Ctrl while dragging to invert.";
-            ui.toggle_value(&mut app.settings.snap_enabled, "Snap").on_hover_text(snap_tip);
+            let snap_tip = "Snap moves/rotations to the grid steps from Settings. Hold Ctrl while dragging to invert.";
+            ui.toggle_value(&mut app.settings.snap_enabled, "Grid snap").on_hover_text(snap_tip);
+            ui.toggle_value(&mut app.settings.snap_objects, "Object snap")
+                .on_hover_text("While moving, line up edges and centres with other objects and the plate (magenta guides)");
             ui.separator();
             let many = app.selection.len() >= 2;
             if ui.add_enabled(many, egui::Button::new("Union")).on_hover_text("Join selected objects into one solid").clicked() {
@@ -1286,6 +1288,18 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                 }
                 ui.end_row();
             });
+            ui.separator();
+            ui.label(RichText::new("Mouse").strong());
+            ui.horizontal(|ui| {
+                ui.label("Left-drag on empty space");
+                ui.selectable_value(&mut app.settings.left_drag, crate::app::LeftDrag::Orbit, "Orbit")
+                    .on_hover_text("3D Builder style: Shift+drag box-selects, right-drag pans");
+                ui.selectable_value(&mut app.settings.left_drag, crate::app::LeftDrag::BoxSelect, "Box select")
+                    .on_hover_text("CAD style: right-drag orbits, middle-drag pans");
+            });
+            ui.checkbox(&mut app.settings.drag_moves_objects, "Left-drag on an object moves it");
+            ui.checkbox(&mut app.settings.snap_objects, "Snap to other objects while moving");
+            ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Plate presets");
                 for (n, x, y) in
@@ -1305,8 +1319,12 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
         egui::Window::new("Keyboard & mouse").open(&mut open).resizable(false).show(ctx, |ui| {
             egui::Grid::new("keys").num_columns(2).striped(true).show(ui, |ui| {
                 for (k, d) in [
-                    ("Left drag", "Orbit (on gizmo: transform)"),
-                    ("Right / middle drag, Shift+left", "Pan"),
+                    ("Left-drag on an object", "Move it (rests on objects under the cursor)"),
+                    ("  + Alt / + Shift (while moving)", "Move vertically / lock to X or Y"),
+                    ("Left-drag on empty space", "Orbit (or box select in CAD mouse mode)"),
+                    ("Shift + left-drag", "Box select, adds to selection (→ inside, ← touching)"),
+                    ("Alt + left-drag", "Always orbit"),
+                    ("Right / middle drag", "Pan"),
                     ("Wheel", "Zoom to cursor"),
                     ("Click / Shift+click", "Select / add to selection"),
                     ("Double-click", "Focus on point"),

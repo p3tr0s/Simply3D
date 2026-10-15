@@ -43,6 +43,12 @@ pub struct Settings {
     /// Minutes between autosaves (0 = off).
     pub autosave_minutes: f32,
     pub recent_commands: Vec<String>,
+    /// What a left-drag on empty space does.
+    pub left_drag: LeftDrag,
+    /// Left-drag on an object moves it (3D Builder style).
+    pub drag_moves_objects: bool,
+    /// Snap moved objects to other objects' edges/centres and the plate.
+    pub snap_objects: bool,
 }
 
 impl Default for Settings {
@@ -64,8 +70,38 @@ impl Default for Settings {
             recent: vec![],
             autosave_minutes: 2.0,
             recent_commands: vec![],
+            left_drag: LeftDrag::Orbit,
+            drag_moves_objects: true,
+            snap_objects: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LeftDrag {
+    /// 3D Builder style: left-drag orbits, Shift+left-drag box-selects, right-drag pans.
+    Orbit,
+    /// CAD style: left-drag box-selects, right-drag orbits, middle-drag pans.
+    BoxSelect,
+}
+
+/// The current mouse drag in the viewport.
+#[derive(Debug, Clone, Default)]
+pub enum DragMode {
+    #[default]
+    None,
+    Orbit,
+    Pan,
+    Box {
+        start: egui::Pos2,
+        additive: bool,
+    },
+    Move {
+        grab: Vec3,
+        start: Vec<(ObjectId, Transform)>,
+        bounds: Aabb,
+        vertical: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +294,14 @@ pub struct App {
     pub pending_recovery_target: Option<Option<PathBuf>>,
     /// (off the plate, below the plate), refreshed every frame
     pub issues: (Vec<ObjectId>, Vec<ObjectId>),
+    pub drag: DragMode,
+    /// Snap guide segments for this frame.
+    pub snap_guides: Vec<(Vec3, Vec3)>,
+    /// Text shown next to the cursor while moving (e.g. the offset).
+    pub drag_label: Option<String>,
+    /// Transforms + group bounds when a gizmo move started.
+    pub gizmo_start: Vec<(ObjectId, Transform)>,
+    pub gizmo_start_bounds: Aabb,
 }
 
 impl App {
@@ -319,6 +363,11 @@ impl App {
             allow_close: false,
             pending_recovery_target: None,
             issues: (vec![], vec![]),
+            drag: DragMode::None,
+            snap_guides: vec![],
+            drag_label: None,
+            gizmo_start: vec![],
+            gizmo_start_bounds: Aabb::EMPTY,
             encode_srgb,
         };
         app.recovery = crate::autosave::find_recovery();
@@ -1091,6 +1140,12 @@ impl App {
         let b = o.world_bounds();
         self.bounds_cache.insert(id, (o.mesh.id, o.transform, b));
         Some(b)
+    }
+
+    /// Bounds of every visible object except the given ones (snap targets).
+    pub fn other_bounds(&mut self, exclude: &[ObjectId]) -> Vec<Aabb> {
+        let ids: Vec<ObjectId> = self.scene.objects.iter().filter(|o| o.visible && !exclude.contains(&o.id)).map(|o| o.id).collect();
+        ids.into_iter().filter_map(|id| self.object_bounds(id)).collect()
     }
 
     /// (objects sticking out of the plate area, objects below the plate)

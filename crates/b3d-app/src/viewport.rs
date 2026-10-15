@@ -1,6 +1,6 @@
 //! 3D viewport: camera input, picking, gizmo, GPU frame and 2D overlays.
 
-use crate::app::{App, GizmoKind, Tool};
+use crate::app::{App, DragMode, GizmoKind, LeftDrag, Tool};
 use crate::camera::ViewPreset;
 use crate::render::{CameraUniform, DrawItem, LineVertex, ViewportFrame};
 use crate::ui::ACCENT;
@@ -37,6 +37,12 @@ impl View {
     }
     fn ray(&self, p: Pos2) -> (Vec3, Vec3) {
         self.cam.ray(self.ndc(p), self.aspect)
+    }
+    /// World units per screen point at world position `p`.
+    fn world_per_px(&self, p: Vec3) -> f32 {
+        let c = &self.cam;
+        let depth = if c.ortho { c.distance } else { (p - c.eye()).dot(c.forward()).max(0.01) };
+        2.0 * depth * (c.fov_y * 0.5).tan() / self.rect.height().max(1.0)
     }
     fn to_screen(&self, w: Vec3) -> Option<Pos2> {
         let n = self.cam.project(w, self.aspect)?;
@@ -82,6 +88,10 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     app.cursor_plate = ray.and_then(|(o, d)| plate_hit(o, d));
 
     // ---------- gizmo ----------
+    app.snap_guides.clear();
+    if !matches!(app.drag, DragMode::Move { .. }) {
+        app.drag_label = None;
+    }
     let gizmo_focused = run_gizmo(app, ui, &view);
     let gizmo_busy = gizmo_focused || app.gizmo_dragging;
 
@@ -97,21 +107,50 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     }
     if matches!(app.tool, Tool::Measure | Tool::LayFlat) && response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+    } else if matches!(app.drag, DragMode::Move { .. }) {
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    } else if app.tool == Tool::Select && app.settings.drag_moves_objects && app.hovered.is_some() && !gizmo_busy && response.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::Grab);
     }
 
-    // ---------- camera ----------
-    let shift = ui.input(|i| i.modifiers.shift);
-    if response.dragged_by(egui::PointerButton::Primary) && !gizmo_busy {
+    // ---------- drags: orbit / pan / move objects / box select ----------
+    let (shift, alt, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt, i.modifiers.command));
+    let cad = app.settings.left_drag == LeftDrag::BoxSelect;
+    if response.drag_started_by(egui::PointerButton::Primary) && !gizmo_busy {
+        let origin = ui.input(|i| i.pointer.press_origin()).or(pointer).unwrap_or(rect.center());
+        app.drag = start_primary_drag(app, &view, origin, shift, alt, ctrl, cad);
+    }
+    if response.drag_started_by(egui::PointerButton::Secondary) {
+        app.drag = if cad { DragMode::Orbit } else { DragMode::Pan };
+    }
+    if response.drag_started_by(egui::PointerButton::Middle) {
+        app.drag = DragMode::Pan;
+    }
+    if response.dragged() {
         let d = response.drag_delta();
-        if shift {
-            app.settings.camera.pan(Vec2::new(d.x, d.y), rect.height());
-        } else {
-            app.settings.camera.orbit(Vec2::new(d.x, d.y));
+        match &app.drag {
+            DragMode::Orbit => app.settings.camera.orbit(Vec2::new(d.x, d.y)),
+            DragMode::Pan => app.settings.camera.pan(Vec2::new(d.x, d.y), rect.height()),
+            DragMode::Move { .. } => {
+                if let Some(p) = pointer.or(ui.input(|i| i.pointer.latest_pos())) {
+                    update_move(app, &view, p, shift, ctrl);
+                }
+            }
+            _ => {}
         }
     }
-    if response.dragged_by(egui::PointerButton::Secondary) || response.dragged_by(egui::PointerButton::Middle) {
-        let d = response.drag_delta();
-        app.settings.camera.pan(Vec2::new(d.x, d.y), rect.height());
+    if response.drag_stopped() {
+        if let DragMode::Box { start, additive } = app.drag.clone() {
+            if let Some(end) = ui.input(|i| i.pointer.latest_pos()) {
+                finish_box_select(app, &view, start, end, additive);
+            }
+        }
+        if matches!(app.drag, DragMode::Move { .. }) {
+            if let Some(l) = app.drag_label.take() {
+                app.info(format!("Moved {l}"));
+            }
+        }
+        app.drag = DragMode::None;
     }
     if response.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta().y);
@@ -263,6 +302,8 @@ fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View) -> bool {
         .collect();
     if let Some((result, new)) = app.gizmo.interact(ui, &targets) {
         if !app.gizmo_dragging {
+            app.gizmo_start = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| (o.id, o.transform)).collect();
+            app.gizmo_start_bounds = app.selection_bounds();
             let label = match result {
                 GizmoResult::Translation { .. } => "Move",
                 GizmoResult::Scale { .. } => "Scale",
@@ -279,6 +320,30 @@ fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View) -> bool {
                 o.transform.rotation = DQuat::from_xyzw(ro.v.x, ro.v.y, ro.v.z, ro.s).as_quat().normalize();
                 o.transform.scale = DVec3::new(sc.x, sc.y, sc.z).as_vec3().max(Vec3::splat(1e-4));
             }
+        }
+        // translations: rebuild from start + total (the gizmo works incrementally, which would
+        // accumulate snap corrections), then snap the group to other objects
+        if let GizmoResult::Translation { total, .. } = result {
+            let mut total = DVec3::new(total.x, total.y, total.z).as_vec3();
+            let ids: Vec<_> = app.gizmo_start.iter().map(|s| s.0).collect();
+            if app.settings.snap_objects {
+                let b0 = app.gizmo_start_bounds;
+                let moved = Aabb { min: b0.min + total, max: b0.max + total };
+                let axes = [total.x.abs() > 1e-6, total.y.abs() > 1e-6, total.z.abs() > 1e-6];
+                let targets = app.other_bounds(&ids);
+                let tol = view.world_per_px(moved.center()) * 8.0;
+                let plate = app.settings.show_plate.then_some(app.settings.plate * 0.5);
+                let s = crate::snap::snap_box(&moved, &targets, plate, axes, tol);
+                total += s.correction;
+                app.snap_guides = s.guides;
+            }
+            for (id, t0) in app.gizmo_start.clone() {
+                if let Some(o) = app.scene.get_mut(id) {
+                    o.transform.translation = t0.translation + total;
+                }
+            }
+            let dec = app.settings.decimals;
+            app.drag_label = Some(format!("ΔX {:+.*}  ΔY {:+.*}  ΔZ {:+.*} mm", dec, total.x, dec, total.y, dec, total.z));
         }
         app.report_cache = None;
     }
@@ -396,6 +461,13 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
         }
     }
 
+    // snap guides
+    for (a, b) in &app.snap_guides {
+        let c = lin_rgba(1.0, 0.2, 0.85, 1.0);
+        overlay.push(LineVertex::new(*a, c));
+        overlay.push(LineVertex::new(*b, c));
+    }
+
     // measurement
     if let (Some(a), Some(b)) = (app.measure.a, app.measure.b) {
         let c = lin_rgba(1.0, 0.85, 0.1, 1.0);
@@ -508,6 +580,7 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
     }
     axis_triad(app, ui, p, view);
     plate_warnings(app, ui, view);
+    drag_overlays(app, ui, p);
 }
 
 fn axis_triad(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
@@ -606,4 +679,183 @@ fn plate_warnings(app: &mut App, ui: &mut egui::Ui, view: &View) {
                 }
             });
         });
+}
+
+/// Decide what a left-drag does, based on what is under the press point and modifiers.
+fn start_primary_drag(app: &mut App, view: &View, origin: Pos2, shift: bool, alt: bool, ctrl: bool, cad: bool) -> DragMode {
+    if !matches!(app.tool, Tool::Select | Tool::Cut) {
+        return DragMode::Orbit;
+    }
+    let (o, d) = view.ray(origin);
+    // Shift at the start of a drag always box-selects (even over objects)
+    if shift && !alt {
+        return DragMode::Box { start: origin, additive: true };
+    }
+    if app.settings.drag_moves_objects && app.tool == Tool::Select {
+        if let Some(hit) = app.scene.pick_detail(o, d) {
+            if !app.is_selected(hit.id) {
+                if shift || ctrl {
+                    app.selection.push(hit.id);
+                } else {
+                    app.select_only(hit.id);
+                }
+            }
+            app.checkpoint("Move");
+            let start: Vec<_> = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| (o.id, o.transform)).collect();
+            let bounds = app.selection_bounds();
+            return DragMode::Move { grab: hit.point, start, bounds, vertical: alt };
+        }
+    }
+    if alt {
+        DragMode::Orbit
+    } else if cad || shift {
+        DragMode::Box { start: origin, additive: shift || ctrl }
+    } else {
+        DragMode::Orbit
+    }
+}
+
+/// Move the dragged objects to follow the cursor: slide on a horizontal plane through the
+/// grab point (Alt: vertical), rest on top of objects under the cursor, snap to grid/objects.
+fn update_move(app: &mut App, view: &View, p: Pos2, shift: bool, ctrl: bool) {
+    let DragMode::Move { grab, start, bounds, vertical } = app.drag.clone() else { return };
+    let (o, d) = view.ray(p);
+    let mut delta = Vec3::ZERO;
+    if vertical {
+        let f = view.cam.forward();
+        let n = Vec3::new(f.x, f.y, 0.0).normalize_or_zero();
+        let den = n.dot(d);
+        if n == Vec3::ZERO || den.abs() < 1e-6 {
+            return;
+        }
+        let hit = o + d * (n.dot(grab - o) / den);
+        delta.z = hit.z - grab.z;
+    } else {
+        if d.z.abs() < 1e-5 {
+            return;
+        }
+        let t = (grab.z - o.z) / d.z;
+        if t <= 0.0 {
+            return;
+        }
+        let hit = o + d * t;
+        delta = Vec3::new(hit.x - grab.x, hit.y - grab.y, 0.0);
+        // keep the move reasonable when the plane is nearly edge-on
+        let max = view.cam.distance * 4.0;
+        if delta.length() > max {
+            delta = delta.normalize() * max;
+        }
+        if shift {
+            if delta.x.abs() > delta.y.abs() {
+                delta.y = 0.0;
+            } else {
+                delta.x = 0.0;
+            }
+        }
+    }
+    // grid snapping of the offset
+    if app.settings.snap_enabled ^ ctrl {
+        let step = app.settings.snap_move.max(1e-3);
+        delta = (delta / step).round() * step;
+    }
+    let ids: Vec<_> = start.iter().map(|s| s.0).collect();
+    // rest on top of whatever upward-facing surface is under the cursor
+    if !vertical {
+        let hit = app.scene.pick_detail_where(o, d, |ob| !ids.contains(&ob.id));
+        match hit {
+            Some(h) if h.normal.z > 0.7 => delta.z = h.point.z - bounds.min.z,
+            _ => delta.z = 0.0,
+        }
+    }
+    // object snapping
+    if app.settings.snap_objects {
+        let moved = Aabb { min: bounds.min + delta, max: bounds.max + delta };
+        let targets = app.other_bounds(&ids);
+        let tol = view.world_per_px(moved.center()) * 8.0;
+        let axes = if vertical { [false, false, true] } else { [true, true, false] };
+        let plate = app.settings.show_plate.then_some(app.settings.plate * 0.5);
+        let s = crate::snap::snap_box(&moved, &targets, plate, axes, tol);
+        delta += s.correction;
+        app.snap_guides = s.guides;
+    }
+    for (id, t0) in &start {
+        if let Some(ob) = app.scene.get_mut(*id) {
+            ob.transform.translation = t0.translation + delta;
+        }
+    }
+    let dec = app.settings.decimals;
+    app.drag_label = Some(if vertical {
+        format!("ΔZ {:+.*} mm", dec, delta.z)
+    } else if delta.z.abs() > 1e-4 {
+        format!("ΔX {:+.*}  ΔY {:+.*}  on top (Z {:.*})", dec, delta.x, dec, delta.y, dec, bounds.min.z + delta.z)
+    } else {
+        format!("ΔX {:+.*}  ΔY {:+.*} mm", dec, delta.x, dec, delta.y)
+    });
+}
+
+/// Window (drag left→right): objects fully inside. Crossing (right→left): objects touched.
+fn finish_box_select(app: &mut App, view: &View, start: Pos2, end: Pos2, additive: bool) {
+    let r = Rect::from_two_pos(start, end);
+    if r.width() < 3.0 && r.height() < 3.0 {
+        return;
+    }
+    let window = end.x >= start.x;
+    let center_ray = view.ray(r.center());
+    let center_hit = app.scene.pick(center_ray.0, center_ray.1).map(|h| h.0);
+    let mut picked = vec![];
+    for o in app.scene.objects.iter().filter(|o| o.visible) {
+        // test the real silhouette via (sampled) vertices, not the bounding box
+        let m = o.matrix();
+        let verts = &o.mesh.mesh.positions;
+        let stride = (verts.len() / 4000).max(1);
+        let mut any_in = false;
+        let mut all_in = true;
+        for v in verts.iter().step_by(stride) {
+            match view.to_screen(m.transform_point3(*v)) {
+                Some(sp) if r.contains(sp) => any_in = true,
+                _ => all_in = false,
+            }
+        }
+        let hit = if window { all_in } else { any_in || center_hit == Some(o.id) };
+        if hit {
+            picked.push(o.id);
+        }
+    }
+    if !additive {
+        app.selection.clear();
+    }
+    for id in picked {
+        if !app.selection.contains(&id) {
+            app.selection.push(id);
+        }
+    }
+    let n = app.selection.len();
+    app.info(format!("{n} object{} selected", if n == 1 { "" } else { "s" }));
+}
+
+/// Box-select rectangle, snap guides label and the move readout.
+fn drag_overlays(app: &App, ui: &egui::Ui, p: &egui::Painter) {
+    if let DragMode::Box { start, .. } = app.drag {
+        if let Some(end) = ui.input(|i| i.pointer.latest_pos()) {
+            let r = Rect::from_two_pos(start, end);
+            let window = end.x >= start.x;
+            let (fill, stroke) = if window {
+                (Color32::from_rgba_unmultiplied(56, 132, 255, 30), Color32::from_rgb(90, 160, 255))
+            } else {
+                (Color32::from_rgba_unmultiplied(80, 220, 120, 30), Color32::from_rgb(110, 230, 140))
+            };
+            p.rect_filled(r, 0.0, fill);
+            if window {
+                p.rect_stroke(r, 0.0, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+            } else {
+                let c = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+                p.extend(Shape::dashed_line(&c, Stroke::new(1.0, stroke), 6.0, 4.0));
+            }
+            let hint = if window { "inside" } else { "touching" };
+            p.text(end + egui::vec2(10.0, 10.0), egui::Align2::LEFT_TOP, hint, egui::FontId::proportional(12.0), stroke);
+        }
+    }
+    if let (Some(l), Some(pos)) = (&app.drag_label, ui.input(|i| i.pointer.latest_pos())) {
+        label(p, pos + egui::vec2(0.0, 28.0), l.clone(), Color32::WHITE);
+    }
 }

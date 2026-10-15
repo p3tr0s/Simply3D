@@ -193,8 +193,13 @@ impl Scene {
 
     /// Detailed pick: hit point, world face normal and world triangle corners.
     pub fn pick_detail(&self, origin: Vec3, dir: Vec3) -> Option<PickHit> {
+        self.pick_detail_where(origin, dir, |_| true)
+    }
+
+    /// Like [`pick_detail`](Self::pick_detail) but only considers objects for which `keep` is true.
+    pub fn pick_detail_where(&self, origin: Vec3, dir: Vec3, keep: impl Fn(&Object) -> bool) -> Option<PickHit> {
         let mut best: Option<(f32, PickHit)> = None;
-        for o in self.objects.iter().filter(|o| o.visible) {
+        for o in self.objects.iter().filter(|o| o.visible && keep(o)) {
             let m = o.matrix();
             let inv = m.inverse();
             let lo = inv.transform_point3(origin);

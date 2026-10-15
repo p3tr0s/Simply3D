@@ -6,6 +6,7 @@ mod camera;
 mod commands;
 mod expr;
 mod render;
+mod snap;
 mod ui;
 mod viewport;
 

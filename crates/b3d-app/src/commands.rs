@@ -66,7 +66,10 @@ pub fn all() -> Vec<Command> {
             a.gizmo_kind = GizmoKind::Scale
         }),
         cmd!("Transform", "Hide gizmo", "Q", always, |a, _| a.gizmo_kind = GizmoKind::Off),
-        cmd!("Transform", "Toggle snapping", "", always, |a, _| a.settings.snap_enabled = !a.settings.snap_enabled),
+        cmd!("Transform", "Toggle grid snapping", "", always, |a, _| a.settings.snap_enabled = !a.settings.snap_enabled),
+        cmd!("Transform", "Toggle object snapping", "", always, |a, _| a.settings.snap_objects = !a.settings.snap_objects),
+        cmd!("View", "Mouse: 3D Builder style (left-drag orbits)", "", always, |a, _| a.settings.left_drag = crate::app::LeftDrag::Orbit),
+        cmd!("View", "Mouse: CAD style (left-drag box-selects)", "", always, |a, _| a.settings.left_drag = crate::app::LeftDrag::BoxSelect),
         cmd!("Transform", "Drop to plate", "D", has_sel, |a, _| a.drop_selected()),
         cmd!("Transform", "Center on plate", "", has_sel, |a, _| a.center_selected_on_plate()),
         cmd!("Transform", "Move back onto the plate", "", has_sel, |a, _| {
