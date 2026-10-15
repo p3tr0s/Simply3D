@@ -10,6 +10,7 @@ pub mod csg;
 pub mod extrude;
 pub mod fonts;
 pub mod history;
+pub mod image3d;
 pub mod io;
 pub mod mesh;
 pub mod primitives;

@@ -274,6 +274,39 @@ fn extrude(r: &Region, depth: f32, soup: &mut Vec<[Vec3; 3]>) -> Result<()> {
     Ok(())
 }
 
+/// Closed solid from closed 2D outlines (any orientation; nesting decides holes),
+/// extruded from z = 0 to z = depth. Used for image contours.
+pub fn extrude_contours(contours: Vec<Vec<Vec2>>, depth: f32) -> Result<Mesh> {
+    let contours: Vec<Vec<Vec2>> = contours
+        .into_iter()
+        .map(|mut c| {
+            remove_collinear(&mut c);
+            c
+        })
+        .filter(|c| c.len() >= 3 && signed_area(c).abs() > 1e-9)
+        .collect();
+    let rs = regions(separate_touching(contours));
+    let mut soup = vec![];
+    for r in &rs {
+        extrude(r, depth, &mut soup)?;
+    }
+    let m = Mesh::from_soup(&soup);
+    if crate::analysis::analyze(&m).is_watertight() {
+        return Ok(m);
+    }
+    let mut solids = vec![];
+    for r in &rs {
+        let mut soup = vec![];
+        extrude(r, depth, &mut soup)?;
+        solids.push(Mesh::from_soup(&soup));
+    }
+    if solids.is_empty() {
+        return Ok(Mesh::default());
+    }
+    let first = solids.remove(0);
+    boolean_many(&first, &solids, BoolOp::Union)
+}
+
 /// Build the text as a closed mesh lying on the XY plane (reading along +X, up = +Y),
 /// extruded from z = 0 to z = depth and centred on the origin in X/Y.
 pub fn text_mesh(font: &[u8], face_index: u32, opts: &TextOptions) -> Result<Mesh> {

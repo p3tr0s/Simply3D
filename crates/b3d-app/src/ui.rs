@@ -314,6 +314,9 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 if ui.add(egui::Button::new("Text…").shortcut_text("T")).clicked() {
                     app.start_text_tool();
                 }
+                if ui.button("Picture to 3D…").clicked() {
+                    app.image_dialog(&ctx);
+                }
                 ui.separator();
                 if ui.add_enabled(has, egui::Button::new("Repair")).clicked() {
                     app.repair_selected(&ctx);
@@ -424,6 +427,15 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
             }
             if tool_button(ui, app.tool == Tool::Text, "🅰 Text", "Add 3D text, or emboss / engrave it onto a face (T)").clicked() {
                 app.start_text_tool();
+            }
+            if tool_button(ui, app.tool == Tool::Image, "🖼 Picture", "Turn a picture into 3D: contour, height map, edge, stamp, lithophane")
+                .clicked()
+            {
+                if app.img_rt.source.is_some() {
+                    app.tool = Tool::Image;
+                } else {
+                    app.image_dialog(&ctx);
+                }
             }
             ui.separator();
             if ui
@@ -715,6 +727,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         }
         Tool::Cut => cut_panel(app, ui),
         Tool::Text => crate::text_tool::panel(app, ui),
+        Tool::Image => crate::image_tool::panel(app, ui, &ctx),
         Tool::Select => {}
     }
     let Some(&id) = app.selection.first() else {
@@ -1647,7 +1660,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("Left-drag on an object", "Move it (rests on objects under the cursor)"),
                     ("  + Alt / + Shift (while moving)", "Move vertically / lock to X or Y"),
                     ("Left-drag on empty space", "Orbit (or box select in CAD mouse mode)"),
-                    ("Shift + left-drag", "Box select, adds to selection (→ inside, ← touching)"),
+                    ("Shift + left-drag", "Box select, adds to selection (drag right: inside, drag left: touching)"),
                     ("Alt + left-drag", "Always orbit"),
                     ("Right / middle drag", "Pan"),
                     ("Wheel", "Zoom to cursor"),

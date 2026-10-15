@@ -302,7 +302,7 @@ impl App {
                         JobOutput::ReplaceMeshes {
                             label: "Simplify".into(),
                             meshes,
-                            message: format!("Simplified {before} → {after} triangles"),
+                            message: format!("Simplified {before} to {after} triangles"),
                         }
                     }),
                 )

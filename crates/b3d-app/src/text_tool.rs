@@ -244,50 +244,50 @@ impl App {
         self.info("Text added — drag it anywhere, or click the plate to add another");
     }
 
-    /// Frame on a surface: Z = normal, Y = "up" (world Z projected, or the camera's up on
-    /// top/bottom faces), X = reading direction; then spun by the text angle.
     pub fn surface_frame(&self, point: Vec3, normal: Vec3, cam_up: Vec3) -> Mat4 {
-        let n = normal.normalize_or(Vec3::Z);
-        let pick_up = if n.z.abs() < 0.9 { Vec3::Z } else { cam_up };
-        let mut up = (pick_up - n * pick_up.dot(n)).normalize_or_zero();
-        if up == Vec3::ZERO {
-            up = n.any_orthonormal_vector();
-        }
-        let right = up.cross(n);
-        let spin = Quat::from_axis_angle(n, self.settings.text.angle.to_radians());
-        let (right, up) = (spin * right, spin * up);
-        Mat4::from_cols(right.extend(0.0), up.extend(0.0), n.extend(0.0), Vec4::new(point.x, point.y, point.z, 1.0))
+        surface_frame(point, normal, cam_up, self.settings.text.angle)
     }
 
     /// Matrix for the hover preview on a surface.
     pub fn text_surface_preview(&self, frame: Mat4) -> Mat4 {
-        let d = self.settings.text.depth.max(0.05);
-        match self.settings.text.mode {
-            crate::text_tool::TextMode::Engrave => {
-                frame * Mat4::from_translation(Vec3::new(0.0, 0.0, -d)) * Mat4::from_scale(Vec3::new(1.0, 1.0, d))
-            }
-            _ => frame * Mat4::from_scale(Vec3::new(1.0, 1.0, d)),
-        }
+        surface_preview(frame, self.settings.text.depth, self.settings.text.mode == TextMode::Engrave)
     }
 
     /// Emboss / engrave at the hovered spot (background boolean).
     pub fn apply_text_on_surface(&mut self, ctx: &egui::Context, hover: TextHover) {
-        let Some(target) = hover.target else { return };
         let Some(base) = self.text_base().cloned() else {
             self.error("Text: still preparing the letters");
             return;
         };
+        let t = &self.settings.text;
+        let (depth, engrave, reach) = (t.depth, t.mode == TextMode::Engrave, t.size * 3.0);
+        let label = if engrave { "Engrave text" } else { "Emboss text" };
+        self.apply_on_surface(ctx, hover, &base.mesh, depth, engrave, reach, label);
+    }
+
+    /// Join (emboss) or cut (engrave) a flat shape onto the hovered face. `unit` lies on
+    /// XY with z in [0, 1]; it is scaled to `depth`. Curved surfaces are measured under the
+    /// shape so it always overlaps the object (emboss) or clears the surface (engrave).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_on_surface(
+        &mut self,
+        ctx: &egui::Context,
+        hover: TextHover,
+        unit: &Mesh,
+        depth: f32,
+        engrave: bool,
+        reach: f32,
+        label: &'static str,
+    ) {
+        let Some(target) = hover.target else { return };
         let Some(obj) = self.scene.get(target).cloned() else { return };
         if obj.locked {
             return;
         }
-        let t = self.settings.text.clone();
-        let d = t.depth.max(0.05);
+        let d = depth.max(0.05);
         let n = hover.frame.z_axis.truncate();
-        // measure how far the surface curves away under the letters, so the text always
-        // overlaps the object (emboss) or clears the surface (engrave)
-        let fb = base.mesh.bounds();
-        let reach = obj.world_bounds().size().length() + 10.0;
+        let fb = unit.bounds();
+        let far = obj.world_bounds().size().length() + 10.0;
         let mut lo: f32 = 0.0;
         let mut hi: f32 = 0.0;
         for i in 0..5 {
@@ -295,17 +295,15 @@ impl App {
                 let x = fb.min.x + (fb.max.x - fb.min.x) * i as f32 / 4.0;
                 let y = fb.min.y + (fb.max.y - fb.min.y) * j as f32 / 2.0;
                 let q = hover.frame.transform_point3(Vec3::new(x, y, 0.0));
-                let hit = self.scene.pick_filtered(q + n * reach, -n, |o| o.id == target, |_| true);
-                if let Some(h) = hit {
+                if let Some(h) = self.scene.pick_filtered(q + n * far, -n, |o| o.id == target, |_| true) {
                     let off = (h.point - q).dot(n);
-                    if off.abs() < t.size * 3.0 + d {
+                    if off.abs() < reach + d {
                         lo = lo.min(off);
                         hi = hi.max(off);
                     }
                 }
             }
         }
-        let engrave = t.mode == TextMode::Engrave;
         let m = if engrave {
             let lift = hi + 0.3;
             hover.frame * Mat4::from_translation(Vec3::new(0.0, 0.0, -d)) * Mat4::from_scale(Vec3::new(1.0, 1.0, d + lift))
@@ -313,11 +311,11 @@ impl App {
             let sink = -lo + 0.3;
             hover.frame * Mat4::from_translation(Vec3::new(0.0, 0.0, -sink)) * Mat4::from_scale(Vec3::new(1.0, 1.0, d + sink))
         };
-        let letters = base.mesh.transformed(&m);
+        let shape = unit.transformed(&m);
         let body = obj.world_mesh();
-        let (op, label) = if engrave { (BoolOp::Subtract, "Engrave text") } else { (BoolOp::Union, "Emboss text") };
+        let op = if engrave { BoolOp::Subtract } else { BoolOp::Union };
         let (name, color) = (obj.name.clone(), obj.color);
-        self.spawn_job(ctx, format!("{label}…"), move |_p| match csg::boolean_many(&body, &[letters], op) {
+        self.spawn_job(ctx, format!("{label}…"), move |_p| match csg::boolean_many(&body, &[shape], op) {
             Ok(m) if m.is_empty() => JobOutput::Error(format!("{label}: the result is empty")),
             Ok(m) => JobOutput::Replace {
                 label: label.into(),
@@ -327,6 +325,31 @@ impl App {
             },
             Err(e) => JobOutput::Error(format!("{label} failed: {e}")),
         });
+    }
+}
+
+/// Frame on a surface: Z = normal, Y = "up" (world Z projected, or the camera's up on
+/// top/bottom faces), X = reading direction; then spun by `angle_deg`.
+pub fn surface_frame(point: Vec3, normal: Vec3, cam_up: Vec3, angle_deg: f32) -> Mat4 {
+    let n = normal.normalize_or(Vec3::Z);
+    let pick_up = if n.z.abs() < 0.9 { Vec3::Z } else { cam_up };
+    let mut up = (pick_up - n * pick_up.dot(n)).normalize_or_zero();
+    if up == Vec3::ZERO {
+        up = n.any_orthonormal_vector();
+    }
+    let right = up.cross(n);
+    let spin = Quat::from_axis_angle(n, angle_deg.to_radians());
+    let (right, up) = (spin * right, spin * up);
+    Mat4::from_cols(right.extend(0.0), up.extend(0.0), n.extend(0.0), Vec4::new(point.x, point.y, point.z, 1.0))
+}
+
+/// Hover preview of a unit-depth shape on a surface: raised, or sunk in for engraving.
+pub fn surface_preview(frame: Mat4, depth: f32, engrave: bool) -> Mat4 {
+    let d = depth.max(0.05);
+    if engrave {
+        frame * Mat4::from_translation(Vec3::new(0.0, 0.0, -d)) * Mat4::from_scale(Vec3::new(1.0, 1.0, d))
+    } else {
+        frame * Mat4::from_scale(Vec3::new(1.0, 1.0, d))
     }
 }
 

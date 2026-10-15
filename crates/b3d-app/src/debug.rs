@@ -92,7 +92,8 @@ pub fn frame(app: &mut App, ui: &egui::Ui, p: Probe) {
         app.tool,
         p.total_tris,
     );
-    let click = clicked.map(|c| if c == r.id { " CLICK→viewport".to_string() } else { format!(" CLICK→other {c:?}") }).unwrap_or_default();
+    let click =
+        clicked.map(|c| if c == r.id { " CLICK->viewport".to_string() } else { format!(" CLICK->other {c:?}") }).unwrap_or_default();
     if sig != app.debug.last_sig || !click.is_empty() {
         if let Some(f) = app.debug.log.as_mut() {
             let _ = writeln!(

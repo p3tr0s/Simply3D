@@ -48,6 +48,7 @@ pub struct Settings {
     /// Snap moved objects to other objects' edges/centres and the plate.
     pub snap_objects: bool,
     pub text: crate::text_tool::TextSettings,
+    pub image: crate::image_tool::ImageSettings,
 }
 
 impl Default for Settings {
@@ -73,6 +74,7 @@ impl Default for Settings {
             drag_moves_objects: true,
             snap_objects: true,
             text: Default::default(),
+            image: Default::default(),
         }
     }
 }
@@ -111,6 +113,7 @@ pub enum Tool {
     LayFlat,
     Cut,
     Text,
+    Image,
 }
 
 /// Section view: everything on the far side of a plane is cut away (display only).
@@ -341,6 +344,7 @@ pub struct App {
     pub preview: Option<crate::preview::Preview>,
     pub text_rt: crate::text_tool::TextRuntime,
     pub debug: crate::debug::DebugHud,
+    pub img_rt: crate::image_tool::ImageRuntime,
 }
 
 impl App {
@@ -414,12 +418,17 @@ impl App {
             preview: None,
             text_rt: Default::default(),
             debug: Default::default(),
+            img_rt: Default::default(),
             encode_srgb,
         };
         app.text_rt.load_fonts();
         app.recovery = crate::autosave::find_recovery();
         // command-line files
-        let files: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| Format::from_path(p).is_some()).collect();
+        let files: Vec<PathBuf> = std::env::args()
+            .skip(1)
+            .map(PathBuf::from)
+            .filter(|p| Format::from_path(p).is_some() || b3d_core::image3d::is_image_path(p))
+            .collect();
         if !files.is_empty() {
             app.import_files(files, &cc.egui_ctx);
         }
@@ -616,6 +625,7 @@ impl App {
     pub fn open_dialog(&mut self, ctx: &egui::Context) {
         let files = rfd::FileDialog::new()
             .add_filter("3D models", &Format::IMPORT_EXTS)
+            .add_filter("Pictures (to 3D)", &b3d_core::image3d::IMAGE_EXTS)
             .add_filter("3MF", &["3mf"])
             .add_filter("STL", &["stl"])
             .add_filter("OBJ", &["obj"])
@@ -627,6 +637,14 @@ impl App {
     }
 
     pub fn import_files(&mut self, files: Vec<PathBuf>, ctx: &egui::Context) {
+        // pictures open the picture → 3D tool
+        let (images, files): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().partition(|f| b3d_core::image3d::is_image_path(f));
+        if let Some(img) = images.into_iter().next() {
+            self.open_image(img, ctx);
+        }
+        if files.is_empty() {
+            return;
+        }
         let label =
             format!("Loading {}", files.iter().map(|f| f.file_name().unwrap_or_default().to_string_lossy()).collect::<Vec<_>>().join(", "));
         self.spawn_job(ctx, label, move |p| {
@@ -1248,6 +1266,7 @@ impl eframe::App for App {
         self.poll_job();
         self.tick_preview(ctx);
         self.tick_text(ctx);
+        self.tick_image(ctx);
         self.tick_autosave(ctx);
         self.handle_close(ctx);
         if self.job.is_some() {
@@ -1259,7 +1278,8 @@ impl eframe::App for App {
         }
         // drag & drop
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        let dropped: Vec<PathBuf> = dropped.into_iter().filter(|p| Format::from_path(p).is_some()).collect();
+        let dropped: Vec<PathBuf> =
+            dropped.into_iter().filter(|p| Format::from_path(p).is_some() || b3d_core::image3d::is_image_path(p)).collect();
         if !dropped.is_empty() {
             self.import_files(dropped, ctx);
         }

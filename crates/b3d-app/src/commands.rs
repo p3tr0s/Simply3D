@@ -163,6 +163,7 @@ pub fn all() -> Vec<Command> {
             a.settings.text.mode = TextMode::Engrave;
             a.start_text_tool()
         }),
+        cmd!("Tools", "Picture to 3D (contour, height map, stamp, lithophane)…", "", always, |a, c| a.image_dialog(c)),
         cmd!("View", "Section view", "X", has_objects, |a, _| a.toggle_section()),
         // organise
         cmd!("Organise", "Group", "Ctrl+G", two_sel, |a, _| a.group_selected()),

@@ -183,6 +183,9 @@ fn scene_menu(app: &mut App, ui: &mut egui::Ui) {
         app.settings.text.mode = TextMode::Object;
         app.start_text_tool();
     }
+    if item(ui, true, "Picture to 3D…", "") {
+        app.image_dialog(ui.ctx());
+    }
     ui.separator();
     if item(ui, true, "Frame all", "Home") {
         app.frame_all();

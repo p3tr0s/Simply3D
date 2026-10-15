@@ -9,6 +9,7 @@ boolmesh = "0.2"
 bytemuck = { version = "1.25", features = ["derive"] }
 earcutr = "0.5"
 fontdb = "0.24"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tga", "gif", "webp"] }
 glam = { version = "0.34", features = ["bytemuck", "serde"] }
 quick-xml = "0.42"
 thiserror = "2"

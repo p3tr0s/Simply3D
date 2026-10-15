@@ -130,7 +130,23 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     crate::debug::frame(app, ui, crate::debug::Probe { response: &response, gizmo_focused: gizmo_busy, moved, total_tris });
-    if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text) && response.hovered() {
+    // ---------- picture tool: same placement as text ----------
+    if app.tool == Tool::Image {
+        if moved || app.img_rt.hover.is_none() {
+            app.img_rt.hover = ray.and_then(|(o, d)| match app.settings.image.place {
+                TextMode::Object => plate_hit(o, d).map(|p| TextHover { target: None, point: p, frame: glam::Mat4::IDENTITY }),
+                _ => pick(app, o, d, false).map(|h| TextHover {
+                    target: Some(h.id),
+                    point: h.point,
+                    frame: app.image_surface_frame(h.point, h.normal, view.cam.right_up().1),
+                }),
+            });
+        }
+        if pointer.is_none() {
+            app.img_rt.hover = None;
+        }
+    }
+    if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image) && response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else if matches!(app.drag, DragMode::Move { .. }) {
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
@@ -198,6 +214,18 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                     None if !cmd => app.selection.clear(),
                     None => {}
                 },
+                Tool::Image => {
+                    let ctx = ui.ctx().clone();
+                    match (app.settings.image.place, app.img_rt.hover) {
+                        (TextMode::Object, h) => {
+                            if app.img_rt.mesh.is_some() {
+                                app.add_image_object(&ctx, h.map(|h| h.point));
+                            }
+                        }
+                        (_, Some(h)) => app.apply_image_on_surface(&ctx, h),
+                        _ => {}
+                    }
+                }
                 Tool::Text => {
                     let ctx = ui.ctx().clone();
                     match (app.settings.text.mode, app.text_rt.hover) {
@@ -505,6 +533,26 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
             });
         }
     }
+    // picture tool ghost
+    if app.tool == Tool::Image {
+        let s = &app.settings.image;
+        let (mesh, model) = match (s.place, app.img_rt.hover) {
+            (TextMode::Object, h) => (
+                app.image_preview_mesh().cloned(),
+                Some(app.image_object_matrix(h.map(|h| h.point).unwrap_or_else(|| app.image_default_spot()))),
+            ),
+            (_, Some(h)) if h.target.is_some() => (app.img_rt.unit.clone(), Some(app.image_surface_preview(h.frame))),
+            _ => (None, None),
+        };
+        if let (Some(mesh), Some(model)) = (mesh, model) {
+            let color = match s.place {
+                TextMode::Engrave => [1.0, 0.35, 0.25, 0.55],
+                TextMode::Emboss => [1.0, 0.75, 0.2, 0.6],
+                TextMode::Object => [0.75, 0.78, 0.85, 0.7],
+            };
+            ghosts.push(DrawItem { mesh, model, color, params: [0.4, 0.0, 0.0, 0.0] });
+        }
+    }
     // text tool ghost
     if app.tool == Tool::Text {
         if let Some(base) = app.text_base() {
@@ -758,6 +806,11 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             TextMode::Object => "Text: click the plate to place it",
             TextMode::Emboss => "Emboss: click a face",
             TextMode::Engrave => "Engrave: click a face",
+        }),
+        Tool::Image => Some(match app.settings.image.place {
+            TextMode::Object => "Picture: click the plate to place it",
+            TextMode::Emboss => "Emboss picture: click a face",
+            TextMode::Engrave => "Engrave picture: click a face",
         }),
         Tool::Select => None,
     };
