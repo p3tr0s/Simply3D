@@ -121,6 +121,10 @@ pub fn all() -> Vec<Command> {
             a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::Round)
         }),
+        cmd!("Mesh", "Hollow: shell with wall thickness (preview)", "", has_sel, |a, _| {
+            a.tab = PanelTab::Mesh;
+            a.start_preview(PreviewKind::Hollow)
+        }),
         cmd!("Mesh", "Extrude down to the plate (preview)", "", has_sel, |a, _| {
             a.tab = PanelTab::Mesh;
             a.start_extrude_down()

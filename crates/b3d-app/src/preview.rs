@@ -55,6 +55,7 @@ pub enum PreviewKind {
     Round,
     Cut,
     ExtrudeDown,
+    Hollow,
 }
 
 impl PreviewKind {
@@ -65,6 +66,7 @@ impl PreviewKind {
             PreviewKind::Round => "Round edges",
             PreviewKind::Cut => "Cut",
             PreviewKind::ExtrudeDown => "Extrude down",
+            PreviewKind::Hollow => "Hollow",
         }
     }
 }
@@ -107,9 +109,10 @@ impl App {
             PreviewKind::Round => format!("{} {:?} {} {}", t.round_radius, t.round_mode, t.round_voxel, t.round_simplify),
             PreviewKind::Cut => format!("{:?}", self.cut),
             PreviewKind::ExtrudeDown => format!("{}", t.extrude_height),
+            PreviewKind::Hollow => format!("{} {}", t.hollow_wall, t.hollow_voxel),
         };
         params.hash(&mut h);
-        let world = matches!(kind, PreviewKind::Round | PreviewKind::Cut | PreviewKind::ExtrudeDown);
+        let world = matches!(kind, PreviewKind::Round | PreviewKind::Cut | PreviewKind::ExtrudeDown | PreviewKind::Hollow);
         for o in self.selection.iter().filter_map(|id| self.scene.get(*id)) {
             o.id.hash(&mut h);
             o.mesh.id.hash(&mut h);
@@ -192,6 +195,9 @@ impl App {
         }
         if kind == PreviewKind::Cut {
             self.tool = Tool::Select;
+        }
+        if kind == PreviewKind::Hollow && self.mesh_tools.hollow_drain {
+            self.add_drain_holes();
         }
     }
 
@@ -392,6 +398,37 @@ impl App {
                     }),
                 )
             }
+            PreviewKind::Hollow => {
+                let objs = world();
+                let (wall, voxel) = (t.hollow_wall, t.hollow_voxel);
+                (
+                    "Hollowing…".into(),
+                    Box::new(move |p: &Progress| {
+                        let mut add = vec![];
+                        let mut remove = vec![];
+                        let mut info = vec![];
+                        let n = objs.len() as f32;
+                        for (i, (id, name, color, m)) in objs.into_iter().enumerate() {
+                            match b3d_core::hollow::hollow(&m, wall, voxel, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
+                                Ok((out, h)) => {
+                                    let left = out.volume() / m.volume().max(1e-9) * 100.0;
+                                    info.push(format!("{name}: {left:.0}% of the material left (inside detail {h:.2} mm)"));
+                                    remove.push(id);
+                                    add.push((name, out, color));
+                                }
+                                Err(b3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
+                                Err(e) => return JobOutput::Error(format!("Hollow failed on {name}: {e}")),
+                            }
+                        }
+                        JobOutput::Replace {
+                            label: "Hollow".into(),
+                            remove,
+                            add,
+                            message: format!("Hollowed — {} (Section view, X, shows the inside)", info.join("; ")),
+                        }
+                    }),
+                )
+            }
             PreviewKind::ExtrudeDown => {
                 let objs = world();
                 let h = t.extrude_height;
@@ -520,4 +557,29 @@ fn build_result(key: u64, targets: Vec<ObjectId>, out: JobOutput, secs: f32, kin
 /// Model matrix for a preview piece.
 pub fn offset_matrix(off: Vec3) -> Mat4 {
     Mat4::from_translation(off)
+}
+
+impl App {
+    /// After hollowing: a drain / vent hole through the bottom wall of each new shell, as
+    /// a hole object so it can still be moved or resized.
+    fn add_drain_holes(&mut self) {
+        let (wall, d) = (self.mesh_tools.hollow_wall, self.mesh_tools.hollow_drain_d.max(0.5));
+        let mut holes = vec![];
+        for id in self.selection.clone() {
+            let Some(o) = self.scene.get(id) else { continue };
+            let Some(spot) = b3d_core::hollow::drain_spot(&o.world_mesh(), wall) else { continue };
+            let h = wall + 2.0;
+            let mesh = b3d_core::primitives::frustum(d * 0.5, d * 0.5, h, 48);
+            let at = Vec3::new(spot.x, spot.y, spot.z - 1.0 + h * 0.5);
+            let name = self.scene.unique_name(&format!("{} drain hole", o.name));
+            let hid = self.scene.add_object(name, mesh, b3d_core::Transform { translation: at, ..Default::default() }, None);
+            if let Some(ho) = self.scene.get_mut(hid) {
+                ho.hole = true;
+            }
+            holes.push(hid);
+        }
+        if !holes.is_empty() {
+            self.info("Hollowed, with a drain hole in the bottom (a hole object: move or resize it as you like)");
+        }
+    }
 }

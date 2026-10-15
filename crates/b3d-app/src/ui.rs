@@ -1291,9 +1291,35 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui) {
         "Extends the underside of the model straight down to the plate, from the chosen height: a flat base, simple supports under overhangs, floating parts tied to the plate (like 3D Builder).",
     );
 
-    for (clicked, kind) in
-        [(simplify, PreviewKind::Simplify), (smooth, PreviewKind::Smooth), (round, PreviewKind::Round), (extrude, PreviewKind::ExtrudeDown)]
-    {
+    ui.add_space(6.0);
+    ui.label(RichText::new("Hollow").strong());
+    let t = &mut app.mesh_tools;
+    ui.horizontal(|ui| {
+        ui.label("Wall");
+        ui.add(num(&mut t.hollow_wall, Kind::Length).speed(0.05).range(0.2..=100.0).max_decimals(2).suffix(" mm")).on_hover_text(NUM_TIP);
+        ui.label("Detail");
+        ui.add(num(&mut t.hollow_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+            .on_hover_text("Voxel size for the inside surface. 0 = automatic");
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut t.hollow_drain, "Drain hole")
+            .on_hover_text("A hole through the bottom wall (for resin, or to let air out), added as a hole object you can move");
+        ui.add_enabled(t.hollow_drain, num(&mut t.hollow_drain_d, Kind::Length).speed(0.05).range(0.5..=50.0).suffix(" mm"));
+    });
+    let hollow = preview_buttons(
+        ui,
+        active,
+        PreviewKind::Hollow,
+        "Keeps a shell of the given wall thickness and removes the inside, saving material and weight. The outside stays exactly as it is. Use Section view (X) to see the inside.",
+    );
+
+    for (clicked, kind) in [
+        (simplify, PreviewKind::Simplify),
+        (smooth, PreviewKind::Smooth),
+        (round, PreviewKind::Round),
+        (extrude, PreviewKind::ExtrudeDown),
+        (hollow, PreviewKind::Hollow),
+    ] {
         match clicked {
             Some(PreviewClick::Start) if kind == PreviewKind::ExtrudeDown => app.start_extrude_down(),
             Some(PreviewClick::Start) => app.start_preview(kind),

@@ -141,6 +141,7 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             ("Smooth…", PreviewKind::Smooth),
             ("Round edges…", PreviewKind::Round),
             ("Extrude down…", PreviewKind::ExtrudeDown),
+            ("Hollow…", PreviewKind::Hollow),
         ] {
             if item(ui, true, label, "") {
                 app.tab = PanelTab::Mesh;

@@ -214,6 +214,11 @@ pub struct MeshTools {
     pub round_simplify: bool,
     /// Extrude down: undersides below this height (world Z, mm) go down to the plate.
     pub extrude_height: f32,
+    /// Hollow: wall thickness, inside detail (0 = auto), drain hole.
+    pub hollow_wall: f32,
+    pub hollow_voxel: f32,
+    pub hollow_drain: bool,
+    pub hollow_drain_d: f32,
 }
 
 impl Default for MeshTools {
@@ -231,6 +236,10 @@ impl Default for MeshTools {
             round_voxel: 0.0,
             round_simplify: true,
             extrude_height: 0.0,
+            hollow_wall: 2.0,
+            hollow_voxel: 0.0,
+            hollow_drain: false,
+            hollow_drain_d: 4.0,
         }
     }
 }
