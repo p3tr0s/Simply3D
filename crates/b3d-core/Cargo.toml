@@ -1,0 +1,13 @@
+[package]
+name = "b3d-core"
+version = "0.1.0"
+edition = "2021"
+description = "Geometry kernel for Builder3D: meshes, file formats, booleans, analysis and repair"
+
+[dependencies]
+boolmesh = "0.2"
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = { version = "0.34", features = ["bytemuck", "serde"] }
+quick-xml = "0.42"
+thiserror = "2"
+zip = { version = "9", default-features = false, features = ["deflate"] }

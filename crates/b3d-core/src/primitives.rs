@@ -1,0 +1,284 @@
+//! Parametric primitives. All are closed, outward-oriented and centred on the
+//! origin (bounding-box centre), Z up.
+
+use crate::mesh::Mesh;
+use glam::Vec3;
+use std::f32::consts::TAU;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Primitive {
+    Box { size: Vec3 },
+    Cylinder { radius: f32, height: f32, segments: u32 },
+    Cone { bottom_radius: f32, top_radius: f32, height: f32, segments: u32 },
+    Sphere { radius: f32, segments: u32, rings: u32 },
+    Torus { major_radius: f32, minor_radius: f32, major_segments: u32, minor_segments: u32 },
+    Tube { outer_radius: f32, inner_radius: f32, height: f32, segments: u32 },
+    Pyramid { base: f32, height: f32 },
+    Wedge { size: Vec3 },
+}
+
+impl Primitive {
+    pub const ALL_NAMES: [&'static str; 8] = ["Box", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
+
+    pub fn default_for(name: &str) -> Primitive {
+        match name {
+            "Cylinder" => Primitive::Cylinder { radius: 10.0, height: 20.0, segments: 64 },
+            "Cone" => Primitive::Cone { bottom_radius: 10.0, top_radius: 0.0, height: 20.0, segments: 64 },
+            "Sphere" => Primitive::Sphere { radius: 10.0, segments: 64, rings: 32 },
+            "Torus" => Primitive::Torus { major_radius: 15.0, minor_radius: 5.0, major_segments: 64, minor_segments: 32 },
+            "Tube" => Primitive::Tube { outer_radius: 10.0, inner_radius: 7.0, height: 20.0, segments: 64 },
+            "Pyramid" => Primitive::Pyramid { base: 20.0, height: 20.0 },
+            "Wedge" => Primitive::Wedge { size: Vec3::new(20.0, 20.0, 20.0) },
+            _ => Primitive::Box { size: Vec3::splat(20.0) },
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Primitive::Box { .. } => "Box",
+            Primitive::Cylinder { .. } => "Cylinder",
+            Primitive::Cone { .. } => "Cone",
+            Primitive::Sphere { .. } => "Sphere",
+            Primitive::Torus { .. } => "Torus",
+            Primitive::Tube { .. } => "Tube",
+            Primitive::Pyramid { .. } => "Pyramid",
+            Primitive::Wedge { .. } => "Wedge",
+        }
+    }
+
+    pub fn build(&self) -> Mesh {
+        match *self {
+            Primitive::Box { size } => cuboid(size),
+            Primitive::Cylinder { radius, height, segments } => frustum(radius, radius, height, segments),
+            Primitive::Cone { bottom_radius, top_radius, height, segments } => frustum(bottom_radius, top_radius, height, segments),
+            Primitive::Sphere { radius, segments, rings } => sphere(radius, segments, rings),
+            Primitive::Torus { major_radius, minor_radius, major_segments, minor_segments } => {
+                torus(major_radius, minor_radius, major_segments, minor_segments)
+            }
+            Primitive::Tube { outer_radius, inner_radius, height, segments } => tube(outer_radius, inner_radius, height, segments),
+            Primitive::Pyramid { base, height } => pyramid(base, height),
+            Primitive::Wedge { size } => wedge(size),
+        }
+    }
+}
+
+pub fn cuboid(size: Vec3) -> Mesh {
+    let h = size * 0.5;
+    let p = vec![
+        Vec3::new(-h.x, -h.y, -h.z),
+        Vec3::new(h.x, -h.y, -h.z),
+        Vec3::new(h.x, h.y, -h.z),
+        Vec3::new(-h.x, h.y, -h.z),
+        Vec3::new(-h.x, -h.y, h.z),
+        Vec3::new(h.x, -h.y, h.z),
+        Vec3::new(h.x, h.y, h.z),
+        Vec3::new(-h.x, h.y, h.z),
+    ];
+    let t = vec![
+        [0, 2, 1],
+        [0, 3, 2], // bottom
+        [4, 5, 6],
+        [4, 6, 7], // top
+        [0, 1, 5],
+        [0, 5, 4], // -y
+        [1, 2, 6],
+        [1, 6, 5], // +x
+        [2, 3, 7],
+        [2, 7, 6], // +y
+        [3, 0, 4],
+        [3, 4, 7], // -x
+    ];
+    Mesh::new(p, t)
+}
+
+fn ring(r: f32, z: f32, n: u32) -> impl Iterator<Item = Vec3> {
+    (0..n).map(move |i| {
+        let a = TAU * i as f32 / n as f32;
+        Vec3::new(r * a.cos(), r * a.sin(), z)
+    })
+}
+
+/// Cylinder / cone / frustum. A radius of 0 collapses that end to an apex.
+pub fn frustum(r_bottom: f32, r_top: f32, height: f32, segments: u32) -> Mesh {
+    let n = segments.max(3);
+    let hz = height * 0.5;
+    let mut m = Mesh::default();
+    let ring_or_apex = |m: &mut Mesh, r: f32, z: f32| -> Vec<u32> {
+        let start = m.positions.len() as u32;
+        if r <= 0.0 {
+            m.positions.push(Vec3::new(0.0, 0.0, z));
+            vec![start; n as usize]
+        } else {
+            m.positions.extend(ring(r, z, n));
+            (start..start + n).collect()
+        }
+    };
+    let b = ring_or_apex(&mut m, r_bottom, -hz);
+    let t = ring_or_apex(&mut m, r_top, hz);
+    for i in 0..n as usize {
+        let j = (i + 1) % n as usize;
+        if r_bottom > 0.0 {
+            m.triangles.push([b[i], b[j], t[j]]);
+        }
+        if r_top > 0.0 {
+            m.triangles.push([b[i], t[j], t[i]]);
+        }
+    }
+    if r_bottom > 0.0 {
+        let c = m.positions.len() as u32;
+        m.positions.push(Vec3::new(0.0, 0.0, -hz));
+        for i in 0..n as usize {
+            m.triangles.push([c, b[(i + 1) % n as usize], b[i]]);
+        }
+    }
+    if r_top > 0.0 {
+        let c = m.positions.len() as u32;
+        m.positions.push(Vec3::new(0.0, 0.0, hz));
+        for i in 0..n as usize {
+            m.triangles.push([c, t[i], t[(i + 1) % n as usize]]);
+        }
+    }
+    m
+}
+
+pub fn sphere(radius: f32, segments: u32, rings: u32) -> Mesh {
+    let n = segments.max(3);
+    let rings = rings.max(2);
+    let mut m = Mesh::default();
+    m.positions.push(Vec3::new(0.0, 0.0, radius)); // north = 0
+                                                   // ring k (1..rings) from top to bottom
+    for k in 1..rings {
+        let phi = std::f32::consts::PI * k as f32 / rings as f32;
+        m.positions.extend(ring(radius * phi.sin(), radius * phi.cos(), n));
+    }
+    let south = m.positions.len() as u32;
+    m.positions.push(Vec3::new(0.0, 0.0, -radius));
+    let idx = |k: u32, i: u32| 1 + (k - 1) * n + (i % n);
+    for i in 0..n {
+        // top cap: ring 1 is "lower" relative to north
+        m.triangles.push([idx(1, i), idx(1, i + 1), 0]);
+        // bottom cap: last ring is "upper" relative to south
+        m.triangles.push([south, idx(rings - 1, i + 1), idx(rings - 1, i)]);
+    }
+    for k in 1..rings - 1 {
+        for i in 0..n {
+            let (u0, u1, l0, l1) = (idx(k, i), idx(k, i + 1), idx(k + 1, i), idx(k + 1, i + 1));
+            m.triangles.push([l0, l1, u1]);
+            m.triangles.push([l0, u1, u0]);
+        }
+    }
+    m
+}
+
+pub fn torus(major: f32, minor: f32, nmaj: u32, nmin: u32) -> Mesh {
+    let (nmaj, nmin) = (nmaj.max(3), nmin.max(3));
+    let mut m = Mesh::default();
+    for i in 0..nmaj {
+        let th = TAU * i as f32 / nmaj as f32;
+        for j in 0..nmin {
+            let ph = TAU * j as f32 / nmin as f32;
+            let r = major + minor * ph.cos();
+            m.positions.push(Vec3::new(r * th.cos(), r * th.sin(), minor * ph.sin()));
+        }
+    }
+    let id = |i: u32, j: u32| (i % nmaj) * nmin + (j % nmin);
+    for i in 0..nmaj {
+        for j in 0..nmin {
+            let (a, b, c, d) = (id(i, j), id(i + 1, j), id(i + 1, j + 1), id(i, j + 1));
+            m.triangles.push([a, b, c]);
+            m.triangles.push([a, c, d]);
+        }
+    }
+    m
+}
+
+pub fn tube(r_out: f32, r_in: f32, height: f32, segments: u32) -> Mesh {
+    let n = segments.max(3);
+    let r_in = r_in.clamp(0.0, r_out * 0.999);
+    if r_in <= 0.0 {
+        return frustum(r_out, r_out, height, n);
+    }
+    let hz = height * 0.5;
+    let mut m = Mesh::default();
+    m.positions.extend(ring(r_out, -hz, n)); // ob 0..n
+    m.positions.extend(ring(r_out, hz, n)); // ot n..2n
+    m.positions.extend(ring(r_in, -hz, n)); // ib 2n..3n
+    m.positions.extend(ring(r_in, hz, n)); // it 3n..4n
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (ob, ot, ib, it) = (0, n, 2 * n, 3 * n);
+        // outer wall (outward)
+        m.triangles.push([ob + i, ob + j, ot + j]);
+        m.triangles.push([ob + i, ot + j, ot + i]);
+        // inner wall (facing the axis)
+        m.triangles.push([ib + i, it + j, ib + j]);
+        m.triangles.push([ib + i, it + i, it + j]);
+        // top annulus (+Z)
+        m.triangles.push([it + i, ot + i, ot + j]);
+        m.triangles.push([it + i, ot + j, it + j]);
+        // bottom annulus (-Z)
+        m.triangles.push([ib + i, ob + j, ob + i]);
+        m.triangles.push([ib + i, ib + j, ob + j]);
+    }
+    m
+}
+
+pub fn pyramid(base: f32, height: f32) -> Mesh {
+    let mut m = frustum(base * std::f32::consts::FRAC_1_SQRT_2, 0.0, height, 4);
+    // rotate 45° so the base edges align with X/Y
+    m.transform(&glam::Mat4::from_rotation_z(std::f32::consts::FRAC_PI_4));
+    m
+}
+
+/// Right-angle wedge: full footprint on the bottom, slope rising toward -X.
+pub fn wedge(size: Vec3) -> Mesh {
+    let h = size * 0.5;
+    let p = vec![
+        Vec3::new(-h.x, -h.y, -h.z), // 0
+        Vec3::new(h.x, -h.y, -h.z),  // 1
+        Vec3::new(h.x, h.y, -h.z),   // 2
+        Vec3::new(-h.x, h.y, -h.z),  // 3
+        Vec3::new(-h.x, -h.y, h.z),  // 4
+        Vec3::new(-h.x, h.y, h.z),   // 5
+    ];
+    let t = vec![
+        [0, 2, 1],
+        [0, 3, 2], // bottom
+        [0, 1, 4], // -y side
+        [3, 5, 2], // +y side
+        [3, 0, 4],
+        [3, 4, 5], // -x back
+        [1, 2, 5],
+        [1, 5, 4], // slope
+    ];
+    Mesh::new(p, t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::analyze;
+
+    #[test]
+    fn all_primitives_are_closed_and_outward() {
+        for name in Primitive::ALL_NAMES {
+            let m = Primitive::default_for(name).build();
+            let a = analyze(&m);
+            assert!(a.is_watertight(), "{name} not watertight: {a:?}");
+            assert!(m.volume() > 0.0, "{name} inside out: {}", m.volume());
+        }
+    }
+
+    #[test]
+    fn volumes_close_to_analytic() {
+        use std::f64::consts::PI;
+        let s = sphere(10.0, 128, 64).volume();
+        assert!((s - 4.0 / 3.0 * PI * 1000.0).abs() / s < 0.01);
+        let c = frustum(10.0, 10.0, 20.0, 256).volume();
+        assert!((c - PI * 100.0 * 20.0).abs() / c < 0.01);
+        let t = torus(15.0, 5.0, 256, 128).volume();
+        assert!((t - 2.0 * PI * PI * 15.0 * 25.0).abs() / t < 0.01);
+        let w = wedge(Vec3::splat(10.0)).volume();
+        assert!((w - 500.0).abs() < 1e-3);
+    }
+}
