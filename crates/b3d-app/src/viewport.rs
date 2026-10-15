@@ -1261,39 +1261,60 @@ fn preview_bar(app: &mut App, ui: &mut egui::Ui) {
     let mut apply = false;
     let mut cancel = false;
     let mut new_height = None;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("{} preview", kind.name())).strong());
-        if let Some(e) = &p.error {
-            ui.colored_label(Color32::from_rgb(255, 130, 110), format!("⚠ {e}"));
-        } else if let Some(t) = &p.task {
-            let f = t.progress.fraction();
-            let bar = egui::ProgressBar::new(f).desired_width(140.0).show_percentage();
-            ui.add(if f <= 0.0 { bar.animate(true) } else { bar });
-            if p.apply_when_ready {
-                ui.weak("applies when done");
-            }
-        } else if !fresh {
-            ui.spinner();
-        } else if let Some(r) = &p.result {
-            ui.label(&r.message);
-        }
-        if kind == PreviewKind::ExtrudeDown {
-            // the height plane right here, so the side panel isn't needed
-            let b = app.scene.bounds_of(&app.selection);
-            if !b.is_empty() {
-                ui.spacing_mut().slider_width = 160.0;
-                let mut h = app.mesh_tools.extrude_height;
-                if ui.add(egui::Slider::new(&mut h, b.min.z..=b.max.z).suffix(" mm").max_decimals(1)).changed() {
-                    new_height = Some(h);
+    // status in a fixed-width box: the bar is centred, so if its width changed while a
+    // slider is being dragged, the slider would slide away under the pointer
+    let status = |ui: &mut egui::Ui, w: f32| {
+        ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(w);
+            ui.set_max_width(w);
+            if let Some(e) = &p.error {
+                ui.add(egui::Label::new(egui::RichText::new(format!("⚠ {e}")).color(Color32::from_rgb(255, 130, 110))).truncate())
+                    .on_hover_text(e);
+            } else if let Some(t) = &p.task {
+                let f = t.progress.fraction();
+                let bar = egui::ProgressBar::new(f).desired_width(140.0).show_percentage();
+                ui.add(if f <= 0.0 { bar.animate(true) } else { bar });
+                if p.apply_when_ready {
+                    ui.weak("applies when done");
                 }
+            } else if !fresh {
+                ui.spinner();
+            } else if let Some(r) = &p.result {
+                ui.add(egui::Label::new(&r.message).truncate()).on_hover_text(&r.message);
             }
-        }
-        let label = if kind == PreviewKind::Cut { "✂ Cut" } else { "✔ Apply" };
-        if ui.add_enabled(p.error.is_none(), egui::Button::new(egui::RichText::new(label).strong())).on_hover_text("Enter").clicked() {
-            apply = true;
-        }
-        if ui.button("Cancel").on_hover_text("Esc").clicked() {
-            cancel = true;
+        });
+    };
+    let extrude = kind == PreviewKind::ExtrudeDown;
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("{} preview", kind.name())).strong());
+            if extrude {
+                // the height plane right here, so the side panel isn't needed
+                let b = app.scene.bounds_of(&app.selection);
+                if !b.is_empty() {
+                    ui.spacing_mut().slider_width = 180.0;
+                    let mut h = app.mesh_tools.extrude_height;
+                    let mut changed = ui.add(egui::Slider::new(&mut h, b.min.z..=b.max.z).show_value(false)).changed();
+                    // fixed-width number box, so the bar doesn't change width as the value changes
+                    let field = egui::DragValue::new(&mut h).range(b.min.z..=b.max.z).speed(0.1).suffix(" mm").max_decimals(1);
+                    changed |= ui.add_sized([78.0, ui.spacing().interact_size.y], field).changed();
+                    if changed {
+                        new_height = Some(h);
+                    }
+                }
+            } else {
+                status(ui, 340.0);
+            }
+            let label = if kind == PreviewKind::Cut { "✂ Cut" } else { "✔ Apply" };
+            if ui.add_enabled(p.error.is_none(), egui::Button::new(egui::RichText::new(label).strong())).on_hover_text("Enter").clicked() {
+                apply = true;
+            }
+            if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                cancel = true;
+            }
+        });
+        if extrude {
+            status(ui, 420.0);
         }
     });
     if let Some(h) = new_height {
