@@ -7,6 +7,7 @@
 
 pub mod analysis;
 pub mod csg;
+pub mod fonts;
 pub mod history;
 pub mod io;
 pub mod mesh;

@@ -5,8 +5,11 @@ mod autosave;
 mod camera;
 mod commands;
 mod expr;
+mod organize;
+mod preview;
 mod render;
 mod snap;
+mod text_tool;
 mod ui;
 mod viewport;
 

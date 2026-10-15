@@ -20,3 +20,4 @@ log = "0.4"
 rfd = "0.17"
 serde = { version = "1.0.229", features = ["derive"] }
 transform-gizmo-egui = "0.11"
+epaint_default_fonts = "0.36"

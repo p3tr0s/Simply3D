@@ -3,6 +3,7 @@
 use crate::app::{App, CutKeep, GizmoKind, PanelTab, PosRef, Tool};
 use crate::camera::ViewPreset;
 use crate::expr::{self, Kind};
+use crate::preview::PreviewKind;
 use b3d_core::csg::BoolOp;
 use b3d_core::primitives::Primitive;
 use egui::{Color32, Key, KeyboardShortcut, Modifiers, RichText};
@@ -69,10 +70,25 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if sc(Modifiers::COMMAND, Key::A) {
         app.select_all();
     }
+    if sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::G) {
+        app.ungroup_selected();
+    }
+    if sc(Modifiers::COMMAND, Key::G) {
+        app.group_selected();
+    }
+    if sc(Modifiers::COMMAND, Key::L) {
+        app.toggle_lock_selected();
+    }
+    if sc(Modifiers::SHIFT, Key::H) {
+        app.show_all();
+    }
     // single-key shortcuts
     let key = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
     if key(Key::Delete) || key(Key::Backspace) {
         app.delete_selected();
+    }
+    if app.preview.is_some() && key(Key::Enter) {
+        app.apply_preview();
     }
     if key(Key::Escape) {
         if app.job.is_some() {
@@ -81,6 +97,8 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         }
         if app.tool != Tool::Select {
             app.tool = Tool::Select;
+        } else if app.preview.is_some() {
+            app.cancel_preview();
         } else {
             app.selection.clear();
         }
@@ -104,6 +122,18 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     }
     if key(Key::M) {
         app.tool = Tool::Measure;
+    }
+    if key(Key::T) {
+        app.start_text_tool();
+    }
+    if key(Key::H) {
+        app.hide_selected();
+    }
+    if key(Key::I) {
+        app.toggle_isolate();
+    }
+    if key(Key::X) {
+        app.toggle_section();
     }
     if key(Key::L) {
         app.tool = Tool::LayFlat;
@@ -133,6 +163,15 @@ impl App {
     pub fn frame_selection(&mut self) {
         let b = if self.selection.is_empty() { self.scene.bounds() } else { self.selection_bounds() };
         self.settings.camera.fit(&b, self.viewport_aspect);
+    }
+    pub fn toggle_section(&mut self) {
+        self.section.enabled = !self.section.enabled;
+        if self.section.enabled {
+            let b = if self.selection.is_empty() { self.scene.bounds() } else { self.selection_bounds() };
+            if !b.is_empty() {
+                self.section.offset = b.center()[self.section.axis];
+            }
+        }
     }
     pub fn frame_all(&mut self) {
         let mut b = self.scene.bounds();
@@ -214,6 +253,25 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 if ui.add(egui::Button::new("Delete").shortcut_text("Del")).clicked() {
                     app.delete_selected();
                 }
+                ui.separator();
+                if ui.add_enabled(app.selection.len() >= 2, egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() {
+                    app.group_selected();
+                }
+                if ui.add_enabled(app.can_ungroup(), egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() {
+                    app.ungroup_selected();
+                }
+                if ui.add_enabled(!app.selection.is_empty(), egui::Button::new("Hide").shortcut_text("H")).clicked() {
+                    app.hide_selected();
+                }
+                if ui.add_enabled(app.any_hidden(), egui::Button::new("Show all").shortcut_text("Shift+H")).clicked() {
+                    app.show_all();
+                }
+                if ui.add(egui::Button::new("Isolate").shortcut_text("I")).clicked() {
+                    app.toggle_isolate();
+                }
+                if ui.add_enabled(!app.selection.is_empty(), egui::Button::new("Lock / unlock").shortcut_text("Ctrl+L")).clicked() {
+                    app.toggle_lock_selected();
+                }
             });
             ui.menu_button("Add", |ui| {
                 for name in Primitive::ALL_NAMES {
@@ -244,6 +302,9 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 if ui.add_enabled(has, egui::Button::new("Cut with plane…")).clicked() {
                     app.start_cut();
                 }
+                if ui.add(egui::Button::new("Text…").shortcut_text("T")).clicked() {
+                    app.start_text_tool();
+                }
                 ui.separator();
                 if ui.add_enabled(has, egui::Button::new("Repair")).clicked() {
                     app.repair_selected(&ctx);
@@ -271,6 +332,9 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 ui.checkbox(&mut app.settings.show_plate, "Build plate");
                 ui.checkbox(&mut app.settings.show_dimensions, "Dimensions");
                 ui.checkbox(&mut app.settings.show_problems, "Highlight mesh problems");
+                if ui.checkbox(&mut app.section.enabled.clone(), "Section view (X)").clicked() {
+                    app.toggle_section();
+                }
                 ui.separator();
                 if ui.button("Frame selection (F)").clicked() {
                     app.frame_selection();
@@ -345,6 +409,17 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
             if tool_button(ui, app.tool == Tool::Cut, "✂ Cut", "Cut selection with a plane").clicked() {
                 app.start_cut();
             }
+            if tool_button(ui, app.tool == Tool::Text, "🅰 Text", "Add 3D text, or emboss / engrave it onto a face (T)").clicked() {
+                app.start_text_tool();
+            }
+            ui.separator();
+            if ui
+                .add(egui::Button::selectable(app.section.enabled, "▣ Section"))
+                .on_hover_text("Section view: slice the view with a plane to look inside (X)")
+                .clicked()
+            {
+                app.toggle_section();
+            }
             ui.separator();
             let snap_tip = "Snap moves/rotations to the grid steps from Settings. Hold Ctrl while dragging to invert.";
             ui.toggle_value(&mut app.settings.snap_enabled, "Grid snap").on_hover_text(snap_tip);
@@ -414,60 +489,166 @@ fn status_bar(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+enum ListAction {
+    Select(b3d_core::ObjectId),
+    SelectGroup(b3d_core::scene::GroupId),
+    Visible(Vec<b3d_core::ObjectId>, bool),
+    Lock(Vec<b3d_core::ObjectId>, bool),
+    Fold(b3d_core::scene::GroupId),
+}
+
+/// Small clickable icon that is bright when `on`.
+fn icon_toggle(ui: &mut egui::Ui, on: bool, icon: &str, tip: &str) -> bool {
+    let t = RichText::new(icon).size(13.0);
+    let t = if on { t } else { t.color(ui.visuals().weak_text_color().gamma_multiply(0.6)) };
+    ui.add(egui::Label::new(t).sense(egui::Sense::click())).on_hover_text(tip).clicked()
+}
+
+/// Clickable padlock drawn with the painter (the emoji font's lock glyph is unreadable).
+fn lock_toggle(ui: &mut egui::Ui, locked: bool, tip: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(12.0, 15.0), egui::Sense::click());
+    let weak = ui.visuals().weak_text_color().gamma_multiply(0.6);
+    let mut color = if locked { Color32::from_rgb(255, 196, 110) } else { weak };
+    if resp.hovered() {
+        color = ui.visuals().strong_text_color();
+    }
+    let p = ui.painter();
+    let body =
+        egui::Rect::from_min_max(egui::pos2(rect.left() + 1.5, rect.center().y), egui::pos2(rect.right() - 1.5, rect.bottom() - 2.0));
+    if locked {
+        p.rect_filled(body, 1.5, color);
+    } else {
+        p.rect_stroke(body, 1.5, egui::Stroke::new(1.2, color), egui::StrokeKind::Inside);
+    }
+    // shackle: closed when locked, swung open (raised right leg) when not
+    let r = 2.8;
+    let c = egui::pos2(body.center().x, body.top() - if locked { 1.5 } else { 3.0 });
+    let mut pts = vec![egui::pos2(c.x - r, body.top())];
+    for i in 0..=10 {
+        let a = std::f32::consts::PI * (1.0 + i as f32 / 10.0);
+        pts.push(egui::pos2(c.x + r * a.cos(), c.y + r * a.sin()));
+    }
+    if locked {
+        pts.push(egui::pos2(c.x + r, body.top()));
+    }
+    p.add(egui::Shape::line(pts, egui::Stroke::new(1.4, color)));
+    resp.on_hover_text(tip).clicked()
+}
+
 fn object_list(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(4.0);
-    ui.heading("Objects");
+    ui.horizontal(|ui| {
+        ui.heading("Objects");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add_enabled(app.can_ungroup(), egui::Button::new("Ungroup").small()).on_hover_text("Ctrl+Shift+G").clicked() {
+                app.ungroup_selected();
+            }
+            if ui
+                .add_enabled(app.selection.len() >= 2, egui::Button::new("Group").small())
+                .on_hover_text("Keep the selected objects together (Ctrl+G)")
+                .clicked()
+            {
+                app.group_selected();
+            }
+        });
+    });
     ui.separator();
     if app.scene.objects.is_empty() {
         ui.weak("Drop STL / OBJ / PLY / 3MF files here, or use Add shape.");
         return;
     }
+    if app.isolated.is_some() || app.any_hidden() {
+        ui.horizontal(|ui| {
+            let n = app.scene.objects.iter().filter(|o| !o.visible).count();
+            ui.weak(format!("{n} hidden"));
+            if ui.small_button("Show all").on_hover_text("Shift+H").clicked() {
+                app.show_all();
+            }
+        });
+    }
     let shift = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+    let mut action = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        let mut clicked = None;
-        let mut toggle_vis = None;
+        let mut seen = std::collections::HashSet::new();
         for o in &app.scene.objects {
-            ui.horizontal(|ui| {
-                let mut vis = o.visible;
-                if ui.checkbox(&mut vis, "").on_hover_text("Visible").changed() {
-                    toggle_vis = Some(o.id);
+            match o.group {
+                Some(g) if seen.insert(g) => {
+                    let members: Vec<&b3d_core::Object> = app.scene.objects.iter().filter(|x| x.group == Some(g)).collect();
+                    let ids: Vec<_> = members.iter().map(|m| m.id).collect();
+                    let folded = app.collapsed.contains(&g);
+                    let all_vis = members.iter().all(|m| m.visible);
+                    let all_lock = members.iter().all(|m| m.locked);
+                    ui.horizontal(|ui| {
+                        if icon_toggle(ui, true, if folded { "⏵" } else { "⏷" }, if folded { "Expand" } else { "Collapse" }) {
+                            action = Some(ListAction::Fold(g));
+                        }
+                        if icon_toggle(ui, all_vis, "👁", "Show / hide the group (H)") {
+                            action = Some(ListAction::Visible(ids.clone(), !all_vis));
+                        }
+                        if lock_toggle(ui, all_lock, "Lock: can't be clicked or moved in the view") {
+                            action = Some(ListAction::Lock(ids.clone(), !all_lock));
+                        }
+                        let selected = ids.iter().all(|i| app.selection.contains(i));
+                        let name = app.scene.group_name(g).unwrap_or("Group");
+                        let text = RichText::new(format!("🗀 {name}  ({})", ids.len())).strong();
+                        if ui.selectable_label(selected, text).on_hover_text("Click selects the whole group").clicked() {
+                            action = Some(ListAction::SelectGroup(g));
+                        }
+                    });
+                    if !folded {
+                        for m in members {
+                            object_row(app, ui, m, 18.0, &mut action);
+                        }
+                    }
                 }
-                let [r, g, b, _] = o.color;
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
-                let selected = app.selection.contains(&o.id);
-                let mut text = RichText::new(&o.name);
-                if !o.visible {
-                    text = text.weak();
-                }
-                if ui.selectable_label(selected, text).clicked() {
-                    clicked = Some(o.id);
-                }
-                let off = app.issues.0.contains(&o.id);
-                let below = app.issues.1.contains(&o.id);
-                if off || below {
-                    let tip = match (off, below) {
-                        (true, true) => "Outside the build plate and below it",
-                        (true, false) => "Outside the build plate",
-                        _ => "Below the build plate",
-                    };
-                    ui.label(RichText::new("⚠").color(Color32::from_rgb(255, 120, 80))).on_hover_text(tip);
-                }
-            });
-        }
-        if let Some(id) = clicked {
-            if shift {
-                app.toggle_select(id);
-            } else {
-                app.select_only(id);
+                Some(_) => {}
+                None => object_row(app, ui, o, 0.0, &mut action),
             }
         }
-        if let Some(id) = toggle_vis {
-            app.checkpoint("Visibility");
-            if let Some(o) = app.scene.get_mut(id) {
-                o.visible = !o.visible;
+    });
+    match action {
+        Some(ListAction::Select(id)) => app.click_select(id, shift, true),
+        Some(ListAction::SelectGroup(g)) => app.select_group(g, shift),
+        Some(ListAction::Visible(ids, v)) => app.set_visible(&ids, v),
+        Some(ListAction::Lock(ids, l)) => app.set_locked(&ids, l),
+        Some(ListAction::Fold(g)) => {
+            if !app.collapsed.remove(&g) {
+                app.collapsed.insert(g);
             }
-            app.selection.retain(|s| *s != id);
+        }
+        None => {}
+    }
+}
+
+fn object_row(app: &App, ui: &mut egui::Ui, o: &b3d_core::Object, indent: f32, action: &mut Option<ListAction>) {
+    ui.horizontal(|ui| {
+        ui.add_space(indent);
+        if icon_toggle(ui, o.visible, "👁", "Show / hide (H)") {
+            *action = Some(ListAction::Visible(vec![o.id], !o.visible));
+        }
+        if lock_toggle(ui, o.locked, "Lock: can't be clicked or moved in the view (Ctrl+L)") {
+            *action = Some(ListAction::Lock(vec![o.id], !o.locked));
+        }
+        let [r, g, b, _] = o.color;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
+        let selected = app.selection.contains(&o.id);
+        let mut text = RichText::new(&o.name);
+        if !o.visible {
+            text = text.weak().italics();
+        }
+        if ui.selectable_label(selected, text).clicked() {
+            *action = Some(ListAction::Select(o.id));
+        }
+        let off = app.issues.0.contains(&o.id);
+        let below = app.issues.1.contains(&o.id);
+        if off || below {
+            let tip = match (off, below) {
+                (true, true) => "Outside the build plate and below it",
+                (true, false) => "Outside the build plate",
+                _ => "Below the build plate",
+            };
+            ui.label(RichText::new("⚠").color(Color32::from_rgb(255, 120, 80))).on_hover_text(tip);
         }
     });
 }
@@ -488,7 +669,8 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             ui.label("Click any face of an object: it is rotated so that face rests on the plate.");
             ui.separator();
         }
-        Tool::Cut => cut_panel(app, ui, &ctx),
+        Tool::Cut => cut_panel(app, ui),
+        Tool::Text => crate::text_tool::panel(app, ui),
         Tool::Select => {}
     }
     let Some(&id) = app.selection.first() else {
@@ -506,8 +688,30 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     };
     let n = app.selection.len();
     let dec = app.settings.decimals;
-    ui.heading(if n == 1 { "Object".to_string() } else { format!("{n} objects") });
+    if let Some(g) = app.selected_group() {
+        let mut name = app.scene.group_name(g).unwrap_or_default().to_string();
+        ui.horizontal(|ui| {
+            ui.heading("🗀");
+            if ui.add(egui::TextEdit::singleline(&mut name).font(egui::TextStyle::Heading).desired_width(150.0)).changed() {
+                app.rename_group(g, name);
+            }
+            ui.weak(format!("{n} objects"));
+        });
+        ui.weak("Group: click selects all of it, Alt+click one part.");
+    } else {
+        ui.heading(if n == 1 { "Object".to_string() } else { format!("{n} objects") });
+    }
     ui.separator();
+    if app.any_locked_selected() {
+        ui.horizontal(|ui| {
+            lock_toggle(ui, true, "Locked");
+            ui.label(RichText::new("Locked").color(Color32::from_rgb(255, 200, 120)));
+            if ui.small_button("Unlock").clicked() {
+                let ids = app.selection.clone();
+                app.set_locked(&ids, false);
+            }
+        });
+    }
 
     // ----- name & colour -----
     if n == 1 {
@@ -558,7 +762,8 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         // ----- transform (primary object) -----
         if tab == PanelTab::Object {
             section(ui, "Transform");
-            ui.scope(|ui| {
+            let locked = app.any_locked_selected();
+            ui.add_enabled_ui(!locked, |ui| {
                 if n > 1 {
                     ui.weak("Editing the group's bounding box.");
                 }
@@ -783,12 +988,33 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                         app.start_cut();
                     }
                 });
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(n >= 2, egui::Button::new("Group")).on_hover_text("Ctrl+G").clicked() {
+                        app.group_selected();
+                    }
+                    if ui.add_enabled(app.can_ungroup(), egui::Button::new("Ungroup")).on_hover_text("Ctrl+Shift+G").clicked() {
+                        app.ungroup_selected();
+                    }
+                    if ui.button("Hide").on_hover_text("H").clicked() {
+                        app.hide_selected();
+                    }
+                    if ui
+                        .button(if app.isolated.is_some() { "Show others" } else { "Isolate" })
+                        .on_hover_text("Show only the selection (I)")
+                        .clicked()
+                    {
+                        app.toggle_isolate();
+                    }
+                    if ui.button("Lock").on_hover_text("Ctrl+L").clicked() {
+                        app.toggle_lock_selected();
+                    }
+                });
             });
         }
 
         // ----- mesh tools -----
         if tab == PanelTab::Mesh {
-            mesh_tools(app, ui, &ctx);
+            mesh_tools(app, ui);
         }
 
         // ----- analysis & repair -----
@@ -853,10 +1079,11 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(2.0);
 }
 
-fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
+fn mesh_tools(app: &mut App, ui: &mut egui::Ui) {
     use crate::app::SmoothMode;
     use b3d_core::sdf::RoundMode;
     let tris: usize = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| o.mesh.mesh.triangles.len()).sum();
+    let active = app.preview.as_ref().map(|p| p.kind);
     let t = &mut app.mesh_tools;
 
     ui.label(RichText::new("Simplify").strong());
@@ -871,7 +1098,7 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             .on_hover_text("Stop before the surface moves more than this. 0 = no limit");
     });
     let simplify =
-        ui.button("Simplify").on_hover_text("Quadric edge-collapse decimation; keeps the mesh closed and sharp edges crisp").clicked();
+        preview_buttons(ui, active, PreviewKind::Simplify, "Quadric edge-collapse decimation; keeps the mesh closed and sharp edges crisp");
 
     ui.add_space(6.0);
     ui.label(RichText::new("Smooth").strong());
@@ -900,7 +1127,7 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             ui.add_enabled(t.keep_sharp, num(&mut t.crease_deg, Kind::Angle).range(1.0..=179.0).suffix("°"));
         });
     }
-    let smooth = ui.button("Smooth").clicked();
+    let smooth = preview_buttons(ui, active, PreviewKind::Smooth, "Preview the smoothed mesh, then Apply");
 
     ui.add_space(6.0);
     ui.label(RichText::new("Round edges (bevel)").strong());
@@ -925,20 +1152,50 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         }
     });
     ui.checkbox(&mut t.round_simplify, "Reduce triangles afterwards");
-    let round = ui
-        .button("Round edges")
-        .on_hover_text("Works on any closed mesh: every edge sharper than the radius becomes a fillet. The surface is rebuilt, so tiny details below the detail size are lost.")
-        .clicked();
+    let round = preview_buttons(
+        ui,
+        active,
+        PreviewKind::Round,
+        "Works on any closed mesh: every edge sharper than the radius becomes a fillet. The surface is rebuilt, so tiny details below the detail size are lost.",
+    );
 
-    if simplify {
-        app.simplify_selected(ctx);
+    for (clicked, kind) in [(simplify, PreviewKind::Simplify), (smooth, PreviewKind::Smooth), (round, PreviewKind::Round)] {
+        match clicked {
+            Some(PreviewClick::Start) => app.start_preview(kind),
+            Some(PreviewClick::Apply) => app.apply_preview(),
+            Some(PreviewClick::Cancel) => app.cancel_preview(),
+            None => {}
+        }
     }
-    if smooth {
-        app.smooth_selected(ctx);
-    }
-    if round {
-        app.round_selected(ctx);
-    }
+}
+
+enum PreviewClick {
+    Start,
+    Apply,
+    Cancel,
+}
+
+/// "Preview" button, or Apply / Cancel while this operation is being previewed.
+fn preview_buttons(ui: &mut egui::Ui, active: Option<PreviewKind>, kind: PreviewKind, tip: &str) -> Option<PreviewClick> {
+    let mut out = None;
+    ui.horizontal(|ui| {
+        if active == Some(kind) {
+            if ui.button(RichText::new("✔ Apply").strong()).on_hover_text("Enter").clicked() {
+                out = Some(PreviewClick::Apply);
+            }
+            if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                out = Some(PreviewClick::Cancel);
+            }
+            ui.weak("live preview").on_hover_text("Change the settings above and the preview updates");
+        } else if ui
+            .button(format!("{}…", kind.name()))
+            .on_hover_text(format!("{tip}\n\nShows a live preview first; nothing changes until you Apply."))
+            .clicked()
+        {
+            out = Some(PreviewClick::Start);
+        }
+    });
+    out
 }
 
 fn edge_controls(ui: &mut egui::Ui, edge: &mut b3d_core::primitives::Edge) {
@@ -967,6 +1224,8 @@ impl App {
         self.tool = Tool::Cut;
         if !self.selection.is_empty() {
             self.cut.offset = self.selection_bounds().center()[self.cut.axis];
+            self.preview = None;
+            self.start_preview(PreviewKind::Cut);
         }
     }
 
@@ -1042,7 +1301,7 @@ fn measure_panel(app: &mut App, ui: &mut egui::Ui) {
     ui.separator();
 }
 
-fn cut_panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
+fn cut_panel(app: &mut App, ui: &mut egui::Ui) {
     ui.heading("Cut");
     if app.selection.is_empty() {
         ui.label("Select the object(s) to cut.");
@@ -1075,12 +1334,15 @@ fn cut_panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.selectable_value(&mut app.cut.keep, CutKeep::Above, "Upper");
         ui.selectable_value(&mut app.cut.keep, CutKeep::Below, "Lower");
     });
+    if app.preview.as_ref().is_none_or(|p| p.kind != PreviewKind::Cut) {
+        app.start_preview(PreviewKind::Cut);
+    }
+    ui.weak("The preview pulls the pieces apart so you can see the cut.");
     ui.horizontal(|ui| {
-        if ui.button(RichText::new("✂ Cut").strong()).clicked() {
-            app.cut_selected(ctx);
-            app.tool = Tool::Select;
+        if ui.button(RichText::new("✂ Cut").strong()).on_hover_text("Enter").clicked() {
+            app.apply_preview();
         }
-        if ui.button("Cancel").clicked() {
+        if ui.button("Cancel").on_hover_text("Esc").clicked() {
             app.tool = Tool::Select;
         }
     });
@@ -1330,7 +1592,14 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("Double-click", "Focus on point"),
                     ("W / E / R / Q", "Move / rotate / scale / hide gizmo"),
                     ("Ctrl while dragging gizmo", "Toggle snapping"),
-                    ("M / L", "Measure / lay flat tools"),
+                    ("M / L / T", "Measure / lay flat / text tools"),
+                    ("Alt+click", "Select one part of a group"),
+                    ("Ctrl+G / Ctrl+Shift+G", "Group / ungroup"),
+                    ("H / Shift+H", "Hide selected / show all"),
+                    ("I", "Isolate selection (again: show the rest)"),
+                    ("Ctrl+L", "Lock / unlock (locked objects can't be clicked or moved)"),
+                    ("X", "Section view"),
+                    ("Enter / Esc", "Apply / cancel a preview"),
                     ("D", "Drop to plate"),
                     ("F / Home", "Frame selection / all"),
                     ("1 / 3 / 7 / 0", "Front / right / top / iso view"),

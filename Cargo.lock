@@ -195,6 +195,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "env_logger",
+ "epaint_default_fonts",
  "glam 0.34.1",
  "log",
  "rfd",

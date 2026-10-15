@@ -9,8 +9,7 @@ use crate::mesh::Mesh;
 use crate::{Error, Result};
 use std::path::Path;
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct IoObject {
     pub name: String,
     /// World-space mesh, or local-space when `transform` is set.
@@ -111,10 +110,8 @@ pub fn save_bytes(objects: &[IoObject], fmt: Format, path: &Path) -> Result<Vec<
         return threemf::write(objects);
     }
     // the other formats have no placements: bake them
-    let baked: Vec<IoObject> = objects
-        .iter()
-        .map(|o| IoObject { name: o.name.clone(), mesh: o.world_mesh(), color: o.color, ..Default::default() })
-        .collect();
+    let baked: Vec<IoObject> =
+        objects.iter().map(|o| IoObject { name: o.name.clone(), mesh: o.world_mesh(), color: o.color, ..Default::default() }).collect();
     let objects = &baked[..];
     Ok(match fmt {
         Format::Stl => {

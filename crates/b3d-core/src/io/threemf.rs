@@ -167,7 +167,10 @@ fn parse_model(xml: &[u8]) -> Result<ModelFile> {
                     "apos" => meta_text.push('\''),
                     n => {
                         // numeric reference: &#65; / &#x41;
-                        let code = n.strip_prefix("#x").map(|h| u32::from_str_radix(h, 16).ok()).unwrap_or_else(|| n.strip_prefix('#').and_then(|d| d.parse().ok()));
+                        let code = n
+                            .strip_prefix("#x")
+                            .map(|h| u32::from_str_radix(h, 16).ok())
+                            .unwrap_or_else(|| n.strip_prefix('#').and_then(|d| d.parse().ok()));
                         if let Some(c) = code.and_then(char::from_u32) {
                             meta_text.push(c);
                         }
@@ -407,7 +410,8 @@ mod tests {
     #[test]
     fn transforms_and_metadata_roundtrip() {
         let m = crate::primitives::cuboid(Vec3::new(10.0, 4.0, 2.0));
-        let xf = Mat4::from_scale_rotation_translation(Vec3::new(2.0, 1.0, 1.0), glam::Quat::from_rotation_z(0.7), Vec3::new(5.0, -3.0, 1.0));
+        let xf =
+            Mat4::from_scale_rotation_translation(Vec3::new(2.0, 1.0, 1.0), glam::Quat::from_rotation_z(0.7), Vec3::new(5.0, -3.0, 1.0));
         let o = IoObject {
             name: "Rotated & co".into(),
             mesh: m.clone(),

@@ -3,6 +3,8 @@ struct Camera {
     eye: vec4<f32>,
     // xyz = key light direction (towards light), w = 1 if output needs manual sRGB encoding
     light: vec4<f32>,
+    // section plane: fragments with dot(xyz, p) > w are cut away; zero normal = off
+    clip: vec4<f32>,
 };
 
 struct Model {
@@ -42,10 +44,51 @@ fn encode(c: vec3<f32>) -> vec3<f32> {
     return c;
 }
 
+fn section_on() -> bool {
+    return dot(cam.clip.xyz, cam.clip.xyz) > 0.25;
+}
+
+fn clipped(p: vec3<f32>) -> bool {
+    return section_on() && dot(cam.clip.xyz, p) > cam.clip.w;
+}
+
+fn ghost_color(world: vec3<f32>, n_raw: vec3<f32>) -> vec3<f32> {
+    var n = n_raw;
+    let v = normalize(cam.eye.xyz - world);
+    if (dot(n, v) < 0.0) {
+        n = -n;
+    }
+    let key = max(dot(n, normalize(cam.light.xyz)), 0.0);
+    return obj.color.rgb * (0.55 + 0.6 * key);
+}
+
+@fragment
+fn fs_ghost(in: VOut) -> @location(0) vec4<f32> {
+    let n = normalize(cross(dpdx(in.world), dpdy(in.world)));
+    if (clipped(in.world)) {
+        discard;
+    }
+    let a = obj.color.a;
+    return vec4<f32>(encode(ghost_color(in.world, n)) * a, a);
+}
+
+@fragment
+fn fs_ghost_xray(in: VOut) -> @location(0) vec4<f32> {
+    let n = normalize(cross(dpdx(in.world), dpdy(in.world)));
+    if (clipped(in.world)) {
+        discard;
+    }
+    let a = obj.color.a * obj.params.x;
+    return vec4<f32>(encode(ghost_color(in.world, n)) * a, a);
+}
+
 @fragment
 fn fs_mesh(in: VOut, @builtin(front_facing) ff_raw: bool) -> @location(0) vec4<f32> {
     // flat normal from screen-space derivatives
     var n = normalize(cross(dpdx(in.world), dpdy(in.world)));
+    if (clipped(in.world)) {
+        discard;
+    }
     let v = normalize(cam.eye.xyz - in.world);
     if (dot(n, v) < 0.0) {
         n = -n;
@@ -53,6 +96,15 @@ fn fs_mesh(in: VOut, @builtin(front_facing) ff_raw: bool) -> @location(0) vec4<f
     var ff = ff_raw;
     if (obj.params.z > 0.5) {
         ff = !ff;
+    }
+    if (!ff && section_on()) {
+        // inside of a solid seen through the section plane: flat hatched cap
+        let s = fract((in.pos.x + in.pos.y) / 9.0);
+        var cap = obj.color.rgb * 0.62;
+        if (s < 0.3) {
+            cap = obj.color.rgb * 0.40;
+        }
+        return vec4<f32>(encode(cap), 1.0);
     }
     var base = obj.color.rgb;
     if (!ff && obj.params.w > 0.5) {

@@ -2,6 +2,8 @@
 
 use crate::app::{App, GizmoKind, PanelTab, Tool};
 use crate::camera::ViewPreset;
+use crate::preview::PreviewKind;
+use crate::text_tool::TextMode;
 use b3d_core::csg::BoolOp;
 use b3d_core::primitives::{Edge, EdgeKind, Primitive};
 use egui::{Color32, Key, Modifiers, RichText};
@@ -107,18 +109,20 @@ pub fn all() -> Vec<Command> {
         cmd!("Combine", "Split into parts", "", has_sel, |a, c| a.split_selected(c)),
         cmd!("Combine", "Cut with plane…", "", has_sel, |a, _| a.start_cut()),
         // mesh
-        cmd!("Mesh", "Simplify (current settings)", "", has_sel, |a, c| {
+        cmd!("Mesh", "Simplify (preview)", "", has_sel, |a, _| {
             a.tab = PanelTab::Mesh;
-            a.simplify_selected(c)
+            a.start_preview(PreviewKind::Simplify)
         }),
-        cmd!("Mesh", "Smooth (current settings)", "", has_sel, |a, c| {
+        cmd!("Mesh", "Smooth (preview)", "", has_sel, |a, _| {
             a.tab = PanelTab::Mesh;
-            a.smooth_selected(c)
+            a.start_preview(PreviewKind::Smooth)
         }),
-        cmd!("Mesh", "Round edges / bevel (current settings)", "", has_sel, |a, c| {
+        cmd!("Mesh", "Round edges / bevel (preview)", "", has_sel, |a, _| {
             a.tab = PanelTab::Mesh;
-            a.round_selected(c)
+            a.start_preview(PreviewKind::Round)
         }),
+        cmd!("Mesh", "Apply preview", "Enter", |a| a.preview.is_some(), |a, _| a.apply_preview()),
+        cmd!("Mesh", "Cancel preview", "Esc", |a| a.preview.is_some(), |a, _| a.cancel_preview()),
         cmd!("Mesh", "Repair", "", has_sel, |a, c| {
             a.tab = PanelTab::Repair;
             a.repair_selected(c)
@@ -143,6 +147,30 @@ pub fn all() -> Vec<Command> {
             crate::ui::apply_theme(c, a.settings.dark)
         }),
         cmd!("Tools", "Measure", "M", always, |a, _| a.tool = Tool::Measure),
+        cmd!("Tools", "Text: add 3D text", "T", always, |a, _| {
+            a.settings.text.mode = TextMode::Object;
+            a.start_text_tool()
+        }),
+        cmd!("Tools", "Text: emboss onto a face", "", has_objects, |a, _| {
+            a.settings.text.mode = TextMode::Emboss;
+            a.start_text_tool()
+        }),
+        cmd!("Tools", "Text: engrave into a face", "", has_objects, |a, _| {
+            a.settings.text.mode = TextMode::Engrave;
+            a.start_text_tool()
+        }),
+        cmd!("View", "Section view", "X", has_objects, |a, _| a.toggle_section()),
+        // organise
+        cmd!("Organise", "Group", "Ctrl+G", two_sel, |a, _| a.group_selected()),
+        cmd!("Organise", "Ungroup", "Ctrl+Shift+G", |a| a.can_ungroup(), |a, _| a.ungroup_selected()),
+        cmd!("Organise", "Hide selected", "H", has_sel, |a, _| a.hide_selected()),
+        cmd!("Organise", "Show all", "Shift+H", |a| a.any_hidden(), |a, _| a.show_all()),
+        cmd!("Organise", "Isolate selection (show only it)", "I", |a| has_sel(a) || a.isolated.is_some(), |a, _| a.toggle_isolate()),
+        cmd!("Organise", "Lock / unlock selected", "Ctrl+L", has_sel, |a, _| a.toggle_lock_selected()),
+        cmd!("Organise", "Unlock everything", "", |a| a.scene.objects.iter().any(|o| o.locked), |a, _| {
+            let ids: Vec<_> = a.scene.objects.iter().filter(|o| o.locked).map(|o| o.id).collect();
+            a.set_locked(&ids, false)
+        }),
         // help
         cmd!("Help", "Keyboard & mouse", "", always, |a, _| a.show_shortcuts = true),
         cmd!("Help", "About", "", always, |a, _| a.show_about = true),

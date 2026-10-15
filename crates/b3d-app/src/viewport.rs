@@ -2,9 +2,12 @@
 
 use crate::app::{App, DragMode, GizmoKind, LeftDrag, Tool};
 use crate::camera::ViewPreset;
+use crate::preview::PreviewKind;
 use crate::render::{CameraUniform, DrawItem, LineVertex, ViewportFrame};
+use crate::text_tool::{TextHover, TextMode};
 use crate::ui::ACCENT;
 use b3d_core::csg::BoolOp;
+use b3d_core::scene::PickHit;
 use b3d_core::Aabb;
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Shape, Stroke};
 use glam::{DQuat, DVec3, Vec2, Vec3};
@@ -61,6 +64,12 @@ fn mint_mat(m: glam::DMat4) -> mint::RowMatrix4<f64> {
     mint::RowMatrix4 { x: r(0), y: r(1), z: r(2), w: r(3) }
 }
 
+/// Pick what is visible: respects the section plane; locked objects only if asked.
+fn pick(app: &App, o: Vec3, d: Vec3, include_locked: bool) -> Option<PickHit> {
+    let sec = app.section;
+    app.scene.pick_filtered(o, d, |ob| include_locked || !ob.locked, |p| sec.keeps(p))
+}
+
 fn plate_hit(o: Vec3, d: Vec3) -> Option<Vec3> {
     if d.z.abs() < 1e-6 {
         return None;
@@ -100,12 +109,28 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     app.last_pointer = pointer;
     let total_tris: usize = app.scene.objects.iter().map(|o| o.mesh.mesh.triangles.len()).sum();
     if moved && !response.dragged() && total_tris < 1_500_000 {
-        app.hovered = ray.and_then(|(o, d)| app.scene.pick(o, d)).map(|h| h.0);
+        app.hovered = ray.and_then(|(o, d)| pick(app, o, d, false)).map(|h| h.id);
     }
     if pointer.is_none() {
         app.hovered = None;
     }
-    if matches!(app.tool, Tool::Measure | Tool::LayFlat) && response.hovered() {
+    // ---------- text tool: where would the text go? ----------
+    if app.tool == Tool::Text {
+        if moved || app.text_rt.hover.is_none() {
+            app.text_rt.hover = ray.and_then(|(o, d)| match app.settings.text.mode {
+                TextMode::Object => plate_hit(o, d).map(|p| TextHover { target: None, point: p, frame: glam::Mat4::IDENTITY }),
+                _ => pick(app, o, d, false).map(|h| TextHover {
+                    target: Some(h.id),
+                    point: h.point,
+                    frame: app.surface_frame(h.point, h.normal, view.cam.right_up().1),
+                }),
+            });
+        }
+        if pointer.is_none() {
+            app.text_rt.hover = None;
+        }
+    }
+    if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text) && response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else if matches!(app.drag, DragMode::Move { .. }) {
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
@@ -155,7 +180,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     if response.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta().y);
         if scroll.abs() > 0.0 {
-            let toward = ray.and_then(|(o, d)| app.scene.pick(o, d).map(|h| h.2).or_else(|| plate_hit(o, d)));
+            let toward = ray.and_then(|(o, d)| pick(app, o, d, true).map(|h| h.point).or_else(|| plate_hit(o, d)));
             app.settings.camera.zoom(scroll, toward);
         }
     }
@@ -165,19 +190,21 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     if response.clicked() && !gizmo_busy {
         if let Some((o, d)) = ray {
             match app.tool {
-                Tool::Select | Tool::Cut => match app.scene.pick(o, d) {
-                    Some((id, _, _)) => {
-                        if cmd {
-                            app.toggle_select(id)
-                        } else {
-                            app.select_only(id)
-                        }
-                    }
+                Tool::Select | Tool::Cut => match pick(app, o, d, false) {
+                    Some(h) => app.click_select(h.id, cmd, alt),
                     None if !cmd => app.selection.clear(),
                     None => {}
                 },
+                Tool::Text => {
+                    let ctx = ui.ctx().clone();
+                    match (app.settings.text.mode, app.text_rt.hover) {
+                        (TextMode::Object, h) => app.add_text_object(h.map(|h| h.point)),
+                        (_, Some(h)) => app.apply_text_on_surface(&ctx, h),
+                        _ => {}
+                    }
+                }
                 Tool::Measure => {
-                    if let Some(hit) = app.scene.pick_detail(o, d) {
+                    if let Some(hit) = pick(app, o, d, true) {
                         let mut p = hit.point;
                         if app.measure.snap_vertices {
                             if let Some(c) = hit.corners.iter().min_by(|a, b| a.distance(p).total_cmp(&b.distance(p))) {
@@ -197,7 +224,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 Tool::LayFlat => {
-                    if let Some(hit) = app.scene.pick_detail(o, d) {
+                    if let Some(hit) = pick(app, o, d, false) {
                         app.lay_flat(hit.id, hit.normal);
                     }
                 }
@@ -206,16 +233,16 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     }
     if response.double_clicked() {
         if let Some((o, d)) = ray {
-            if let Some((_, _, p)) = app.scene.pick(o, d) {
-                app.settings.camera.target = p;
+            if let Some(h) = pick(app, o, d, true) {
+                app.settings.camera.target = h.point;
             }
         }
     }
     if response.secondary_clicked() {
         if let Some((o, d)) = ray {
-            if let Some((id, _, _)) = app.scene.pick(o, d) {
-                if !app.is_selected(id) {
-                    app.select_only(id);
+            if let Some(h) = pick(app, o, d, false) {
+                if !app.is_selected(h.id) {
+                    app.click_select(h.id, false, alt);
                 }
             }
         }
@@ -263,7 +290,7 @@ fn run_gizmo(app: &mut App, ui: &mut egui::Ui, view: &View) -> bool {
     if !pointer_down {
         app.gizmo_dragging = false;
     }
-    if app.tool != Tool::Select || app.gizmo_kind == GizmoKind::Off || app.selection.is_empty() {
+    if app.tool != Tool::Select || app.gizmo_kind == GizmoKind::Off || app.selection.is_empty() || app.any_locked_selected() {
         return false;
     }
     let modes = match app.gizmo_kind {
@@ -359,16 +386,37 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
         view_proj: cam.view_proj(view.aspect).to_cols_array_2d(),
         eye: [eye.x, eye.y, eye.z, 1.0],
         light: [light.x, light.y, light.z, if app.encode_srgb { 1.0 } else { 0.0 }],
+        clip: match app.section.plane() {
+            Some((n, d)) => [n.x, n.y, n.z, d],
+            None => [0.0; 4],
+        },
     };
-    let items = app
+    let pv = app.shown_preview();
+    let pv_kind = app.preview.as_ref().map(|p| p.kind);
+    let mut ghosts = vec![];
+    let original_ghost =
+        |o: &b3d_core::Object| DrawItem { mesh: o.mesh.clone(), model: o.matrix(), color: [0.85, 0.88, 0.95, 0.22], params: [0.0; 4] };
+    let mut items: Vec<DrawItem> = app
         .scene
         .objects
         .iter()
         .filter(|o| o.visible)
-        .map(|o| {
+        .filter_map(|o| {
             let m = o.matrix();
-            DrawItem {
-                mesh: o.mesh.clone(),
+            let mut mesh = o.mesh.clone();
+            if let Some(r) = pv {
+                if r.hide.contains(&o.id) {
+                    if pv_kind == Some(PreviewKind::Round) {
+                        ghosts.push(original_ghost(o));
+                    }
+                    return None;
+                }
+                if let Some((_, h)) = r.swap.iter().find(|s| s.0 == o.id) {
+                    mesh = h.clone();
+                }
+            }
+            Some(DrawItem {
+                mesh,
                 model: m,
                 color: {
                     let c = lin(o.color);
@@ -385,9 +433,38 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
                     (m.determinant() < 0.0) as u8 as f32,
                     app.settings.show_problems as u8 as f32,
                 ],
-            }
+            })
         })
         .collect();
+    if let Some(r) = pv {
+        for (_, h, c, off) in &r.add {
+            items.push(DrawItem {
+                mesh: h.clone(),
+                model: crate::preview::offset_matrix(*off),
+                color: lin(*c),
+                params: [1.0, 0.0, 0.0, app.settings.show_problems as u8 as f32],
+            });
+        }
+    }
+    // text tool ghost
+    if app.tool == Tool::Text {
+        if let Some(base) = app.text_base() {
+            let t = &app.settings.text;
+            let model = match (t.mode, app.text_rt.hover) {
+                (TextMode::Object, h) => app.text_object_matrix(h.map(|h| h.point).unwrap_or_else(|| app.text_default_spot())),
+                (_, Some(h)) if h.target.is_some() => Some(app.text_surface_preview(h.frame)),
+                _ => None,
+            };
+            if let Some(model) = model {
+                let color = match t.mode {
+                    TextMode::Engrave => [1.0, 0.35, 0.25, 0.55],
+                    TextMode::Emboss => [1.0, 0.75, 0.2, 0.6],
+                    TextMode::Object => [0.3, 0.6, 1.0, 0.55],
+                };
+                ghosts.push(DrawItem { mesh: base.clone(), model, color, params: [0.45, 0.0, 0.0, 0.0] });
+            }
+        }
+    }
 
     let dark = app.settings.dark;
     let mut tris = vec![];
@@ -461,6 +538,30 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
         }
     }
 
+    // section plane outline
+    if let Some((n, _)) = app.section.plane() {
+        let b = app.scene.bounds();
+        if !b.is_empty() {
+            let pad = b.size().max_element() * 0.05 + 2.0;
+            let a = app.section.axis;
+            let (i, j) = ((a + 1) % 3, (a + 2) % 3);
+            let corner = |si: bool, sj: bool| {
+                let mut p = Vec3::ZERO;
+                p[a] = app.section.offset;
+                p[i] = if si { b.max[i] + pad } else { b.min[i] - pad };
+                p[j] = if sj { b.max[j] + pad } else { b.min[j] - pad };
+                p
+            };
+            let q = [corner(false, false), corner(true, false), corner(true, true), corner(false, true)];
+            let c = lin_rgba(0.2, 0.85, 1.0, 0.9);
+            for k in 0..4 {
+                lines.push(LineVertex::new(q[k], c));
+                lines.push(LineVertex::new(q[(k + 1) % 4], c));
+            }
+            let _ = n;
+        }
+    }
+
     // snap guides
     for (a, b) in &app.snap_guides {
         let c = lin_rgba(1.0, 0.2, 0.85, 1.0);
@@ -483,7 +584,7 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
             overlay.push(LineVertex::new(e, col));
         }
     }
-    ViewportFrame { camera, items, tris, lines, overlay }
+    ViewportFrame { camera, items, ghosts, tris, lines, overlay }
 }
 
 fn push_box(out: &mut Vec<LineVertex>, b: &Aabb, c: [f32; 4]) {
@@ -572,7 +673,12 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
     let hint = match app.tool {
         Tool::Measure => Some("Measure: click two points"),
         Tool::LayFlat => Some("Lay flat: click the face that should touch the plate"),
-        Tool::Cut => Some("Cut: set the plane in the right panel"),
+        Tool::Cut => Some("Cut: set the plane in the right panel, Enter to cut"),
+        Tool::Text => Some(match app.settings.text.mode {
+            TextMode::Object => "Text: click the plate to place it",
+            TextMode::Emboss => "Emboss: click a face",
+            TextMode::Engrave => "Engrave: click a face",
+        }),
         Tool::Select => None,
     };
     if let Some(h) = hint {
@@ -580,6 +686,24 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
     }
     axis_triad(app, ui, p, view);
     plate_warnings(app, ui, view);
+    bottom_bars(app, ui, view);
+    if let Some(hidden) = &app.isolated {
+        let n = hidden.len();
+        egui::Area::new(egui::Id::new("isolate_banner"))
+            .fixed_pos(rect.center_top() + egui::vec2(0.0, 44.0))
+            .pivot(egui::Align2::CENTER_TOP)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Isolated — {n} other object{} hidden", if n == 1 { "" } else { "s" }));
+                        if ui.small_button("Show them (I)").clicked() {
+                            app.toggle_isolate();
+                        }
+                    });
+                });
+            });
+    }
     drag_overlays(app, ui, p);
 }
 
@@ -692,17 +816,15 @@ fn start_primary_drag(app: &mut App, view: &View, origin: Pos2, shift: bool, alt
         return DragMode::Box { start: origin, additive: true };
     }
     if app.settings.drag_moves_objects && app.tool == Tool::Select {
-        if let Some(hit) = app.scene.pick_detail(o, d) {
+        if let Some(hit) = pick(app, o, d, false) {
             if !app.is_selected(hit.id) {
-                if shift || ctrl {
-                    app.selection.push(hit.id);
-                } else {
-                    app.select_only(hit.id);
-                }
+                app.click_select(hit.id, shift || ctrl, alt);
             }
             app.checkpoint("Move");
-            let start: Vec<_> = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| (o.id, o.transform)).collect();
-            let bounds = app.selection_bounds();
+            let start: Vec<_> =
+                app.selection.iter().filter_map(|id| app.scene.get(*id)).filter(|o| !o.locked).map(|o| (o.id, o.transform)).collect();
+            let ids: Vec<_> = start.iter().map(|s| s.0).collect();
+            let bounds = app.scene.bounds_of(&ids);
             return DragMode::Move { grab: hit.point, start, bounds, vertical: alt };
         }
     }
@@ -801,9 +923,9 @@ fn finish_box_select(app: &mut App, view: &View, start: Pos2, end: Pos2, additiv
     }
     let window = end.x >= start.x;
     let center_ray = view.ray(r.center());
-    let center_hit = app.scene.pick(center_ray.0, center_ray.1).map(|h| h.0);
+    let center_hit = pick(app, center_ray.0, center_ray.1, false).map(|h| h.id);
     let mut picked = vec![];
-    for o in app.scene.objects.iter().filter(|o| o.visible) {
+    for o in app.scene.objects.iter().filter(|o| o.visible && !o.locked) {
         // test the real silhouette via (sampled) vertices, not the bounding box
         let m = o.matrix();
         let verts = &o.mesh.mesh.positions;
@@ -824,6 +946,8 @@ fn finish_box_select(app: &mut App, view: &View, start: Pos2, end: Pos2, additiv
     if !additive {
         app.selection.clear();
     }
+    // groups come along as a whole
+    let picked: Vec<_> = picked.into_iter().flat_map(|id| app.scene.with_group(id)).collect();
     for id in picked {
         if !app.selection.contains(&id) {
             app.selection.push(id);
@@ -857,5 +981,91 @@ fn drag_overlays(app: &App, ui: &egui::Ui, p: &egui::Painter) {
     }
     if let (Some(l), Some(pos)) = (&app.drag_label, ui.input(|i| i.pointer.latest_pos())) {
         label(p, pos + egui::vec2(0.0, 28.0), l.clone(), Color32::WHITE);
+    }
+}
+
+/// Floating bars at the bottom of the viewport: section-plane controls and the
+/// Apply / Cancel bar of a running preview.
+fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
+    if !app.section.enabled && app.preview.is_none() {
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    egui::Area::new(egui::Id::new("bottom_bars"))
+        .fixed_pos(view.rect.center_bottom() + egui::vec2(0.0, -14.0))
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .order(egui::Order::Foreground)
+        .show(&ctx, |ui| {
+            if app.section.enabled {
+                egui::Frame::popup(ui.style()).show(ui, |ui| section_bar(app, ui));
+                ui.add_space(6.0);
+            }
+            if app.preview.is_some() {
+                egui::Frame::popup(ui.style()).show(ui, |ui| preview_bar(app, ui));
+            }
+        });
+}
+
+fn section_bar(app: &mut App, ui: &mut egui::Ui) {
+    let b = app.scene.bounds();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("▣ Section").strong());
+        for (a, n) in ["X", "Y", "Z"].iter().enumerate() {
+            if ui.selectable_label(app.section.axis == a, *n).clicked() && app.section.axis != a {
+                app.section.axis = a;
+                if !b.is_empty() {
+                    app.section.offset = b.center()[a];
+                }
+            }
+        }
+        let a = app.section.axis;
+        let (lo, hi) = if b.is_empty() { (-100.0, 100.0) } else { (b.min[a] - 1.0, b.max[a] + 1.0) };
+        ui.spacing_mut().slider_width = 220.0;
+        ui.add(egui::Slider::new(&mut app.section.offset, lo..=hi).suffix(" mm").max_decimals(2));
+        ui.toggle_value(&mut app.section.flip, "Flip side").on_hover_text("Look at the other half");
+        if ui.small_button("✖").on_hover_text("Close section view (X)").clicked() {
+            app.section.enabled = false;
+        }
+    });
+}
+
+fn preview_bar(app: &mut App, ui: &mut egui::Ui) {
+    let Some(p) = &app.preview else { return };
+    let kind = p.kind;
+    let fresh = p.result.as_ref().is_some_and(|r| r.key == p.key);
+    let mut apply = false;
+    let mut cancel = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(format!("{} preview", kind.name())).strong());
+        if let Some(e) = &p.error {
+            ui.colored_label(Color32::from_rgb(255, 130, 110), format!("⚠ {e}"));
+        } else if let Some(t) = &p.task {
+            let f = t.progress.fraction();
+            let bar = egui::ProgressBar::new(f).desired_width(140.0).show_percentage();
+            ui.add(if f <= 0.0 { bar.animate(true) } else { bar });
+            if p.apply_when_ready {
+                ui.weak("applies when done");
+            }
+        } else if !fresh {
+            ui.spinner();
+        } else if let Some(r) = &p.result {
+            ui.label(&r.message);
+        }
+        let label = if kind == PreviewKind::Cut { "✂ Cut" } else { "✔ Apply" };
+        if ui.add_enabled(p.error.is_none(), egui::Button::new(egui::RichText::new(label).strong())).on_hover_text("Enter").clicked() {
+            apply = true;
+        }
+        if ui.button("Cancel").on_hover_text("Esc").clicked() {
+            cancel = true;
+        }
+    });
+    if apply {
+        app.apply_preview();
+    }
+    if cancel {
+        if kind == PreviewKind::Cut {
+            app.tool = Tool::Select;
+        }
+        app.cancel_preview();
     }
 }

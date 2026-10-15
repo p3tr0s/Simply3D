@@ -18,6 +18,8 @@ pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
     pub eye: [f32; 4],
     pub light: [f32; 4],
+    /// Section plane: fragments with dot(xyz, p) > w are cut away. Zero normal = off.
+    pub clip: [f32; 4],
 }
 
 #[repr(C)]
@@ -90,6 +92,8 @@ pub struct ViewportRenderer {
     tri_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     overlay_pipeline: wgpu::RenderPipeline,
+    ghost_pipeline: wgpu::RenderPipeline,
+    xray_pipeline: wgpu::RenderPipeline,
     cam_buf: wgpu::Buffer,
     cam_bg: wgpu::BindGroup,
     model_bgl: wgpu::BindGroupLayout,
@@ -99,6 +103,7 @@ pub struct ViewportRenderer {
     meshes: HashMap<u64, GpuMesh>,
     // per-frame draw list computed in prepare()
     frame: Vec<(u64, u32)>,
+    ghost_frame: Vec<(u64, u32)>,
     line_ranges: [std::ops::Range<u32>; 3],
 }
 
@@ -202,6 +207,36 @@ impl ViewportRenderer {
             multiview_mask: None,
             cache: None,
         });
+        let make_ghost = |label: &str, entry: &str, cmp: wgpu::CompareFunction| {
+            // pushed back a little so a ghost lying exactly on a surface doesn't flicker
+            let mut ds = depth(false, cmp);
+            if let Some(d) = ds.as_mut() {
+                d.bias = wgpu::DepthBiasState { constant: 8, slope_scale: 2.0, clamp: 0.0 };
+            }
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&mesh_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_mesh"),
+                    compilation_options: Default::default(),
+                    buffers: &mesh_vb,
+                },
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: ds,
+                multisample: ms,
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &blend_target,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let ghost_pipeline = make_ghost("ghost pipeline", "fs_ghost", wgpu::CompareFunction::LessEqual);
+        let xray_pipeline = make_ghost("x-ray pipeline", "fs_ghost_xray", wgpu::CompareFunction::Always);
         let line_vb = [Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<LineVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -240,6 +275,8 @@ impl ViewportRenderer {
             tri_pipeline,
             line_pipeline,
             overlay_pipeline,
+            ghost_pipeline,
+            xray_pipeline,
             cam_buf,
             cam_bg,
             model_bgl,
@@ -248,6 +285,7 @@ impl ViewportRenderer {
             lines,
             meshes: HashMap::new(),
             frame: vec![],
+            ghost_frame: vec![],
             line_ranges: [0..0, 0..0, 0..0],
         }
     }
@@ -272,6 +310,8 @@ impl ViewportRenderer {
 pub struct ViewportFrame {
     pub camera: CameraUniform,
     pub items: Vec<DrawItem>,
+    /// Translucent meshes (previews of text, originals behind a preview).
+    pub ghosts: Vec<DrawItem>,
     /// Translucent triangles drawn after meshes (build plate, cut plane).
     pub tris: Vec<LineVertex>,
     /// Depth-tested lines (grid, axes).
@@ -294,7 +334,7 @@ impl egui_wgpu::CallbackTrait for ViewportFrame {
 
         // upload new meshes, drop unused ones
         let mut used = HashSet::new();
-        for it in &self.items {
+        for it in self.items.iter().chain(&self.ghosts) {
             used.insert(it.mesh.id);
             r.meshes.entry(it.mesh.id).or_insert_with(|| {
                 let m = &it.mesh.mesh;
@@ -316,13 +356,20 @@ impl egui_wgpu::CallbackTrait for ViewportFrame {
         r.meshes.retain(|k, _| used.contains(k));
 
         // per-object uniforms
-        let mut bytes = vec![0u8; self.items.len().max(1) * MODEL_STRIDE as usize];
+        let n = self.items.len() + self.ghosts.len();
+        let mut bytes = vec![0u8; n.max(1) * MODEL_STRIDE as usize];
         r.frame.clear();
-        for (i, it) in self.items.iter().enumerate() {
+        r.ghost_frame.clear();
+        for (i, it) in self.items.iter().chain(&self.ghosts).enumerate() {
             let u = ModelUniform { model: it.model.to_cols_array_2d(), color: it.color, params: it.params };
             let o = i * MODEL_STRIDE as usize;
             bytes[o..o + std::mem::size_of::<ModelUniform>()].copy_from_slice(bytemuck::bytes_of(&u));
-            r.frame.push((it.mesh.id, (i as u64 * MODEL_STRIDE) as u32));
+            let entry = (it.mesh.id, (i as u64 * MODEL_STRIDE) as u32);
+            if i < self.items.len() {
+                r.frame.push(entry);
+            } else {
+                r.ghost_frame.push(entry);
+            }
         }
         if r.models.write(device, queue, "models", wgpu::BufferUsages::UNIFORM, &bytes) {
             r.model_bg = ViewportRenderer::make_model_bg(device, &r.model_bgl, &r.models.buf);
@@ -354,14 +401,26 @@ impl egui_wgpu::CallbackTrait for ViewportFrame {
             pass.draw_indexed(0..g.count, 0, 0..1);
         }
 
-        pass.set_vertex_buffer(0, r.lines.buf.slice(..));
-        for (pipe, range) in
-            [(&r.tri_pipeline, &r.line_ranges[0]), (&r.line_pipeline, &r.line_ranges[1]), (&r.overlay_pipeline, &r.line_ranges[2])]
-        {
+        let draw_lines = |pass: &mut wgpu::RenderPass<'static>, pipe: &wgpu::RenderPipeline, range: &std::ops::Range<u32>| {
             if !range.is_empty() {
                 pass.set_pipeline(pipe);
+                pass.set_vertex_buffer(0, r.lines.buf.slice(..));
                 pass.draw(range.clone(), 0..1);
             }
+        };
+        draw_lines(pass, &r.tri_pipeline, &r.line_ranges[0]);
+        draw_lines(pass, &r.line_pipeline, &r.line_ranges[1]);
+        // ghosts: a faint x-ray pass (visible through other objects), then a depth-tested pass
+        for pipe in [&r.xray_pipeline, &r.ghost_pipeline] {
+            pass.set_pipeline(pipe);
+            for (mesh_id, offset) in &r.ghost_frame {
+                let Some(g) = r.meshes.get(mesh_id) else { continue };
+                pass.set_bind_group(1, &r.model_bg, &[*offset]);
+                pass.set_vertex_buffer(0, g.vbuf.slice(..));
+                pass.set_index_buffer(g.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..g.count, 0, 0..1);
+            }
         }
+        draw_lines(pass, &r.overlay_pipeline, &r.line_ranges[2]);
     }
 }

@@ -8,14 +8,12 @@ use b3d_core::history::History;
 use b3d_core::io::{self, Format, IoObject};
 use b3d_core::primitives::Primitive;
 use b3d_core::repair::{self, RepairOptions};
+use b3d_core::scene::GroupId;
 use b3d_core::scene::{MeshHandle, ObjectId, Scene, Transform};
-use b3d_core::sdf::{self, RoundOptions};
-use b3d_core::simplify::{self, SimplifyOptions};
-use b3d_core::smooth;
 use b3d_core::Progress;
 use b3d_core::{Aabb, Mesh};
 use glam::{Mat4, Quat, Vec2, Vec3};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -49,6 +47,7 @@ pub struct Settings {
     pub drag_moves_objects: bool,
     /// Snap moved objects to other objects' edges/centres and the plate.
     pub snap_objects: bool,
+    pub text: crate::text_tool::TextSettings,
 }
 
 impl Default for Settings {
@@ -73,6 +72,7 @@ impl Default for Settings {
             left_drag: LeftDrag::Orbit,
             drag_moves_objects: true,
             snap_objects: true,
+            text: Default::default(),
         }
     }
 }
@@ -110,6 +110,32 @@ pub enum Tool {
     Measure,
     LayFlat,
     Cut,
+    Text,
+}
+
+/// Section view: everything on the far side of a plane is cut away (display only).
+#[derive(Debug, Clone, Copy)]
+pub struct SectionState {
+    pub enabled: bool,
+    pub axis: usize,
+    pub offset: f32,
+    /// Keep the other side.
+    pub flip: bool,
+}
+
+impl SectionState {
+    /// (normal, d): points with normal·p > d are hidden.
+    pub fn plane(&self) -> Option<(Vec3, f32)> {
+        if !self.enabled {
+            return None;
+        }
+        let mut n = Vec3::ZERO;
+        n[self.axis] = if self.flip { -1.0 } else { 1.0 };
+        Some((n, if self.flip { -self.offset } else { self.offset }))
+    }
+    pub fn keeps(&self, p: Vec3) -> bool {
+        self.plane().is_none_or(|(n, d)| n.dot(p) <= d + 1e-4)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +328,13 @@ pub struct App {
     /// Transforms + group bounds when a gizmo move started.
     pub gizmo_start: Vec<(ObjectId, Transform)>,
     pub gizmo_start_bounds: Aabb,
+    /// Groups folded in the object list.
+    pub collapsed: HashSet<GroupId>,
+    /// Objects hidden by Isolate (shown again by pressing I).
+    pub isolated: Option<Vec<ObjectId>>,
+    pub section: SectionState,
+    pub preview: Option<crate::preview::Preview>,
+    pub text_rt: crate::text_tool::TextRuntime,
 }
 
 impl App {
@@ -368,8 +401,14 @@ impl App {
             drag_label: None,
             gizmo_start: vec![],
             gizmo_start_bounds: Aabb::EMPTY,
+            collapsed: HashSet::new(),
+            isolated: None,
+            section: SectionState { enabled: false, axis: 2, offset: 0.0, flip: false },
+            preview: None,
+            text_rt: Default::default(),
             encode_srgb,
         };
+        app.text_rt.load_fonts();
         app.recovery = crate::autosave::find_recovery();
         // command-line files
         let files: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|p| Format::from_path(p).is_some()).collect();
@@ -423,21 +462,11 @@ impl App {
     }
     fn prune_selection(&mut self) {
         let scene = &self.scene;
-        self.selection.retain(|id| scene.get(*id).is_some());
+        self.selection.retain(|id| scene.get(*id).is_some_and(|o| o.visible));
     }
 
     pub fn is_selected(&self, id: ObjectId) -> bool {
         self.selection.contains(&id)
-    }
-    pub fn select_only(&mut self, id: ObjectId) {
-        self.selection = vec![id];
-    }
-    pub fn toggle_select(&mut self, id: ObjectId) {
-        if let Some(i) = self.selection.iter().position(|s| *s == id) {
-            self.selection.remove(i);
-        } else {
-            self.selection.push(id);
-        }
     }
     pub fn selection_bounds(&self) -> Aabb {
         self.scene.bounds_of(&self.selection)
@@ -478,6 +507,11 @@ impl App {
         let Ok(out) = job.rx.try_recv() else { return };
         let elapsed = job.started.elapsed().as_secs_f32();
         self.job = None;
+        self.apply_output(out, elapsed);
+    }
+
+    /// Put the result of a background operation into the scene.
+    pub fn apply_output(&mut self, out: JobOutput, elapsed: f32) {
         match out {
             JobOutput::Imported { groups } => {
                 self.checkpoint("Import");
@@ -497,14 +531,24 @@ impl App {
                 let mut new_ids = vec![];
                 // results take the list position of the first removed object
                 let insert_at = remove.iter().filter_map(|id| self.scene.objects.iter().position(|o| o.id == *id)).min();
-                for id in &remove {
-                    self.scene.remove(*id);
-                }
-                for (name, mesh, color) in add {
+                // one-for-one replacements (round edges, emboss) stay in their group / lock state
+                let one_for_one = remove.len() == add.len();
+                let carry: Vec<_> = remove.iter().map(|id| self.scene.get(*id).map(|o| (o.group, o.locked))).collect();
+                for (i, (name, mesh, color)) in add.into_iter().enumerate() {
                     if mesh.is_empty() {
                         continue;
                     }
-                    new_ids.push(self.scene.add_world_mesh(name, mesh, Some(color)));
+                    let id = self.scene.add_world_mesh(name, mesh, Some(color));
+                    if let (true, Some(Some((g, locked)))) = (one_for_one, carry.get(i)) {
+                        if let Some(o) = self.scene.get_mut(id) {
+                            o.group = *g;
+                            o.locked = *locked;
+                        }
+                    }
+                    new_ids.push(id);
+                }
+                for id in &remove {
+                    self.scene.remove(*id);
                 }
                 if let Some(at) = insert_at {
                     let n = new_ids.len();
@@ -515,6 +559,7 @@ impl App {
                     }
                 }
                 self.selection = new_ids;
+                self.report_cache = None;
                 self.info(format!("{message} ({elapsed:.1}s)"));
             }
             JobOutput::ReplaceMeshes { label, meshes, message } => {
@@ -771,13 +816,27 @@ impl App {
         self.checkpoint("Duplicate");
         let shift = self.selection_bounds().size().x + 5.0;
         let mut new = vec![];
+        let mut groups: Vec<(GroupId, Vec<ObjectId>)> = vec![];
         for id in self.selection.clone() {
             let Some(o) = self.scene.get(id).cloned() else { continue };
             let mut t = o.transform;
             t.translation.x += shift;
             let name = self.scene.unique_name(&o.name);
             let nid = self.scene.add_object(name, (*o.mesh.mesh).clone(), t, Some(o.color));
+            if let Some(g) = o.group {
+                match groups.iter_mut().find(|x| x.0 == g) {
+                    Some(x) => x.1.push(nid),
+                    None => groups.push((g, vec![nid])),
+                }
+            }
             new.push(nid);
+        }
+        // copies of a group form a new group
+        for (g, ids) in groups {
+            if ids.len() >= 2 {
+                let name = self.scene.group_name(g).map(|n| format!("{n} copy")).unwrap_or_else(|| "Group".into());
+                self.scene.group(&ids, name);
+            }
         }
         self.selection = new;
     }
@@ -810,7 +869,7 @@ impl App {
     }
 
     pub fn select_all(&mut self) {
-        self.selection = self.scene.objects.iter().filter(|o| o.visible).map(|o| o.id).collect();
+        self.selection = self.scene.objects.iter().filter(|o| o.visible && !o.locked).map(|o| o.id).collect();
     }
 
     pub fn drop_selected(&mut self) {
@@ -989,44 +1048,6 @@ impl App {
         });
     }
 
-    pub fn cut_selected(&mut self, ctx: &egui::Context) {
-        if self.selection.is_empty() {
-            return;
-        }
-        let mut normal = Vec3::ZERO;
-        normal[self.cut.axis] = 1.0;
-        let mut point = Vec3::ZERO;
-        point[self.cut.axis] = self.cut.offset;
-        let keep = self.cut.keep;
-        let objs: Vec<_> =
-            self.selection.iter().filter_map(|id| self.scene.get(*id)).map(|o| (o.id, o.name.clone(), o.color, o.world_mesh())).collect();
-        self.spawn_job(ctx, "Cutting…", move |_p| {
-            let mut add = vec![];
-            let mut remove = vec![];
-            for (id, name, color, m) in objs {
-                match csg::cut_by_plane(&m, point, normal) {
-                    Ok((above, below)) => {
-                        if above.is_empty() || below.is_empty() {
-                            continue; // plane misses this object
-                        }
-                        remove.push(id);
-                        if keep != CutKeep::Below {
-                            add.push((format!("{name} (top)"), above, color));
-                        }
-                        if keep != CutKeep::Above {
-                            add.push((format!("{name} (bottom)"), below, color));
-                        }
-                    }
-                    Err(e) => return JobOutput::Error(format!("Cut failed on {name}: {e}")),
-                }
-            }
-            if remove.is_empty() {
-                return JobOutput::Error("The cut plane does not intersect the selection".into());
-            }
-            JobOutput::Replace { label: "Cut".into(), remove, add, message: "Cut done".into() }
-        });
-    }
-
     pub fn split_selected(&mut self, ctx: &egui::Context) {
         let objs: Vec<_> =
             self.selection.iter().filter_map(|id| self.scene.get(*id)).map(|o| (o.id, o.name.clone(), o.color, o.world_mesh())).collect();
@@ -1069,119 +1090,6 @@ impl App {
                 out.push((id, m));
             }
             JobOutput::ReplaceMeshes { label: "Repair".into(), meshes: out, message: format!("Repair: {}", logs.join("; ")) }
-        });
-    }
-
-    /// Selected objects' local meshes (transform kept) with the largest scale factor.
-    fn selected_local(&self) -> Vec<(ObjectId, Mesh, f32)> {
-        self.selection
-            .iter()
-            .filter_map(|id| self.scene.get(*id))
-            .map(|o| (o.id, (*o.mesh.mesh).clone(), o.transform.scale.abs().max_element().max(1e-6)))
-            .collect()
-    }
-
-    pub fn simplify_selected(&mut self, ctx: &egui::Context) {
-        let objs = self.selected_local();
-        if objs.is_empty() {
-            return;
-        }
-        let (pct, err) = (self.mesh_tools.simplify_pct, self.mesh_tools.simplify_err);
-        self.spawn_job(ctx, "Simplifying…", move |p| {
-            let (mut before, mut after) = (0, 0);
-            let n = objs.len() as f32;
-            let mut meshes = vec![];
-            for (i, (id, mut m, scale)) in objs.into_iter().enumerate() {
-                before += m.triangles.len();
-                let target = ((m.triangles.len() as f32) * pct / 100.0) as usize;
-                let opts = SimplifyOptions { target_triangles: target, max_error: (err / scale) as f64 };
-                if let Err(e) = simplify::simplify_with(&mut m, opts, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
-                    return JobOutput::Error(e.to_string());
-                }
-                after += m.triangles.len();
-                meshes.push((id, m));
-            }
-            JobOutput::ReplaceMeshes { label: "Simplify".into(), meshes, message: format!("Simplified {before} to {after} triangles") }
-        });
-    }
-
-    pub fn smooth_selected(&mut self, ctx: &egui::Context) {
-        let objs = self.selected_local();
-        if objs.is_empty() {
-            return;
-        }
-        let t = self.mesh_tools.clone();
-        let crease = t.keep_sharp.then_some(t.crease_deg);
-        if t.smooth_mode != SmoothMode::Relax {
-            let est: usize = objs.iter().map(|o| o.1.triangles.len() << (2 * t.smooth_levels)).sum();
-            if est > 8_000_000 {
-                self.error(format!("That would create {est} triangles — simplify first or use fewer levels"));
-                return;
-            }
-        }
-        self.spawn_job(ctx, "Smoothing…", move |p| {
-            let mut total = 0;
-            let n = objs.len() as f32;
-            let mut meshes = vec![];
-            for (i, (id, m, _)) in objs.into_iter().enumerate() {
-                if p.is_cancelled() {
-                    return JobOutput::Error("cancelled".into());
-                }
-                p.set(i as f32 / n);
-                let out = match t.smooth_mode {
-                    SmoothMode::Subdivide => smooth::subdivide_loop(&m, t.smooth_levels, crease),
-                    SmoothMode::SubdivideFlat => smooth::subdivide_flat(&m, t.smooth_levels),
-                    SmoothMode::Relax => {
-                        let mut m = m;
-                        if let Err(e) = smooth::taubin_with(&mut m, t.relax_iters, crease, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
-                            return JobOutput::Error(e.to_string());
-                        }
-                        m
-                    }
-                };
-                total += out.triangles.len();
-                meshes.push((id, out));
-            }
-            JobOutput::ReplaceMeshes { label: "Smooth".into(), meshes, message: format!("Smoothed: {total} triangles") }
-        });
-    }
-
-    pub fn round_selected(&mut self, ctx: &egui::Context) {
-        let objs: Vec<_> =
-            self.selection.iter().filter_map(|id| self.scene.get(*id)).map(|o| (o.id, o.name.clone(), o.color, o.world_mesh())).collect();
-        if objs.is_empty() {
-            return;
-        }
-        let t = self.mesh_tools.clone();
-        let opts = RoundOptions {
-            radius: t.round_radius,
-            mode: t.round_mode,
-            voxel: t.round_voxel,
-            simplify: t.round_simplify,
-            ..Default::default()
-        };
-        self.spawn_job(ctx, "Rounding edges…", move |p| {
-            let mut add = vec![];
-            let mut remove = vec![];
-            let mut info = vec![];
-            let n = objs.len() as f32;
-            for (i, (id, name, color, m)) in objs.into_iter().enumerate() {
-                match sdf::round_edges_with(&m, opts, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
-                    Ok((out, h)) => {
-                        let lost = m.connected_components().len() > out.connected_components().len();
-                        info.push(format!(
-                            "{name}: {} triangles (detail {h:.2} mm){}",
-                            out.triangles.len(),
-                            if lost { " — some thin parts disappeared" } else { "" }
-                        ));
-                        remove.push(id);
-                        add.push((name, out, color));
-                    }
-                    Err(b3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
-                    Err(e) => return JobOutput::Error(format!("Round edges failed on {name}: {e}")),
-                }
-            }
-            JobOutput::Replace { label: "Round edges".into(), remove, add, message: format!("Rounded edges — {}", info.join("; ")) }
         });
     }
 
@@ -1260,12 +1168,15 @@ impl App {
 
     // ---------- autosave & closing ----------
 
-    fn tick_autosave(&mut self) {
+    fn tick_autosave(&mut self, ctx: &egui::Context) {
         let mins = self.settings.autosave_minutes;
         if mins <= 0.0 || self.edit_gen == self.autosaved_gen || self.autosave_busy.load(Ordering::Relaxed) {
             return;
         }
-        if self.last_autosave.elapsed().as_secs_f32() < mins * 60.0 || self.scene.objects.is_empty() {
+        let wait = mins * 60.0 - self.last_autosave.elapsed().as_secs_f32();
+        if wait > 0.0 || self.scene.objects.is_empty() {
+            // an idle app doesn't repaint: wake up when the autosave is due
+            ctx.request_repaint_after(std::time::Duration::from_secs_f32(wait.max(0.5)));
             return;
         }
         self.last_autosave = Instant::now();
@@ -1314,7 +1225,9 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_job();
-        self.tick_autosave();
+        self.tick_preview(ctx);
+        self.tick_text(ctx);
+        self.tick_autosave(ctx);
         self.handle_close(ctx);
         if self.job.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
