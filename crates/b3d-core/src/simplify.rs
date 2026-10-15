@@ -260,7 +260,19 @@ pub fn simplify_with(m: &mut Mesh, opts: SimplifyOptions, progress: &crate::Prog
         }
     }
     let mut heap = BinaryHeap::with_capacity(edges.len());
-    for &(a, b) in edges.keys() {
+    // Deterministic but spatially scattered order: same input always gives the same
+    // result, while equal-cost collapses don't pile up on one vertex (sorted order
+    // builds huge fans and is ~5x slower on remeshed surfaces).
+    let mut keys: Vec<(u32, u32)> = edges.keys().copied().collect();
+    keys.sort_unstable();
+    let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+    for i in (1..keys.len()).rev() {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        keys.swap(i, (rng % (i as u64 + 1)) as usize);
+    }
+    for (a, b) in keys {
         if let Some(c) = st.candidate(a, b) {
             heap.push(c);
         }
