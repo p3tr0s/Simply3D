@@ -717,6 +717,18 @@ impl App {
     /// Objects to write. `project`: everything (hidden too) with placements, groups and
     /// flags, for 3MF projects. Otherwise: visible objects as world meshes.
     pub fn export_objects(&self, only_selected: bool, project: bool) -> Vec<IoObject> {
+        // group names must be unique in the file (a group is one named object there)
+        let mut names: HashMap<GroupId, String> = HashMap::new();
+        for g in &self.scene.groups {
+            let mut n = g.name.clone();
+            let mut k = 2;
+            while names.values().any(|v| *v == n) {
+                n = format!("{} ({k})", g.name);
+                k += 1;
+            }
+            names.insert(g.id, n);
+        }
+        let group = |o: &b3d_core::Object| o.group.and_then(|g| names.get(&g).cloned());
         self.scene
             .objects
             .iter()
@@ -728,13 +740,14 @@ impl App {
                         mesh: (*o.mesh.mesh).clone(),
                         color: Some(o.color),
                         transform: Some(o.matrix()),
-                        group: o.group.and_then(|g| self.scene.group_name(g)).map(str::to_string),
+                        group: group(o),
                         hidden: !o.visible,
                         locked: o.locked,
                         keep_position: true,
                     }
                 } else {
-                    IoObject::new(o.name.clone(), o.world_mesh(), Some(o.color))
+                    // plain export: world meshes; 3MF still keeps groups as multi-part objects
+                    IoObject { group: group(o), ..IoObject::new(o.name.clone(), o.world_mesh(), Some(o.color)) }
                 }
             })
             .collect()

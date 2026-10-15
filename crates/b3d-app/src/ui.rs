@@ -454,6 +454,17 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                 app.boolean_selected(&ctx, BoolOp::Intersect);
             }
             ui.separator();
+            if ui
+                .add_enabled(many, egui::Button::new("🗀 Group"))
+                .on_hover_text("Keep the selected objects together as one (Ctrl+G). Saved to 3MF as one object made of parts.")
+                .clicked()
+            {
+                app.group_selected();
+            }
+            if ui.add_enabled(app.can_ungroup(), egui::Button::new("Ungroup")).on_hover_text("Ctrl+Shift+G").clicked() {
+                app.ungroup_selected();
+            }
+            ui.separator();
             ui.menu_button("➕ Add shape", |ui| {
                 for name in Primitive::ALL_NAMES {
                     if ui.button(name).clicked() {
@@ -502,14 +513,6 @@ fn status_bar(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-enum ListAction {
-    Select(b3d_core::ObjectId),
-    SelectGroup(b3d_core::scene::GroupId),
-    Visible(Vec<b3d_core::ObjectId>, bool),
-    Lock(Vec<b3d_core::ObjectId>, bool),
-    Fold(b3d_core::scene::GroupId),
-}
-
 /// Small clickable icon that is bright when `on`.
 fn icon_toggle(ui: &mut egui::Ui, on: bool, icon: &str, tip: &str) -> bool {
     let t = RichText::new(icon).size(13.0);
@@ -548,6 +551,48 @@ fn lock_toggle(ui: &mut egui::Ui, locked: bool, tip: &str) -> bool {
     resp.on_hover_text(tip).clicked()
 }
 
+/// One line of the object list, captured before drawing so the right-click menu can
+/// change the scene while the list is being drawn.
+enum Row {
+    Group { g: b3d_core::scene::GroupId, name: String, ids: Vec<b3d_core::ObjectId>, folded: bool, vis: bool, locked: bool },
+    Item { id: b3d_core::ObjectId, indent: f32, name: String, color: [u8; 4], vis: bool, locked: bool },
+}
+
+fn list_rows(app: &App) -> Vec<Row> {
+    let mut rows = vec![];
+    let mut seen = std::collections::HashSet::new();
+    let item = |o: &b3d_core::Object, indent: f32| Row::Item {
+        id: o.id,
+        indent,
+        name: o.name.clone(),
+        color: o.color,
+        vis: o.visible,
+        locked: o.locked,
+    };
+    for o in &app.scene.objects {
+        match o.group {
+            Some(g) if seen.insert(g) => {
+                let members: Vec<&b3d_core::Object> = app.scene.objects.iter().filter(|x| x.group == Some(g)).collect();
+                let folded = app.collapsed.contains(&g);
+                rows.push(Row::Group {
+                    g,
+                    name: app.scene.group_name(g).unwrap_or("Group").to_string(),
+                    ids: members.iter().map(|m| m.id).collect(),
+                    folded,
+                    vis: members.iter().all(|m| m.visible),
+                    locked: members.iter().all(|m| m.locked),
+                });
+                if !folded {
+                    rows.extend(members.into_iter().map(|m| item(m, 18.0)));
+                }
+            }
+            Some(_) => {}
+            None => rows.push(item(o, 0.0)),
+        }
+    }
+    rows
+}
+
 fn object_list(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -579,89 +624,75 @@ fn object_list(app: &mut App, ui: &mut egui::Ui) {
             }
         });
     }
-    let shift = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-    let mut action = None;
+    let additive = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+    let ctx = ui.ctx().clone();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        let mut seen = std::collections::HashSet::new();
-        for o in &app.scene.objects {
-            match o.group {
-                Some(g) if seen.insert(g) => {
-                    let members: Vec<&b3d_core::Object> = app.scene.objects.iter().filter(|x| x.group == Some(g)).collect();
-                    let ids: Vec<_> = members.iter().map(|m| m.id).collect();
-                    let folded = app.collapsed.contains(&g);
-                    let all_vis = members.iter().all(|m| m.visible);
-                    let all_lock = members.iter().all(|m| m.locked);
+        for row in list_rows(app) {
+            match row {
+                Row::Group { g, name, ids, folded, vis, locked } => {
                     ui.horizontal(|ui| {
                         if icon_toggle(ui, true, if folded { "⏵" } else { "⏷" }, if folded { "Expand" } else { "Collapse" }) {
-                            action = Some(ListAction::Fold(g));
+                            if !app.collapsed.remove(&g) {
+                                app.collapsed.insert(g);
+                            }
                         }
-                        if icon_toggle(ui, all_vis, "👁", "Show / hide the group (H)") {
-                            action = Some(ListAction::Visible(ids.clone(), !all_vis));
+                        if icon_toggle(ui, vis, "👁", "Show / hide the group (H)") {
+                            app.set_visible(&ids, !vis);
                         }
-                        if lock_toggle(ui, all_lock, "Lock: can't be clicked or moved in the view") {
-                            action = Some(ListAction::Lock(ids.clone(), !all_lock));
+                        if lock_toggle(ui, locked, "Lock: can't be clicked or moved in the view") {
+                            app.set_locked(&ids, !locked);
                         }
                         let selected = ids.iter().all(|i| app.selection.contains(i));
-                        let name = app.scene.group_name(g).unwrap_or("Group");
                         let text = RichText::new(format!("🗀 {name}  ({})", ids.len())).strong();
-                        if ui.selectable_label(selected, text).on_hover_text("Click selects the whole group").clicked() {
-                            action = Some(ListAction::SelectGroup(g));
+                        let r =
+                            ui.selectable_label(selected, text).on_hover_text("Click selects the whole group · right-click for options");
+                        if r.clicked() {
+                            app.select_group(g, additive);
+                        }
+                        if r.secondary_clicked() && !selected {
+                            app.select_group(g, false);
+                        }
+                        r.context_menu(|ui| crate::context::object_menu(app, ui, &ctx));
+                    });
+                }
+                Row::Item { id, indent, name, color, vis, locked } => {
+                    ui.horizontal(|ui| {
+                        ui.add_space(indent);
+                        if icon_toggle(ui, vis, "👁", "Show / hide (H)") {
+                            app.set_visible(&[id], !vis);
+                        }
+                        if lock_toggle(ui, locked, "Lock: can't be clicked or moved in the view (Ctrl+L)") {
+                            app.set_locked(&[id], !locked);
+                        }
+                        let [r, g, b, _] = color;
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
+                        let selected = app.selection.contains(&id);
+                        let mut text = RichText::new(name);
+                        if !vis {
+                            text = text.weak().italics();
+                        }
+                        let resp = ui.selectable_label(selected, text);
+                        if resp.clicked() {
+                            app.click_select(id, additive, true);
+                        }
+                        if resp.secondary_clicked() && !selected {
+                            app.click_select(id, false, true);
+                        }
+                        resp.context_menu(|ui| crate::context::object_menu(app, ui, &ctx));
+                        let off = app.issues.0.contains(&id);
+                        let below = app.issues.1.contains(&id);
+                        if off || below {
+                            let tip = match (off, below) {
+                                (true, true) => "Outside the build plate and below it",
+                                (true, false) => "Outside the build plate",
+                                _ => "Below the build plate",
+                            };
+                            ui.label(RichText::new("⚠").color(Color32::from_rgb(255, 120, 80))).on_hover_text(tip);
                         }
                     });
-                    if !folded {
-                        for m in members {
-                            object_row(app, ui, m, 18.0, &mut action);
-                        }
-                    }
                 }
-                Some(_) => {}
-                None => object_row(app, ui, o, 0.0, &mut action),
             }
-        }
-    });
-    match action {
-        Some(ListAction::Select(id)) => app.click_select(id, shift, true),
-        Some(ListAction::SelectGroup(g)) => app.select_group(g, shift),
-        Some(ListAction::Visible(ids, v)) => app.set_visible(&ids, v),
-        Some(ListAction::Lock(ids, l)) => app.set_locked(&ids, l),
-        Some(ListAction::Fold(g)) => {
-            if !app.collapsed.remove(&g) {
-                app.collapsed.insert(g);
-            }
-        }
-        None => {}
-    }
-}
-
-fn object_row(app: &App, ui: &mut egui::Ui, o: &b3d_core::Object, indent: f32, action: &mut Option<ListAction>) {
-    ui.horizontal(|ui| {
-        ui.add_space(indent);
-        if icon_toggle(ui, o.visible, "👁", "Show / hide (H)") {
-            *action = Some(ListAction::Visible(vec![o.id], !o.visible));
-        }
-        if lock_toggle(ui, o.locked, "Lock: can't be clicked or moved in the view (Ctrl+L)") {
-            *action = Some(ListAction::Lock(vec![o.id], !o.locked));
-        }
-        let [r, g, b, _] = o.color;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
-        let selected = app.selection.contains(&o.id);
-        let mut text = RichText::new(&o.name);
-        if !o.visible {
-            text = text.weak().italics();
-        }
-        if ui.selectable_label(selected, text).clicked() {
-            *action = Some(ListAction::Select(o.id));
-        }
-        let off = app.issues.0.contains(&o.id);
-        let below = app.issues.1.contains(&o.id);
-        if off || below {
-            let tip = match (off, below) {
-                (true, true) => "Outside the build plate and below it",
-                (true, false) => "Outside the build plate",
-                _ => "Below the build plate",
-            };
-            ui.label(RichText::new("⚠").color(Color32::from_rgb(255, 120, 80))).on_hover_text(tip);
         }
     });
 }

@@ -274,11 +274,67 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
     let mf = pkg.files.get(&main).ok_or_else(|| Error::Parse(format!("3MF: missing {main}")))?;
     let ours = mf.meta.get("Application").is_some_and(|a| a.starts_with("Builder3D"));
     let mut out = Vec::new();
+    let mut used_groups: Vec<String> = vec![];
     for (i, (path, oid, xf)) in mf.build.iter().enumerate() {
         let path = path.clone().unwrap_or_else(|| main.clone());
         let file = pkg.files.get(&path);
         let obj = file.and_then(|f| f.objects.get(oid));
         let name = obj.and_then(|o| o.name.clone()).unwrap_or_else(|| format!("Object {}", i + 1));
+        // an object made of several parts (our groups, multi-part objects from slicers)
+        // comes in as a group of separate objects
+        if let (Some(f), Some(o)) = (file, obj) {
+            if o.mesh.is_none() && o.components.len() >= 2 {
+                let mut gname = name.clone();
+                let mut k = 2;
+                while used_groups.contains(&gname) {
+                    gname = format!("{name} ({k})");
+                    k += 1;
+                }
+                used_groups.push(gname.clone());
+                for (pi, (cpath, cid, cxf)) in o.components.iter().enumerate() {
+                    let cpath = cpath.clone().unwrap_or_else(|| path.clone());
+                    let cfile = pkg.files.get(&cpath);
+                    let cobj = cfile.and_then(|cf| cf.objects.get(cid));
+                    let cmeta = |k: &str| cobj.and_then(|c| c.meta.get(k)).cloned();
+                    let mut part = IoObject {
+                        name: cobj.and_then(|c| c.name.clone()).unwrap_or_else(|| format!("{name} part {}", pi + 1)),
+                        group: Some(gname.clone()),
+                        hidden: cmeta("hidden").is_some_and(|v| v == "1"),
+                        locked: cmeta("locked").is_some_and(|v| v == "1"),
+                        keep_position: ours,
+                        ..Default::default()
+                    };
+                    let placement = *xf * Mat4::from_scale(Vec3::splat(f.unit_scale)) * *cxf;
+                    match (cfile, cobj) {
+                        (Some(cf), Some(c)) if c.components.is_empty() && c.mesh.is_some() => {
+                            let mut m = c.mesh.clone().unwrap();
+                            let n = m.positions.len() as u32;
+                            m.triangles.retain(|t| t.iter().all(|&i| i < n));
+                            if let Some((g, gi)) = c.prop {
+                                part.color = cf.colors.get(&g).and_then(|cl| cl.get(gi as usize)).copied();
+                            }
+                            part.mesh = m;
+                            let placement = placement * Mat4::from_scale(Vec3::splat(cf.unit_scale / f.unit_scale));
+                            part.transform = (!placement.abs_diff_eq(Mat4::IDENTITY, 1e-7)).then_some(placement);
+                        }
+                        _ => {
+                            let mut color = None;
+                            pkg.flatten(&cpath, *cid, *xf * *cxf, 0, &mut part.mesh, &mut color);
+                            part.color = color;
+                        }
+                    }
+                    if part.color.is_none() {
+                        if let Some((g, gi)) = o.prop {
+                            part.color = f.colors.get(&g).and_then(|cl| cl.get(gi as usize)).copied();
+                        }
+                    }
+                    if !part.mesh.is_empty() {
+                        out.push(part);
+                    }
+                }
+                continue;
+            }
+        }
         let meta = |k: &str| obj.and_then(|o| o.meta.get(k)).cloned();
         let mut io = IoObject {
             name,
@@ -316,6 +372,12 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
     Ok(out)
 }
 
+/// 3MF "m00 m01 m02 m10 … m32" (rows of the 4×3 part, column-vector convention).
+fn mat_attr(m: &Mat4) -> String {
+    let c = m.to_cols_array();
+    format!("{} {} {} {} {} {} {} {} {} {} {} {}", c[0], c[1], c[2], c[4], c[5], c[6], c[8], c[9], c[10], c[12], c[13], c[14])
+}
+
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
@@ -337,11 +399,8 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
     model.push_str("</basematerials>\n");
     for (i, o) in objects.iter().enumerate() {
         let _ = writeln!(model, r#"<object id="{}" type="model" name="{}" pid="1" pindex="{}">"#, i + 2, esc(&o.name), i);
-        if o.group.is_some() || o.hidden || o.locked {
+        if o.hidden || o.locked {
             model.push_str("<metadatagroup>");
-            if let Some(g) = &o.group {
-                let _ = write!(model, r#"<metadata name="b3d:group">{}</metadata>"#, esc(g));
-            }
             if o.hidden {
                 model.push_str(r#"<metadata name="b3d:hidden">1</metadata>"#);
             }
@@ -360,31 +419,50 @@ pub fn write(objects: &[IoObject]) -> Result<Vec<u8>> {
         }
         model.push_str("</triangles></mesh></object>\n");
     }
-    model.push_str("</resources>\n<build>\n");
+    // each group becomes one object made of parts (components), so slicers keep the
+    // parts together as one model and let you pick a filament per part
+    let mut groups: Vec<(String, Vec<usize>)> = vec![];
     for (i, o) in objects.iter().enumerate() {
-        match o.transform {
+        if let Some(g) = &o.group {
+            match groups.iter_mut().find(|(n, _)| n == g) {
+                Some((_, v)) => v.push(i),
+                None => groups.push((g.clone(), vec![i])),
+            }
+        }
+    }
+    groups.retain(|(_, v)| v.len() >= 2);
+    let mut group_items: Vec<(usize, Mat4)> = vec![];
+    for (gi, (gname, members)) in groups.iter().enumerate() {
+        let gid = objects.len() + 2 + gi;
+        // the group's origin: bottom centre of its parts
+        let b = members.iter().fold(crate::Aabb::EMPTY, |b, &i| b.union(&objects[i].world_mesh().bounds()));
+        let origin = Mat4::from_translation(Vec3::new(b.center().x, b.center().y, b.min.z));
+        let inv = origin.inverse();
+        let _ = writeln!(model, r#"<object id="{gid}" type="model" name="{}"><components>"#, esc(gname));
+        for &i in members {
+            let m = inv * objects[i].transform.unwrap_or(Mat4::IDENTITY);
+            let _ = writeln!(model, r#"<component objectid="{}" transform="{}"/>"#, i + 2, mat_attr(&m));
+        }
+        model.push_str("</components></object>\n");
+        group_items.push((gid, origin));
+    }
+    model.push_str("</resources>\n<build>\n");
+    // keep the original order: a group goes where its first part was
+    let mut items: Vec<(usize, Option<Mat4>)> = vec![];
+    for (i, o) in objects.iter().enumerate() {
+        match groups.iter().position(|(_, v)| v.contains(&i)) {
+            Some(g) if groups[g].1[0] == i => items.push((group_items[g].0, Some(group_items[g].1))),
+            Some(_) => {}
+            None => items.push((i + 2, o.transform)),
+        }
+    }
+    for (id, xf) in items {
+        match xf {
             Some(m) => {
-                let c = m.to_cols_array();
-                let _ = writeln!(
-                    model,
-                    r#"<item objectid="{}" transform="{} {} {} {} {} {} {} {} {} {} {} {}"/>"#,
-                    i + 2,
-                    c[0],
-                    c[1],
-                    c[2],
-                    c[4],
-                    c[5],
-                    c[6],
-                    c[8],
-                    c[9],
-                    c[10],
-                    c[12],
-                    c[13],
-                    c[14]
-                );
+                let _ = writeln!(model, r#"<item objectid="{id}" transform="{}"/>"#, mat_attr(&m));
             }
             None => {
-                let _ = writeln!(model, r#"<item objectid="{}"/>"#, i + 2);
+                let _ = writeln!(model, r#"<item objectid="{id}"/>"#);
             }
         }
     }
@@ -422,16 +500,34 @@ mod tests {
             locked: true,
             ..Default::default()
         };
-        let bytes = write(&[o, IoObject::new("plain", m.clone(), None)]).unwrap();
+        let mate = IoObject {
+            name: "mate".into(),
+            mesh: m.clone(),
+            transform: Some(Mat4::from_translation(Vec3::new(40.0, 0.0, 1.0))),
+            group: Some("Group <A>".into()),
+            ..Default::default()
+        };
+        let bytes = write(&[IoObject::new("plain", m.clone(), None), o, mate]).unwrap();
+        // the group is one object made of two parts (what slicers expect)
+        let xml = {
+            let mut z = zip::ZipArchive::new(Cursor::new(&bytes[..])).unwrap();
+            let mut s = String::new();
+            z.by_name("3D/3dmodel.model").unwrap().read_to_string(&mut s).unwrap();
+            s
+        };
+        assert_eq!(xml.matches("<component ").count(), 2);
+        assert_eq!(xml.matches("<item ").count(), 2);
         let back = read(&bytes).unwrap();
-        assert_eq!(back.len(), 2);
-        let a = &back[0];
-        assert!(a.transform.unwrap().abs_diff_eq(xf, 1e-5));
+        assert_eq!(back.len(), 3);
+        assert!(back[0].transform.is_none() && back[0].group.is_none() && !back[0].hidden);
+        let a = &back[1];
+        assert!(a.transform.unwrap().abs_diff_eq(xf, 1e-4), "{:?}", a.transform);
         assert_eq!(a.mesh.positions, m.positions);
         assert_eq!(a.group.as_deref(), Some("Group <A>"));
         assert!(a.hidden && a.locked && a.keep_position);
         assert_eq!(a.color, Some([1, 2, 3, 255]));
-        assert!(back[1].transform.is_none() && back[1].group.is_none() && !back[1].hidden);
+        assert_eq!(back[2].group.as_deref(), Some("Group <A>"));
+        assert!(back[2].transform.unwrap().abs_diff_eq(Mat4::from_translation(Vec3::new(40.0, 0.0, 1.0)), 1e-4));
     }
 
     /// Production-extension layout: build item -> component in a separate model file, with transforms.

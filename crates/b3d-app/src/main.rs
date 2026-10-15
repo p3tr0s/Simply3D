@@ -4,6 +4,7 @@ mod app;
 mod autosave;
 mod camera;
 mod commands;
+mod context;
 mod debug;
 mod expr;
 mod organize;

@@ -6,7 +6,6 @@ use crate::preview::PreviewKind;
 use crate::render::{CameraUniform, DrawItem, LineVertex, ViewportFrame};
 use crate::text_tool::{TextHover, TextMode};
 use crate::ui::ACCENT;
-use b3d_core::csg::BoolOp;
 use b3d_core::scene::PickHit;
 use b3d_core::Aabb;
 use egui::{Color32, CursorIcon, Pos2, Rect, Sense, Shape, Stroke};
@@ -252,7 +251,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let ctx = ui.ctx().clone();
-    response.context_menu(|ui| context_menu(app, ui, &ctx));
+    response.context_menu(|ui| crate::context::object_menu(app, ui, &ctx));
 
     // ---------- GPU frame ----------
     let view = View { rect, aspect: app.viewport_aspect, cam: app.settings.camera };
@@ -807,43 +806,6 @@ fn axis_triad(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) 
         }
     }
     let _ = ACCENT;
-}
-
-fn context_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
-    let has = !app.selection.is_empty();
-    let many = app.selection.len() >= 2;
-    if ui.add_enabled(has, egui::Button::new("Duplicate")).clicked() {
-        app.duplicate_selected();
-        ui.close();
-    }
-    if ui.add_enabled(has, egui::Button::new("Delete")).clicked() {
-        app.delete_selected();
-        ui.close();
-    }
-    if ui.add_enabled(has, egui::Button::new("Drop to plate")).clicked() {
-        app.drop_selected();
-        ui.close();
-    }
-    if ui.add_enabled(has, egui::Button::new("Frame")).clicked() {
-        app.frame_selection();
-        ui.close();
-    }
-    ui.separator();
-    for (n, op) in [("Union", BoolOp::Union), ("Subtract", BoolOp::Subtract), ("Intersect", BoolOp::Intersect)] {
-        if ui.add_enabled(many, egui::Button::new(n)).clicked() {
-            app.boolean_selected(ctx, op);
-            ui.close();
-        }
-    }
-    if ui.add_enabled(has, egui::Button::new("Repair")).clicked() {
-        app.repair_selected(ctx);
-        ui.close();
-    }
-    ui.separator();
-    if ui.button("Select all").clicked() {
-        app.select_all();
-        ui.close();
-    }
 }
 
 /// Floating notice in the viewport's top-right corner with one-click fixes.
