@@ -1,0 +1,7 @@
+# Build the C runtime into the exe, so builder3d.exe runs on any 64-bit Windows 10/11 PC
+# without the Visual C++ Redistributable installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
