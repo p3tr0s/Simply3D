@@ -17,6 +17,16 @@ fn to_manifold(m: &Mesh) -> Result<Manifold> {
     if m.is_empty() {
         return Err(Error::Boolean("empty mesh".into()));
     }
+    // an inside-out mesh (all faces pointing in) would count as "nothing": turn it around
+    let flipped;
+    let m = if m.volume() < 0.0 {
+        let mut f = m.clone();
+        f.flip();
+        flipped = f;
+        &flipped
+    } else {
+        m
+    };
     let pos: Vec<f64> = m.positions.iter().flat_map(|p| [p.x as f64, p.y as f64, p.z as f64]).collect();
     let idx: Vec<usize> = m.triangles.iter().flat_map(|t| t.map(|i| i as usize)).collect();
     Manifold::new(&pos, &idx).map_err(|e| Error::Boolean(format!("input is not a closed manifold ({e}). Try Repair first.")))
@@ -41,9 +51,14 @@ pub fn boolean(a: &Mesh, b: &Mesh, op: BoolOp) -> Result<Mesh> {
     };
     // the boolean kernel can panic on degenerate input: turn that into an error
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compute_boolean(&ma, &mb, op)))
-        .map_err(|_| Error::Boolean("the geometry is too degenerate for a boolean — try Repair first".into()))?
-        .map_err(Error::Boolean)?;
-    Ok(from_manifold(&r))
+        .map_err(|_| Error::Boolean("the geometry is too degenerate for a boolean — try Repair first".into()))?;
+    match r {
+        Ok(r) => Ok(from_manifold(&r)),
+        // the kernel reports "nothing left" (e.g. intersecting shapes that don't touch) as
+        // an error; it's simply an empty result
+        Err(e) if e.contains("empty pos") => Ok(Mesh::default()),
+        Err(e) => Err(Error::Boolean(e)),
+    }
 }
 
 /// Apply `op` with `base` as the left operand and each of `others` in turn.
@@ -59,6 +74,17 @@ pub fn boolean_many(base: &Mesh, others: &[Mesh], op: BoolOp) -> Result<Mesh> {
 /// Returns (part on the normal side, part on the opposite side); either may be empty.
 pub fn cut_by_plane(m: &Mesh, point: Vec3, normal: Vec3) -> Result<(Mesh, Mesh)> {
     let n = normal.try_normalize().ok_or_else(|| Error::Boolean("invalid plane normal".into()))?;
+    // entirely on one side: nothing to cut
+    let (lo, hi) = m.positions.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        let d = (*p - point).dot(n);
+        (lo.min(d), hi.max(d))
+    });
+    if lo >= -1e-6 {
+        return Ok((m.clone(), Mesh::default()));
+    }
+    if hi <= 1e-6 {
+        return Ok((Mesh::default(), m.clone()));
+    }
     let b = m.bounds();
     let big = (b.size().length() + (b.center() - point).length()) * 4.0 + 10.0;
     // half-space slab: a big box whose bottom face lies on the plane
@@ -110,6 +136,22 @@ mod tests {
         let (up, down) = cut_by_plane(&a, Vec3::new(0.0, 0.0, 2.0), Vec3::Z).unwrap();
         assert!((up.volume() - 300.0).abs() < 1e-2, "{}", up.volume());
         assert!((down.volume() - 700.0).abs() < 1e-2, "{}", down.volume());
+    }
+
+    #[test]
+    fn plane_missing_a_part_is_not_an_error() {
+        let mut a = cuboid(Vec3::splat(10.0));
+        a.translate(Vec3::new(0.0, 0.0, 20.0));
+        let (up, down) = cut_by_plane(&a, Vec3::ZERO, Vec3::Z).unwrap();
+        assert!(down.is_empty() && (up.volume() - 1000.0).abs() < 1e-3);
+        // shapes that don't touch: intersection is empty, not a failure
+        let b = cuboid(Vec3::splat(10.0));
+        assert!(boolean(&a, &b, BoolOp::Intersect).unwrap().is_empty());
+        // an inside-out part still cuts properly
+        let mut inv = cuboid(Vec3::splat(10.0));
+        inv.flip();
+        let (up, down) = cut_by_plane(&inv, Vec3::ZERO, Vec3::Z).unwrap();
+        assert!((up.volume() - 500.0).abs() < 1e-2 && (down.volume() - 500.0).abs() < 1e-2);
     }
 
     #[test]
