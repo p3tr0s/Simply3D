@@ -18,6 +18,7 @@ mod preview;
 mod render;
 mod snap;
 mod text_tool;
+mod texture_tool;
 mod ui;
 mod viewport;
 

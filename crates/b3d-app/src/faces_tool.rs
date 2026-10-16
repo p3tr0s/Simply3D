@@ -67,7 +67,7 @@ impl App {
 
     /// Make `id` the object being selected on (clears a selection on another object or
     /// an outdated one).
-    fn face_target(&mut self, id: ObjectId) -> bool {
+    pub fn face_target(&mut self, id: ObjectId) -> bool {
         let Some(o) = self.scene.get(id) else { return false };
         if o.locked || o.hole {
             return false;
@@ -85,7 +85,10 @@ impl App {
 
     /// Keep the selection valid (called every frame).
     pub fn tick_faces(&mut self) {
-        if self.tool != Tool::Faces {
+        if !matches!(self.tool, Tool::Faces | Tool::Texture) {
+            if self.preview.as_ref().is_some_and(|p| p.kind == crate::preview::PreviewKind::Texture) {
+                self.cancel_preview();
+            }
             if self.face_rt.obj.is_some() {
                 self.face_rt = FaceRuntime::default();
             }
@@ -119,7 +122,7 @@ impl App {
 
     /// Mesh to draw for `id` while it has a face selection.
     pub fn face_display(&self, id: ObjectId) -> Option<MeshHandle> {
-        if self.tool == Tool::Faces && self.face_rt.obj == Some(id) {
+        if matches!(self.tool, Tool::Faces | Tool::Texture) && self.face_rt.obj == Some(id) {
             self.face_rt.display.clone()
         } else {
             None
@@ -134,13 +137,24 @@ impl App {
         if first {
             self.face_rt.last = None;
         }
-        let s = self.settings.faces.clone();
+        let (mode, radius, angle) = self.sel_params();
+        if self.tool == Tool::Texture {
+            self.selection = vec![h.id];
+        }
         let Some(o) = self.scene.get(h.id) else { return };
         let m = &o.mesh.mesh;
         if h.tri >= m.triangles.len() {
             return;
         }
         let inv = o.matrix().inverse();
+        let Some(mode) = mode else {
+            // whole object
+            if !remove {
+                self.face_select_all(0);
+            }
+            return;
+        };
+        let s = FaceSettings { mode, radius, angle, ..self.settings.faces.clone() };
         let tris = match s.mode {
             SelMode::Fill => {
                 if !first {
@@ -168,6 +182,17 @@ impl App {
             }
         }
         self.face_rt.dirty |= changed;
+    }
+
+    /// (area mode — None = whole object, brush radius, fill angle) for the active tool.
+    pub fn sel_params(&self) -> (Option<SelMode>, f32, f32) {
+        if self.tool == Tool::Texture {
+            let t = &self.settings.texture;
+            (crate::texture_tool::area_mode(t), t.radius, t.angle)
+        } else {
+            let f = &self.settings.faces;
+            (Some(f.mode), f.radius, f.angle)
+        }
     }
 
     pub fn face_select_all(&mut self, how: u8) {

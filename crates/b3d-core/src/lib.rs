@@ -27,6 +27,7 @@ pub mod sdf;
 pub mod simplify;
 pub mod smooth;
 pub mod text;
+pub mod texture;
 pub mod threads;
 pub mod wrap;
 

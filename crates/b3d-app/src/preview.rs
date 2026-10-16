@@ -58,6 +58,7 @@ pub enum PreviewKind {
     Hollow,
     MakeSolid,
     Pattern,
+    Texture,
 }
 
 impl PreviewKind {
@@ -71,6 +72,7 @@ impl PreviewKind {
             PreviewKind::Hollow => "Hollow",
             PreviewKind::MakeSolid => "Make solid",
             PreviewKind::Pattern => "Pattern",
+            PreviewKind::Texture => "Texture",
         }
     }
 }
@@ -115,6 +117,18 @@ impl App {
             PreviewKind::ExtrudeDown => format!("{}", t.extrude_height),
             PreviewKind::Hollow => format!("{} {}", t.hollow_wall, t.hollow_voxel),
             PreviewKind::MakeSolid => format!("{} {} {} {}", t.solid_shell, t.solid_thickness, t.solid_voxel, t.solid_adaptive),
+            PreviewKind::Texture => {
+                let mut sh = std::collections::hash_map::DefaultHasher::new();
+                self.face_rt.sel.hash(&mut sh);
+                self.face_rt.obj.hash(&mut sh);
+                format!(
+                    "{:?} {:?} {} {:?}",
+                    self.settings.texture,
+                    self.tex_rt.custom.as_ref().map(|c| &c.0),
+                    sh.finish(),
+                    self.scene.get(self.face_rt.obj.unwrap_or(0)).map(|o| o.transform.scale)
+                )
+            }
             PreviewKind::Pattern => {
                 format!(
                     "{:?} {} {} {} {} {}",
@@ -413,6 +427,42 @@ impl App {
                             remove,
                             add,
                             message: format!("Rounded edges — {}", info.join("; ")),
+                        }
+                    }),
+                )
+            }
+            PreviewKind::Texture => {
+                let id = self.face_rt.obj.ok_or("Choose where to put the texture")?;
+                let o = self.scene.get(id).ok_or("object gone")?;
+                if self.face_rt.sel.len() != o.mesh.mesh.triangles.len() || self.face_rt.count() == 0 {
+                    return Err("Choose where to put the texture".into());
+                }
+                let map = self.tex_rt.map.as_ref().map(|m| m.1.clone()).ok_or("Choose a texture")?;
+                let s = o.transform.scale.abs();
+                let opts = self.texture_options((s.x + s.y + s.z) / 3.0);
+                let mesh = o.mesh.mesh.clone();
+                let sel = self.face_rt.sel.clone();
+                let whole = sel.iter().all(|x| *x);
+                (
+                    "Texturing…".into(),
+                    Box::new(move |p: &Progress| {
+                        let sel = if whole { None } else { Some(&sel[..]) };
+                        match b3d_core::texture::displace(&mesh, sel, &map, &opts, p) {
+                            Ok((out, limited)) => {
+                                let n = out.triangles.len();
+                                let note = if limited {
+                                    " — detail limited to keep the size sensible; texture a smaller area for more"
+                                } else {
+                                    ""
+                                };
+                                JobOutput::ReplaceMeshes {
+                                    label: "Texture".into(),
+                                    meshes: vec![(id, out)],
+                                    message: format!("Textured: {n} triangles{note}"),
+                                }
+                            }
+                            Err(b3d_core::Error::Cancelled) => JobOutput::Error("cancelled".into()),
+                            Err(e) => JobOutput::Error(format!("Texture failed: {e}")),
                         }
                     }),
                 )

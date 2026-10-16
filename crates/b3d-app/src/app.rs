@@ -51,6 +51,7 @@ pub struct Settings {
     pub image: crate::image_tool::ImageSettings,
     pub paint: crate::paint_tool::PaintSettings,
     pub faces: crate::faces_tool::FaceSettings,
+    pub texture: crate::texture_tool::TextureSettings,
     /// Align to the first selected object instead of the whole selection.
     pub align_to_first: bool,
     /// Gap between parts when arranging, mm.
@@ -87,6 +88,7 @@ impl Default for Settings {
             image: Default::default(),
             paint: Default::default(),
             faces: Default::default(),
+            texture: Default::default(),
             align_to_first: false,
             arrange_gap: 6.0,
             see_through: true,
@@ -138,6 +140,7 @@ pub enum Tool {
     Image,
     Paint,
     Faces,
+    Texture,
 }
 
 /// Section view: everything on the far side of a plane is cut away (display only).
@@ -457,6 +460,7 @@ pub struct App {
     pub wrap: crate::text_tool::WrapCache,
     pub paint_rt: crate::paint_tool::PaintRuntime,
     pub face_rt: crate::faces_tool::FaceRuntime,
+    pub tex_rt: crate::texture_tool::TextureRuntime,
     /// Objects drawn see-through this frame (they overlap the selection).
     pub see_through: Vec<ObjectId>,
     pub holes: crate::holes::HoleCache,
@@ -537,6 +541,7 @@ impl App {
             wrap: Default::default(),
             paint_rt: Default::default(),
             face_rt: Default::default(),
+            tex_rt: Default::default(),
             see_through: vec![],
             holes: Default::default(),
             encode_srgb,

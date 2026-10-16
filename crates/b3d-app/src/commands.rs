@@ -189,6 +189,8 @@ pub fn all() -> Vec<Command> {
         cmd!("Tools", "Picture to 3D (contour, height map, stamp, lithophane)…", "", always, |a, c| a.image_dialog(c)),
         cmd!("Tools", "Paint colours (multi-colour / AMS)", "P", has_objects, |a, _| a.start_paint_tool()),
         cmd!("Tools", "Select faces: extrude, push in, delete, copy as solid", "S", has_objects, |a, _| a.start_faces_tool()),
+        cmd!("Tools", "Texture: knurl, carbon fibre, wood, leather, picture… pressed into the surface", "", has_objects, |a, _| a
+            .start_texture_tool()),
         cmd!("Tools", "Paint: clear paint from selection", "", has_sel, |a, _| a.clear_paint_selected()),
         cmd!("Tools", "Paint: refine selection for finer painting", "", has_sel, |a, c| a.refine_for_paint(c)),
         cmd!("View", "Section view", "X", has_objects, |a, _| a.toggle_section()),

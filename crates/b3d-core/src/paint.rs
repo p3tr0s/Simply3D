@@ -211,14 +211,35 @@ pub fn fill_region(m: &Mesh, start: usize, max_angle_deg: f32) -> Vec<usize> {
 /// reached), so a small brush can paint finer detail. Watertight: an edge is split for
 /// both of its triangles at the same midpoint. Paint is inherited.
 pub fn refine(m: &Mesh, max_edge: f32, max_triangles: usize) -> Mesh {
+    let painted = m.is_painted();
+    let tags: Vec<u64> = (0..m.triangles.len()).map(|i| m.paint_of(i) as u64).collect();
+    let (mut out, tags) = refine_impl(m, tags, |_| true, max_edge, max_triangles);
+    out.paint = if painted { tags.iter().map(|t| *t as u32).collect() } else { vec![] };
+    out
+}
+
+/// Like [`refine`], but only the selected triangles ask to be split (neighbours split a
+/// shared edge too, to stay watertight). Returns the mesh and the new selection.
+pub fn refine_where(m: &Mesh, sel: &[bool], max_edge: f32, max_triangles: usize) -> (Mesh, Vec<bool>) {
+    let painted = m.is_painted();
+    let tags: Vec<u64> = (0..m.triangles.len()).map(|i| m.paint_of(i) as u64 | ((sel[i] as u64) << 32)).collect();
+    let (mut out, tags) = refine_impl(m, tags, |t| t >> 32 == 1, max_edge, max_triangles);
+    out.paint = if painted { tags.iter().map(|t| *t as u32).collect() } else { vec![] };
+    (out, tags.iter().map(|t| t >> 32 == 1).collect())
+}
+
+fn refine_impl(m: &Mesh, mut tags: Vec<u64>, wants: impl Fn(u64) -> bool, max_edge: f32, max_triangles: usize) -> (Mesh, Vec<u64>) {
     let mut cur = m.clone();
-    let painted = cur.is_painted();
+    cur.paint.clear();
     for _ in 0..40 {
         let l2 = max_edge * max_edge;
         // longest-edge bisection: each triangle asks for its longest edge to be split
         // (its neighbour then splits that edge too), which keeps slivers from multiplying
         let mut mids: HashMap<(u32, u32), u32> = HashMap::new();
-        for t in &cur.triangles {
+        for (i, t) in cur.triangles.iter().enumerate() {
+            if !wants(tags[i]) {
+                continue;
+            }
             let len = |k: usize| cur.positions[t[k] as usize].distance_squared(cur.positions[t[(k + 1) % 3] as usize]);
             let k = (0..3).max_by(|a, b| len(*a).total_cmp(&len(*b))).unwrap();
             if len(k) > l2 {
@@ -237,7 +258,7 @@ pub fn refine(m: &Mesh, max_edge: f32, max_triangles: usize) -> Mesh {
             mids.insert(k, (cur.positions.len() - 1) as u32);
         }
         let mut tris = Vec::with_capacity(cur.triangles.len() * 2);
-        let mut paint = Vec::with_capacity(if painted { cur.triangles.len() * 2 } else { 0 });
+        let mut new_tags = Vec::with_capacity(cur.triangles.len() * 2);
         for (i, t) in cur.triangles.iter().enumerate() {
             let mid = |k: usize| {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
@@ -266,25 +287,22 @@ pub fn refine(m: &Mesh, max_edge: f32, max_triangles: usize) -> Mesh {
                     tris.extend([[a, b, mbc], [a, mbc, mca], [mca, mbc, c]]);
                 }
             }
-            if painted {
-                paint.extend(std::iter::repeat_n(cur.paint[i], tris.len() - before));
-            }
+            new_tags.extend(std::iter::repeat_n(tags[i], tris.len() - before));
         }
         cur.triangles = tris;
-        cur.paint = paint;
+        tags = new_tags;
         for _ in 0..4 {
-            if flip_pass(&mut cur) == 0 {
+            if flip_pass(&mut cur, &tags) == 0 {
                 break;
             }
         }
     }
-    cur
+    (cur, tags)
 }
 
-/// One sweep of Delaunay edge flips between coplanar triangles of the same paint (keeps
+/// One sweep of Delaunay edge flips between coplanar triangles with the same tag (keeps
 /// the shape exactly, makes splitting produce well-shaped triangles instead of needles).
-fn flip_pass(m: &mut Mesh) -> usize {
-    let painted = m.paint.len() == m.triangles.len();
+fn flip_pass(m: &mut Mesh, tags: &[u64]) -> usize {
     let mut edges: HashMap<(u32, u32), (usize, usize, u8)> = HashMap::with_capacity(m.triangles.len() * 2);
     for (i, t) in m.triangles.iter().enumerate() {
         for k in 0..3 {
@@ -301,7 +319,7 @@ fn flip_pass(m: &mut Mesh) -> usize {
     let keys: Vec<(u32, u32)> = edges.iter().filter(|(_, e)| e.2 == 2).map(|(k, _)| *k).collect();
     for key in keys {
         let (t1, t2, _) = edges[&key];
-        if touched[t1] || touched[t2] || (painted && m.paint[t1] != m.paint[t2]) {
+        if touched[t1] || touched[t2] || tags[t1] != tags[t2] {
             continue;
         }
         // t1 = (a, b, c) with a→b along the edge; t2 has b→a and apex d

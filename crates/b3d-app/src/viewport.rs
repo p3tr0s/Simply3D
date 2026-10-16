@@ -184,7 +184,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     // ---------- select faces: what's under the brush ----------
-    if app.tool == Tool::Faces {
+    if matches!(app.tool, Tool::Faces | Tool::Texture) {
         if moved || app.face_rt.hover.is_none() {
             app.face_rt.hover = ray.and_then(|(o, d)| pick(app, o, d, false)).map(|h| crate::paint_tool::PaintHover {
                 id: h.id,
@@ -197,7 +197,9 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
             app.face_rt.hover = None;
         }
     }
-    if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image | Tool::Paint | Tool::Faces) && response.hovered() {
+    if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image | Tool::Paint | Tool::Faces | Tool::Texture)
+        && response.hovered()
+    {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else if matches!(app.drag, DragMode::Move { .. }) {
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
@@ -294,7 +296,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                         _ => {}
                     }
                 }
-                Tool::Faces => {
+                Tool::Faces | Tool::Texture => {
                     if let Some(h) = pick(app, o, d, false) {
                         let h = crate::paint_tool::PaintHover { id: h.id, point: h.point, normal: h.normal, tri: h.tri };
                         app.face_select_at(h, true, shift);
@@ -694,9 +696,9 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
             let c = if s.erase { lin_rgba(1.0, 1.0, 1.0, 0.9) } else { lin([s.color[0], s.color[1], s.color[2], 255]) };
             (h, c, s.mode == crate::paint_tool::PaintMode::Brush, s.radius)
         }),
-        Tool::Faces => app.face_rt.hover.map(|h| {
-            let s = &app.settings.faces;
-            (h, lin_rgba(1.0, 0.77, 0.16, 1.0), s.mode == crate::faces_tool::SelMode::Brush, s.radius)
+        Tool::Faces | Tool::Texture => app.face_rt.hover.map(|h| {
+            let (mode, radius, _) = app.sel_params();
+            (h, lin_rgba(1.0, 0.77, 0.16, 1.0), mode == Some(crate::faces_tool::SelMode::Brush), radius)
         }),
         _ => None,
     };
@@ -989,6 +991,11 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             crate::faces_tool::SelMode::Fill => "Select faces: click an area · Shift+click removes",
             crate::faces_tool::SelMode::Brush => "Select faces: drag on the model · Shift removes · drag off it to orbit",
         }),
+        Tool::Texture => Some(match app.settings.texture.area {
+            crate::texture_tool::TexArea::Whole => "Texture: click the object",
+            crate::texture_tool::TexArea::Fill => "Texture: click an area · Shift+click removes",
+            crate::texture_tool::TexArea::Brush => "Texture: drag over the area · Shift removes",
+        }),
         Tool::Select => None,
     };
     if let Some(h) = hint {
@@ -1080,7 +1087,7 @@ fn plate_warnings(app: &mut App, ui: &mut egui::Ui, view: &View) {
 
 /// Decide what a left-drag does, based on what is under the press point and modifiers.
 fn start_primary_drag(app: &mut App, view: &View, origin: Pos2, shift: bool, alt: bool, ctrl: bool, cad: bool) -> DragMode {
-    if app.tool == Tool::Faces && !alt {
+    if matches!(app.tool, Tool::Faces | Tool::Texture) && !alt {
         let (o, d) = view.ray(origin);
         if let Some(h) = pick(app, o, d, false).filter(|h| app.scene.get(h.id).is_some_and(|o| !o.hole && !o.locked)) {
             app.face_select_at(crate::paint_tool::PaintHover { id: h.id, point: h.point, normal: h.normal, tri: h.tri }, true, shift);

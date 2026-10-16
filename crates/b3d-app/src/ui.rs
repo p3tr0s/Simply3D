@@ -476,6 +476,16 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
             {
                 app.start_faces_tool();
             }
+            if tool_button(
+                ui,
+                app.tool == Tool::Texture,
+                "Texture",
+                "Press a texture (knurl, carbon, wood, leather, your own picture…) into the surface",
+            )
+            .clicked()
+            {
+                app.start_texture_tool();
+            }
             ui.separator();
             if ui
                 .add(egui::Button::selectable(app.section.enabled, "▣ Section"))
@@ -788,6 +798,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         Tool::Image => crate::image_tool::panel(app, ui, &ctx),
         Tool::Paint => crate::paint_tool::panel(app, ui, &ctx),
         Tool::Faces => crate::faces_tool::panel(app, ui, &ctx),
+        Tool::Texture => crate::texture_tool::panel(app, ui),
         Tool::Select => {}
     }
     let Some(&id) = app.selection.first() else {

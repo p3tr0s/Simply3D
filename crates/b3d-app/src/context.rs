@@ -170,6 +170,9 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     if item(ui, true, "Select faces…", "S") {
         app.start_faces_tool();
     }
+    if item(ui, true, "Texture…", "") {
+        app.start_texture_tool();
+    }
     ui.separator();
     if item(ui, true, "Frame", "F") {
         app.frame_selection();
