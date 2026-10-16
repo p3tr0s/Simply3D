@@ -1,14 +1,17 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod arrange_tool;
 mod autosave;
 mod camera;
 mod commands;
 mod context;
 mod debug;
 mod expr;
+mod faces_tool;
 mod holes;
 mod image_tool;
+mod measure_tool;
 mod organize;
 mod paint_tool;
 mod preview;

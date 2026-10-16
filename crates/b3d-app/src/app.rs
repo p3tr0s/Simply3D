@@ -50,6 +50,11 @@ pub struct Settings {
     pub text: crate::text_tool::TextSettings,
     pub image: crate::image_tool::ImageSettings,
     pub paint: crate::paint_tool::PaintSettings,
+    pub faces: crate::faces_tool::FaceSettings,
+    /// Align to the first selected object instead of the whole selection.
+    pub align_to_first: bool,
+    /// Gap between parts when arranging, mm.
+    pub arrange_gap: f32,
     /// Objects that overlap the selection are drawn see-through.
     pub see_through: bool,
     /// Save holes into 3MF already cut (any slicer) instead of as negative parts.
@@ -81,6 +86,9 @@ impl Default for Settings {
             text: Default::default(),
             image: Default::default(),
             paint: Default::default(),
+            faces: Default::default(),
+            align_to_first: false,
+            arrange_gap: 6.0,
             see_through: true,
             holes_cut: false,
         }
@@ -108,6 +116,10 @@ pub enum DragMode {
     },
     /// Painting a stroke.
     Paint,
+    /// Selecting faces (Shift: removing).
+    FaceSel {
+        remove: bool,
+    },
     Move {
         grab: Vec3,
         start: Vec<(ObjectId, Transform)>,
@@ -125,6 +137,7 @@ pub enum Tool {
     Text,
     Image,
     Paint,
+    Faces,
 }
 
 /// Section view: everything on the far side of a plane is cut away (display only).
@@ -182,11 +195,64 @@ pub struct CutState {
     pub conn: b3d_core::connectors::ConnectorOptions,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MeasureMode {
+    /// Distance between two points.
+    #[default]
+    Points,
+    /// Angle at the middle of three points.
+    Angle,
+    /// Flat faces: distance (parallel) and angle.
+    Faces,
+    /// Holes, pins, round edges: diameter and centre.
+    Circle,
+}
+
+/// A measured flat face (world space).
+#[derive(Debug, Clone)]
+pub struct MeasuredFace {
+    pub obj: ObjectId,
+    pub normal: Vec3,
+    pub point: Vec3,
+    pub tris: Vec<[Vec3; 3]>,
+}
+
+/// A measured circle (world space).
+#[derive(Debug, Clone, Copy)]
+pub struct MeasuredCircle {
+    pub obj: ObjectId,
+    pub center: Vec3,
+    pub axis: Vec3,
+    pub radius: f32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MeasureState {
     pub a: Option<Vec3>,
     pub b: Option<Vec3>,
     pub snap_vertices: bool,
+    pub mode: MeasureMode,
+    /// Angle mode: up to three points.
+    pub pts: Vec<Vec3>,
+    /// The object each clicked point / face is on.
+    pub objs: Vec<ObjectId>,
+    pub faces: Vec<MeasuredFace>,
+    pub circle: Option<MeasuredCircle>,
+    /// "Scale so this measures …" target, mm.
+    pub target: f32,
+    /// Tube / channel diameter between two points, mm.
+    pub tube_d: f32,
+}
+
+impl MeasureState {
+    pub fn clear(&mut self) {
+        self.a = None;
+        self.b = None;
+        self.pts.clear();
+        self.objs.clear();
+        self.faces.clear();
+        self.circle = None;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +285,18 @@ pub struct MeshTools {
     pub hollow_voxel: f32,
     pub hollow_drain: bool,
     pub hollow_drain_d: f32,
+    /// Make solid / remesh.
+    pub solid_shell: bool,
+    pub solid_thickness: f32,
+    pub solid_voxel: f32,
+    pub solid_adaptive: bool,
+    /// Pattern / lattice.
+    pub pattern: b3d_core::sdf::Pattern,
+    pub pattern_cell: f32,
+    pub pattern_thickness: f32,
+    pub pattern_skin: f32,
+    pub pattern_voxel: f32,
+    pub pattern_seed: u64,
 }
 
 impl Default for MeshTools {
@@ -240,6 +318,16 @@ impl Default for MeshTools {
             hollow_voxel: 0.0,
             hollow_drain: false,
             hollow_drain_d: 4.0,
+            solid_shell: false,
+            solid_thickness: 1.0,
+            solid_voxel: 0.0,
+            solid_adaptive: true,
+            pattern: b3d_core::sdf::Pattern::Voronoi,
+            pattern_cell: 8.0,
+            pattern_thickness: 1.6,
+            pattern_skin: 2.0,
+            pattern_voxel: 0.0,
+            pattern_seed: 1,
         }
     }
 }
@@ -368,6 +456,7 @@ pub struct App {
     pub img_rt: crate::image_tool::ImageRuntime,
     pub wrap: crate::text_tool::WrapCache,
     pub paint_rt: crate::paint_tool::PaintRuntime,
+    pub face_rt: crate::faces_tool::FaceRuntime,
     /// Objects drawn see-through this frame (they overlap the selection).
     pub see_through: Vec<ObjectId>,
     pub holes: crate::holes::HoleCache,
@@ -398,7 +487,7 @@ impl App {
             gizmo_dragging: false,
             gizmo_used: false,
             tool: Tool::Select,
-            measure: MeasureState { snap_vertices: true, ..Default::default() },
+            measure: MeasureState { snap_vertices: true, target: 10.0, tube_d: 3.0, ..Default::default() },
             cut: CutState { axis: 2, offset: 0.0, keep: CutKeep::Both, conn: Default::default() },
             mesh_tools: MeshTools::default(),
             array: ArrayParams { count: [3, 1, 1], spacing: Vec3::new(25.0, 25.0, 25.0) },
@@ -447,6 +536,7 @@ impl App {
             img_rt: Default::default(),
             wrap: Default::default(),
             paint_rt: Default::default(),
+            face_rt: Default::default(),
             see_through: vec![],
             holes: Default::default(),
             encode_srgb,
@@ -997,13 +1087,18 @@ impl App {
             return;
         }
         self.checkpoint("Align");
-        let all = self.selection_bounds();
+        // Tinkercad-style: the first selected object (and its group) can stay put as the key
+        let key: Vec<ObjectId> = if self.settings.align_to_first { self.scene.with_group(self.selection[0]) } else { vec![] };
+        let all = if key.is_empty() { self.selection_bounds() } else { self.scene.bounds_of(&key) };
         let target = match mode {
             0 => all.min[axis],
             1 => all.center()[axis],
             _ => all.max[axis],
         };
         for id in self.selection.clone() {
+            if key.contains(&id) {
+                continue;
+            }
             let Some(o) = self.scene.get(id) else { continue };
             let b = o.world_bounds();
             let cur = match mode {
@@ -1353,6 +1448,7 @@ impl eframe::App for App {
         self.tick_text(ctx);
         self.tick_image(ctx);
         self.tick_holes(ctx);
+        self.tick_faces();
         self.tick_autosave(ctx);
         self.handle_close(ctx);
         if self.job.is_some() {

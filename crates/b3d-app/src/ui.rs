@@ -111,8 +111,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         } else {
             app.selection.clear();
         }
-        app.measure.a = None;
-        app.measure.b = None;
+        app.measure.clear();
     }
     if key(Key::W) {
         app.gizmo_kind = GizmoKind::Move;
@@ -137,6 +136,13 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     }
     if key(Key::P) {
         app.start_paint_tool();
+    }
+    if key(Key::S) {
+        app.start_faces_tool();
+    }
+    if key(Key::A) {
+        let g = app.settings.arrange_gap;
+        app.auto_arrange(g);
     }
     if key(Key::H) {
         app.hide_selected();
@@ -460,6 +466,16 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
             {
                 app.start_paint_tool();
             }
+            if tool_button(
+                ui,
+                app.tool == Tool::Faces,
+                "▣ Faces",
+                "Select an area of a model, then extrude, push in, delete or copy it (S)",
+            )
+            .clicked()
+            {
+                app.start_faces_tool();
+            }
             ui.separator();
             if ui
                 .add(egui::Button::selectable(app.section.enabled, "▣ Section"))
@@ -761,7 +777,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     ui.add_space(4.0);
     match app.tool {
-        Tool::Measure => measure_panel(app, ui),
+        Tool::Measure => crate::measure_tool::panel(app, ui),
         Tool::LayFlat => {
             ui.heading("Lay flat");
             ui.label("Click any face of an object: it is rotated so that face rests on the plate.");
@@ -771,6 +787,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         Tool::Text => crate::text_tool::panel(app, ui),
         Tool::Image => crate::image_tool::panel(app, ui, &ctx),
         Tool::Paint => crate::paint_tool::panel(app, ui, &ctx),
+        Tool::Faces => crate::faces_tool::panel(app, ui, &ctx),
         Tool::Select => {}
     }
     let Some(&id) = app.selection.first() else {
@@ -1030,6 +1047,12 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                     ui.weak("Select two or more objects to align them.");
                 }
                 ui.add_enabled_ui(n >= 2, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Align to");
+                        ui.selectable_value(&mut app.settings.align_to_first, false, "Selection");
+                        ui.selectable_value(&mut app.settings.align_to_first, true, "First selected")
+                            .on_hover_text("The first object you selected stays put; the others line up with it");
+                    });
                     egui::Grid::new("align").num_columns(4).show(ui, |ui| {
                         for a in 0..3 {
                             ui.label(RichText::new(format!("Align {}", AXIS_NAMES[a])).color(AXIS_COLORS[a]));
@@ -1055,6 +1078,28 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                             }
                         }
                     });
+                });
+                section(ui, "Plate");
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button("Auto-orient")
+                        .on_hover_text(
+                            "Turn the selected parts (or all) to print with the least overhang and the most contact with the plate",
+                        )
+                        .clicked()
+                    {
+                        app.auto_orient_selected();
+                    }
+                    if ui
+                        .button("Auto-arrange")
+                        .on_hover_text("Pack the selected parts (or all) on the plate, centred. Groups stay together")
+                        .clicked()
+                    {
+                        let gap = app.settings.arrange_gap;
+                        app.auto_arrange(gap);
+                    }
+                    ui.label("gap");
+                    ui.add(num(&mut app.settings.arrange_gap, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"));
                 });
                 section(ui, "Array copies");
                 ui.horizontal(|ui| {
@@ -1171,6 +1216,11 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 ui.horizontal(|ui| {
+                    if ui.button("Make solid…").on_hover_text("For badly broken meshes: rebuild as one closed solid (Mesh tab)").clicked()
+                    {
+                        app.tab = PanelTab::Mesh;
+                        app.start_preview(PreviewKind::MakeSolid);
+                    }
                     if ui
                         .button("🔧 Repair")
                         .on_hover_text("Weld, remove degenerate/duplicate faces, fix orientation, fill holes")
@@ -1313,7 +1363,83 @@ fn mesh_tools(app: &mut App, ui: &mut egui::Ui) {
         "Keeps a shell of the given wall thickness and removes the inside, saving material and weight. The outside stays exactly as it is. Use Section view (X) to see the inside.",
     );
 
+    ui.add_space(6.0);
+    ui.label(RichText::new("Make solid / remesh").strong());
+    let t = &mut app.mesh_tools;
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut t.solid_shell, false, "Solid")
+            .on_hover_text("Fill the inside: closes holes, merges overlapping parts, removes inner walls");
+        ui.selectable_value(&mut t.solid_shell, true, "Shell")
+            .on_hover_text("Thicken the surface itself — for open sheets and scans of thin things");
+        if t.solid_shell {
+            ui.add(num(&mut t.solid_thickness, Kind::Length).speed(0.05).range(0.1..=50.0).suffix(" mm"));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Detail");
+        ui.add(num(&mut t.solid_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+            .on_hover_text("Size of the rebuilt triangles. 0 = automatic (1/200 of the size)");
+        ui.checkbox(&mut t.solid_adaptive, "Fewer triangles on flat areas").on_hover_text("Off = an even remesh");
+    });
+    let solid = preview_buttons(
+        ui,
+        active,
+        PreviewKind::MakeSolid,
+        "Rebuilds any mesh — holes, overlaps, flipped or loose parts — as one clean closed solid (Meshmixer's Make Solid). Details smaller than the detail size are lost.",
+    );
+
+    ui.add_space(6.0);
+    ui.label(RichText::new("Pattern / lattice").strong());
+    let t = &mut app.mesh_tools;
+    {
+        use b3d_core::sdf::Pattern;
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut t.pattern, Pattern::Voronoi, "Voronoi").on_hover_text("The skin cut into organic cells");
+            ui.selectable_value(&mut t.pattern, Pattern::Wireframe, "Wireframe")
+                .on_hover_text("Struts along the edges of a low-poly version");
+            ui.selectable_value(&mut t.pattern, Pattern::Gyroid, "Gyroid").on_hover_text("Filled with a gyroid lattice");
+        });
+        egui::Grid::new("pattern").num_columns(2).show(ui, |ui| {
+            ui.label("Cell size");
+            ui.add(num(&mut t.pattern_cell, Kind::Length).speed(0.1).range(1.0..=200.0).suffix(" mm"));
+            ui.end_row();
+            ui.label("Strut / wall");
+            ui.add(num(&mut t.pattern_thickness, Kind::Length).speed(0.05).range(0.2..=50.0).suffix(" mm"));
+            ui.end_row();
+            match t.pattern {
+                Pattern::Voronoi => {
+                    ui.label("Depth");
+                    ui.add(num(&mut t.pattern_skin, Kind::Length).speed(0.05).range(0.2..=50.0).suffix(" mm"))
+                        .on_hover_text("How deep the cell borders go into the part");
+                    ui.end_row();
+                    ui.label("Variation");
+                    ui.add(egui::DragValue::new(&mut t.pattern_seed).range(1..=9999)).on_hover_text("Try another random cell layout");
+                    ui.end_row();
+                }
+                Pattern::Gyroid => {
+                    ui.label("Outer skin");
+                    ui.add(num(&mut t.pattern_skin, Kind::Length).speed(0.05).range(0.0..=50.0).suffix(" mm"))
+                        .on_hover_text("0 = open lattice; more = closed part with lattice inside (light infill)");
+                    ui.end_row();
+                }
+                Pattern::Wireframe => {}
+            }
+            ui.label("Detail");
+            ui.add(num(&mut t.pattern_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+                .on_hover_text("0 = automatic");
+            ui.end_row();
+        });
+    }
+    let pattern = preview_buttons(
+        ui,
+        active,
+        PreviewKind::Pattern,
+        "Turns the part into a decorative or lightweight lattice. Works on closed meshes (use Make solid first if it isn't).",
+    );
+
     for (clicked, kind) in [
+        (solid, PreviewKind::MakeSolid),
+        (pattern, PreviewKind::Pattern),
         (simplify, PreviewKind::Simplify),
         (smooth, PreviewKind::Smooth),
         (round, PreviewKind::Round),
@@ -1434,32 +1560,6 @@ impl App {
             self.scene.drop_to_plate(id);
         }
     }
-}
-
-fn measure_panel(app: &mut App, ui: &mut egui::Ui) {
-    ui.heading("Measure");
-    ui.label("Click two points on objects. Esc to leave.");
-    ui.checkbox(&mut app.measure.snap_vertices, "Snap to vertices");
-    if let (Some(a), Some(b)) = (app.measure.a, app.measure.b) {
-        let d = b - a;
-        egui::Grid::new("meas").num_columns(2).show(ui, |ui| {
-            ui.label("Distance");
-            ui.label(RichText::new(format!("{:.3} mm", d.length())).strong());
-            ui.end_row();
-            for k in 0..3 {
-                ui.label(RichText::new(format!("Δ{}", AXIS_NAMES[k])).color(AXIS_COLORS[k]));
-                ui.label(format!("{:.3} mm", d[k].abs()));
-                ui.end_row();
-            }
-        });
-        if ui.button("Clear").clicked() {
-            app.measure.a = None;
-            app.measure.b = None;
-        }
-    } else if let Some(a) = app.measure.a {
-        ui.label(format!("First point: {:.2}, {:.2}, {:.2}", a.x, a.y, a.z));
-    }
-    ui.separator();
 }
 
 fn cut_panel(app: &mut App, ui: &mut egui::Ui) {

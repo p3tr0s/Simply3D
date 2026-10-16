@@ -56,6 +56,8 @@ pub enum PreviewKind {
     Cut,
     ExtrudeDown,
     Hollow,
+    MakeSolid,
+    Pattern,
 }
 
 impl PreviewKind {
@@ -67,6 +69,8 @@ impl PreviewKind {
             PreviewKind::Cut => "Cut",
             PreviewKind::ExtrudeDown => "Extrude down",
             PreviewKind::Hollow => "Hollow",
+            PreviewKind::MakeSolid => "Make solid",
+            PreviewKind::Pattern => "Pattern",
         }
     }
 }
@@ -110,9 +114,24 @@ impl App {
             PreviewKind::Cut => format!("{:?}", self.cut),
             PreviewKind::ExtrudeDown => format!("{}", t.extrude_height),
             PreviewKind::Hollow => format!("{} {}", t.hollow_wall, t.hollow_voxel),
+            PreviewKind::MakeSolid => format!("{} {} {} {}", t.solid_shell, t.solid_thickness, t.solid_voxel, t.solid_adaptive),
+            PreviewKind::Pattern => {
+                format!(
+                    "{:?} {} {} {} {} {}",
+                    t.pattern, t.pattern_cell, t.pattern_thickness, t.pattern_skin, t.pattern_voxel, t.pattern_seed
+                )
+            }
         };
         params.hash(&mut h);
-        let world = matches!(kind, PreviewKind::Round | PreviewKind::Cut | PreviewKind::ExtrudeDown | PreviewKind::Hollow);
+        let world = matches!(
+            kind,
+            PreviewKind::Round
+                | PreviewKind::Cut
+                | PreviewKind::ExtrudeDown
+                | PreviewKind::Hollow
+                | PreviewKind::MakeSolid
+                | PreviewKind::Pattern
+        );
         for o in self.selection.iter().filter_map(|id| self.scene.get(*id)) {
             o.id.hash(&mut h);
             o.mesh.id.hash(&mut h);
@@ -395,6 +414,66 @@ impl App {
                             add,
                             message: format!("Rounded edges — {}", info.join("; ")),
                         }
+                    }),
+                )
+            }
+            PreviewKind::MakeSolid => {
+                let objs = world();
+                let mode = if t.solid_shell { sdf::SolidMode::Shell(t.solid_thickness) } else { sdf::SolidMode::Solid };
+                let (voxel, adaptive) = (t.solid_voxel, t.solid_adaptive);
+                (
+                    "Rebuilding…".into(),
+                    Box::new(move |p: &Progress| {
+                        let mut add = vec![];
+                        let mut remove = vec![];
+                        let mut info = vec![];
+                        let n = objs.len() as f32;
+                        for (i, (id, name, color, m)) in objs.into_iter().enumerate() {
+                            match sdf::make_solid(&m, voxel, mode, adaptive, 30_000_000, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
+                                Ok((out, h)) => {
+                                    info.push(format!("{name}: {} triangles, closed (detail {h:.2} mm)", out.triangles.len()));
+                                    remove.push(id);
+                                    add.push((name, out, color));
+                                }
+                                Err(b3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
+                                Err(e) => return JobOutput::Error(format!("Make solid failed on {name}: {e}")),
+                            }
+                        }
+                        JobOutput::Replace { label: "Make solid".into(), remove, add, message: info.join("; ") }
+                    }),
+                )
+            }
+            PreviewKind::Pattern => {
+                let objs = world();
+                let o = sdf::PatternOptions {
+                    pattern: t.pattern,
+                    cell: t.pattern_cell,
+                    thickness: t.pattern_thickness,
+                    skin: t.pattern_skin,
+                    voxel: t.pattern_voxel,
+                    seed: t.pattern_seed,
+                    ..Default::default()
+                };
+                (
+                    "Building the pattern…".into(),
+                    Box::new(move |p: &Progress| {
+                        let mut add = vec![];
+                        let mut remove = vec![];
+                        let mut info = vec![];
+                        let n = objs.len() as f32;
+                        for (i, (id, name, color, m)) in objs.into_iter().enumerate() {
+                            match sdf::pattern(&m, o, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
+                                Ok((out, _)) => {
+                                    let left = out.volume() / m.volume().max(1e-9) * 100.0;
+                                    info.push(format!("{name}: {left:.0}% of the material"));
+                                    remove.push(id);
+                                    add.push((name, out, color));
+                                }
+                                Err(b3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
+                                Err(e) => return JobOutput::Error(format!("Pattern failed on {name}: {e}")),
+                            }
+                        }
+                        JobOutput::Replace { label: "Pattern".into(), remove, add, message: info.join("; ") }
                     }),
                 )
             }

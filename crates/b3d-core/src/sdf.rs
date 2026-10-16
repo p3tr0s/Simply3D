@@ -183,63 +183,78 @@ fn propagate(g: &Grid, cp: &mut [Vec3], d2: &mut [f32], prog: &Progress) -> Resu
 
 /// Inside/outside by ray parity along +X for every (y, z) row.
 fn inside_mask(m: &Mesh, g: &Grid) -> Vec<bool> {
-    let [nx, ny, nz] = g.n;
-    let jy = g.h * 0.000_731_4;
-    let jz = g.h * 0.000_517_9;
-    let mut rows: Vec<Vec<f32>> = vec![vec![]; ny * nz];
+    parity_mask(m, g, 0)
+}
+
+/// Inside test by counting crossings along rays parallel to `axis` (exact for closed meshes).
+fn parity_mask(m: &Mesh, g: &Grid, axis: usize) -> Vec<bool> {
+    let (ax, bx, cx) = (axis, (axis + 1) % 3, (axis + 2) % 3);
+    let (na, nb, nc) = (g.n[ax], g.n[bx], g.n[cx]);
+    // tiny jitter so rays never pass exactly through vertices or along edges
+    let jb = g.h * 0.000_731_4;
+    let jc = g.h * 0.000_517_9;
+    let mut rows: Vec<Vec<f32>> = vec![vec![]; nb * nc];
     for t in 0..m.triangles.len() {
         let [a, b, c] = m.tri(t);
         let lo = a.min(b).min(c);
         let hi = a.max(b).max(c);
-        let j0 = (((lo.y - g.origin.y - jy) / g.h).ceil().max(0.0)) as usize;
-        let j1 = (((hi.y - g.origin.y - jy) / g.h).floor().min(ny as f32 - 1.0)) as isize;
-        let k0 = (((lo.z - g.origin.z - jz) / g.h).ceil().max(0.0)) as usize;
-        let k1 = (((hi.z - g.origin.z - jz) / g.h).floor().min(nz as f32 - 1.0)) as isize;
+        let j0 = (((lo[bx] - g.origin[bx] - jb) / g.h).ceil().max(0.0)) as usize;
+        let j1 = (((hi[bx] - g.origin[bx] - jb) / g.h).floor().min(nb as f32 - 1.0)) as isize;
+        let k0 = (((lo[cx] - g.origin[cx] - jc) / g.h).ceil().max(0.0)) as usize;
+        let k1 = (((hi[cx] - g.origin[cx] - jc) / g.h).floor().min(nc as f32 - 1.0)) as isize;
         if j1 < j0 as isize || k1 < k0 as isize {
             continue;
         }
         let n = (b - a).cross(c - a);
-        if n.x.abs() < 1e-20 {
+        if n[ax].abs() < 1e-20 {
             continue; // parallel to the ray
         }
         for k in k0..=k1 as usize {
             for j in j0..=j1 as usize {
-                let y = g.origin.y + j as f32 * g.h + jy;
-                let z = g.origin.z + k as f32 * g.h + jz;
-                // 2D point-in-triangle in YZ
-                let e = |p: Vec3, q: Vec3| (q.y - p.y) * (z - p.z) - (q.z - p.z) * (y - p.y);
+                let y = g.origin[bx] + j as f32 * g.h + jb;
+                let z = g.origin[cx] + k as f32 * g.h + jc;
+                let e = |p: Vec3, q: Vec3| (q[bx] - p[bx]) * (z - p[cx]) - (q[cx] - p[cx]) * (y - p[bx]);
                 let (w0, w1, w2) = (e(a, b), e(b, c), e(c, a));
                 if (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0) {
-                    // plane: n·(p - a) = 0  ->  x
-                    let x = a.x - (n.y * (y - a.y) + n.z * (z - a.z)) / n.x;
-                    rows[j + ny * k].push(x);
+                    let x = a[ax] - (n[bx] * (y - a[bx]) + n[cx] * (z - a[cx])) / n[ax];
+                    rows[j + nb * k].push(x);
                 }
             }
         }
     }
     let mut inside = vec![false; g.len()];
-    for k in 0..nz {
-        for j in 0..ny {
-            let r = &mut rows[j + ny * k];
+    for k in 0..nc {
+        for j in 0..nb {
+            let r = &mut rows[j + nb * k];
             if r.is_empty() {
                 continue;
             }
             r.sort_by(|a, b| a.total_cmp(b));
             let mut c = 0;
-            for i in 0..nx {
-                let x = g.origin.x + i as f32 * g.h;
+            for i in 0..na {
+                let x = g.origin[ax] + i as f32 * g.h;
                 while c < r.len() && r[c] < x {
                     c += 1;
                 }
-                inside[g.idx(i, j, k)] = c % 2 == 1;
+                let mut ijk = [0usize; 3];
+                ijk[ax] = i;
+                ijk[bx] = j;
+                ijk[cx] = k;
+                inside[g.idx(ijk[0], ijk[1], ijk[2])] = c % 2 == 1;
             }
         }
     }
     inside
 }
 
-/// Exact signed distance to the mesh (negative inside).
-fn mesh_sdf(m: &Mesh, g: &Grid, prog: &Progress) -> Result<Field> {
+/// Inside test for broken meshes (holes, overlaps): majority vote of the X, Y and Z rays.
+fn vote_mask(m: &Mesh, g: &Grid) -> Vec<bool> {
+    let (x, y, z) = (parity_mask(m, g, 0), parity_mask(m, g, 1), parity_mask(m, g, 2));
+    (0..g.len()).map(|i| (x[i] as u8 + y[i] as u8 + z[i] as u8) >= 2).collect()
+}
+
+/// Unsigned distances (and closest points) to the triangles, everywhere in the grid.
+fn distances(m: &Mesh, g: &Grid, prog: &Progress) -> Result<(Vec<Vec3>, Vec<f32>)> {
     let n = g.len();
     let mut cp = vec![Vec3::ZERO; n];
     let mut d2 = vec![f32::INFINITY; n];
@@ -270,6 +285,12 @@ fn mesh_sdf(m: &Mesh, g: &Grid, prog: &Progress) -> Result<Field> {
         }
     }
     propagate(g, &mut cp, &mut d2, &prog.range(0.3, 0.9))?;
+    Ok((cp, d2))
+}
+
+/// Exact signed distance to the mesh (negative inside).
+fn mesh_sdf(m: &Mesh, g: &Grid, prog: &Progress) -> Result<Field> {
+    let (cp, d2) = distances(m, g, prog)?;
     let inside = inside_mask(m, g);
     prog.set(1.0);
     let d = d2.iter().zip(inside).map(|(d, ins)| if ins { -d.sqrt() } else { d.sqrt() }).collect();
@@ -560,6 +581,311 @@ pub fn offset_with(m: &Mesh, distance: f32, voxel: f32, max_voxels: usize, prog:
     Ok((finish(out, h, true, &prog.range(0.75, 1.0))?, h))
 }
 
+// ---------- make solid / remesh ----------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SolidMode {
+    /// Fill the inside (closes holes, removes overlaps and inner walls).
+    Solid,
+    /// Thicken the surface itself into a shell this thick (for open sheets, scans).
+    Shell(f32),
+}
+
+/// Rebuild any mesh — open, self-intersecting, many overlapping parts — as one clean,
+/// closed solid (Meshmixer's *Make Solid*). With `adaptive`, flat areas get fewer
+/// triangles; otherwise triangles stay even in size (a remesh).
+pub fn make_solid(m: &Mesh, voxel: f32, mode: SolidMode, adaptive: bool, max_voxels: usize, prog: &Progress) -> Result<(Mesh, f32)> {
+    if m.triangles.is_empty() {
+        return Err(Error::Parse("nothing to rebuild".into()));
+    }
+    let b = m.bounds();
+    let wanted = if voxel > 0.0 { voxel } else { (b.size().max_element() / 200.0).max(0.05) };
+    let extra = match mode {
+        SolidMode::Shell(t) => t.max(0.0),
+        SolidMode::Solid => 0.0,
+    };
+    let pad = extra + wanted * 4.0;
+    let h = pick_voxel(&b, pad, wanted, max_voxels);
+    let g = Grid::new(&b, pad + 2.0 * h, h);
+    prog.stage("Distance field");
+    let (cp, d2) = distances(m, &g, &prog.range(0.0, 0.55))?;
+    prog.stage("Inside / outside");
+    let d: Vec<f32> = match mode {
+        SolidMode::Solid => {
+            let inside = vote_mask(m, &g);
+            d2.iter().zip(inside).map(|(d, ins)| if ins { -d.sqrt() } else { d.sqrt() }).collect()
+        }
+        SolidMode::Shell(t) => d2.iter().map(|d| d.sqrt() - (t * 0.5).max(h * 0.6)).collect(),
+    };
+    prog.check()?;
+    let f = Field { d, cp, shift: 0.0 };
+    prog.stage("Building surface");
+    let out = extract_surface(&g, &f, &prog.range(0.6, 0.75))?;
+    drop(f);
+    Ok((finish(out, h, adaptive, &prog.range(0.75, 1.0))?, h))
+}
+
+// ---------- patterns ----------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Pattern {
+    /// Struts along the edges of the (simplified) surface mesh, balls at the corners.
+    Wireframe,
+    /// The outer skin cut into Voronoi cells: only the cell borders remain.
+    Voronoi,
+    /// Filled with a gyroid lattice (optionally inside a closed skin).
+    Gyroid,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PatternOptions {
+    pub pattern: Pattern,
+    /// Cell size / strut spacing, mm.
+    pub cell: f32,
+    /// Strut / wall thickness, mm.
+    pub thickness: f32,
+    /// Voronoi: depth of the shell. Gyroid: outer skin (0 = none).
+    pub skin: f32,
+    pub voxel: f32,
+    pub max_voxels: usize,
+    pub seed: u64,
+}
+
+impl Default for PatternOptions {
+    fn default() -> Self {
+        Self { pattern: Pattern::Voronoi, cell: 8.0, thickness: 1.6, skin: 1.6, voxel: 0.0, max_voxels: 12_000_000, seed: 1 }
+    }
+}
+
+fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
+/// Small deterministic random generator (xorshift).
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 40) as f32 / (1u64 << 24) as f32
+    }
+}
+
+/// Points spread evenly over the surface, about `spacing` apart.
+fn surface_samples(m: &Mesh, spacing: f32, seed: u64) -> Vec<Vec3> {
+    let area = m.surface_area() as f32;
+    let want = ((area / (spacing * spacing * 0.8)) as usize).clamp(4, 20_000);
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    // area-weighted candidates, then keep those far enough from the ones already kept
+    let mut cum = Vec::with_capacity(m.triangles.len());
+    let mut acc = 0.0f32;
+    for i in 0..m.triangles.len() {
+        let [a, b, c] = m.tri(i);
+        acc += (b - a).cross(c - a).length() * 0.5;
+        cum.push(acc);
+    }
+    let cell = spacing * 0.75;
+    let key = |p: Vec3| ((p / cell).floor().as_ivec3()).to_array();
+    let mut grid: std::collections::HashMap<[i32; 3], Vec<Vec3>> = Default::default();
+    let mut out = vec![];
+    for _ in 0..want * 30 {
+        if out.len() >= want {
+            break;
+        }
+        let r = rng.next() * acc;
+        let i = cum.partition_point(|&c| c < r).min(m.triangles.len() - 1);
+        let [a, b, c] = m.tri(i);
+        let (mut u, mut v) = (rng.next(), rng.next());
+        if u + v > 1.0 {
+            u = 1.0 - u;
+            v = 1.0 - v;
+        }
+        let p = a + (b - a) * u + (c - a) * v;
+        let k = key(p);
+        let mut ok = true;
+        'n: for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if let Some(v) = grid.get(&[k[0] + dx, k[1] + dy, k[2] + dz]) {
+                        if v.iter().any(|q| q.distance(p) < spacing * 0.75) {
+                            ok = false;
+                            break 'n;
+                        }
+                    }
+                }
+            }
+        }
+        if ok {
+            grid.entry(k).or_default().push(p);
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Turn a solid into a decorative / lightweight pattern: wireframe struts, a Voronoi
+/// shell, or a gyroid lattice.
+pub fn pattern(m: &Mesh, o: PatternOptions, prog: &Progress) -> Result<(Mesh, f32)> {
+    check_closed(m)?;
+    let b = m.bounds();
+    let t = o.thickness.max(0.2);
+    let wanted = if o.voxel > 0.0 { o.voxel } else { (t / 3.0).max(b.size().max_element() / 300.0).max(0.05) };
+    let pad = t + wanted * 4.0;
+    let h = pick_voxel(&b, pad, wanted, o.max_voxels);
+    let g = Grid::new(&b, pad + 2.0 * h, h);
+    let n = g.len();
+    let big = 1e6f32;
+    let d: Vec<f32> = match o.pattern {
+        Pattern::Wireframe => {
+            // edges of a simplified copy, about `cell` long
+            prog.stage("Simplifying");
+            let mut s = m.clone();
+            let target = ((m.surface_area() as f32 / (o.cell * o.cell * 0.43)) as usize).max(8);
+            simplify_with(&mut s, SimplifyOptions { target_triangles: target, max_error: 0.0 }, &prog.range(0.0, 0.2))?;
+            let mut edges: Vec<(u32, u32)> =
+                s.triangles.iter().flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]).map(|(a, b)| (a.min(b), a.max(b))).collect();
+            edges.sort_unstable();
+            edges.dedup();
+            prog.stage("Struts");
+            let r = t * 0.5;
+            let node_r = r * 1.4;
+            let mut d = vec![big; n];
+            let band = node_r + 2.0 * h;
+            let stamp = |a: Vec3, bb: Vec3, rad: f32, d: &mut Vec<f32>| {
+                let lo = ((a.min(bb) - Vec3::splat(band) - g.origin) / g.h).floor().max(Vec3::ZERO);
+                let hi = ((a.max(bb) + Vec3::splat(band) - g.origin) / g.h).ceil().min(Vec3::new(
+                    g.n[0] as f32 - 1.0,
+                    g.n[1] as f32 - 1.0,
+                    g.n[2] as f32 - 1.0,
+                ));
+                for k in lo.z as usize..=hi.z as usize {
+                    for j in lo.y as usize..=hi.y as usize {
+                        for i in lo.x as usize..=hi.x as usize {
+                            let p = g.pos(i, j, k);
+                            let v = seg_dist(p, a, bb) - rad;
+                            let id = g.idx(i, j, k);
+                            if v < d[id] {
+                                d[id] = v;
+                            }
+                        }
+                    }
+                }
+            };
+            let ne = edges.len().max(1);
+            for (k, (a, bb)) in edges.iter().enumerate() {
+                if k % 256 == 0 {
+                    prog.check()?;
+                    prog.set(0.2 + 0.5 * k as f32 / ne as f32);
+                }
+                stamp(s.positions[*a as usize], s.positions[*bb as usize], r, &mut d);
+            }
+            for p in &s.positions {
+                stamp(*p, *p, node_r, &mut d);
+            }
+            d
+        }
+        Pattern::Voronoi | Pattern::Gyroid => {
+            prog.stage("Distance field");
+            let f = mesh_sdf(m, &g, &prog.range(0.0, 0.5))?;
+            let sd = f.d;
+            if o.pattern == Pattern::Voronoi {
+                prog.stage("Voronoi cells");
+                let seeds = surface_samples(m, o.cell, o.seed);
+                let cs = o.cell;
+                let key = |p: Vec3| ((p / cs).floor().as_ivec3()).to_array();
+                let mut sg: std::collections::HashMap<[i32; 3], Vec<Vec3>> = Default::default();
+                for s in &seeds {
+                    sg.entry(key(*s)).or_default().push(*s);
+                }
+                let depth = o.skin.max(t);
+                let mut d = vec![big; n];
+                for kk in 0..g.n[2] {
+                    prog.check()?;
+                    prog.set(0.5 + 0.4 * kk as f32 / g.n[2] as f32);
+                    for j in 0..g.n[1] {
+                        for i in 0..g.n[0] {
+                            let id = g.idx(i, j, kk);
+                            let s = sd[id];
+                            // the shell: −depth < s < 0
+                            let shell = (s + depth * 0.5).abs() - depth * 0.5;
+                            if shell > 2.0 * h {
+                                d[id] = shell;
+                                continue;
+                            }
+                            let p = g.pos(i, j, kk);
+                            let k0 = key(p);
+                            let (mut d1, mut d2) = (f32::MAX, f32::MAX);
+                            for dz in -1..=1 {
+                                for dy in -1..=1 {
+                                    for dx in -1..=1 {
+                                        if let Some(v) = sg.get(&[k0[0] + dx, k0[1] + dy, k0[2] + dz]) {
+                                            for q in v {
+                                                let dd = q.distance(p);
+                                                if dd < d1 {
+                                                    d2 = d1;
+                                                    d1 = dd;
+                                                } else if dd < d2 {
+                                                    d2 = dd;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            let border = if d2 == f32::MAX { big } else { (d2 - d1) * 0.5 };
+                            d[id] = shell.max(border - t * 0.5);
+                        }
+                    }
+                }
+                d
+            } else {
+                prog.stage("Gyroid");
+                let w = std::f32::consts::TAU / o.cell.max(0.5);
+                // gyroid value / gradient ≈ distance; |∇| ≈ w·1.2 on average
+                let scale = 1.0 / (w * 1.2);
+                let mut d = vec![big; n];
+                for kk in 0..g.n[2] {
+                    prog.check()?;
+                    prog.set(0.5 + 0.4 * kk as f32 / g.n[2] as f32);
+                    for j in 0..g.n[1] {
+                        for i in 0..g.n[0] {
+                            let id = g.idx(i, j, kk);
+                            let p = g.pos(i, j, kk) * w;
+                            let gy = (p.x.sin() * p.y.cos() + p.y.sin() * p.z.cos() + p.z.sin() * p.x.cos()).abs() * scale - t * 0.5;
+                            let s = sd[id];
+                            let mut v = s.max(gy);
+                            if o.skin > 0.0 {
+                                v = v.min(s.max(-s - o.skin));
+                            }
+                            d[id] = v;
+                        }
+                    }
+                }
+                d
+            }
+        }
+    };
+    let f = Field { d, cp: vec![], shift: 0.0 };
+    prog.stage("Building surface");
+    let out = extract_surface(&g, &f, &prog.range(0.9, 0.95))?;
+    drop(f);
+    let mut out = finish(out, h, true, &prog.range(0.95, 1.0))?;
+    // drop crumbs: pieces much smaller than a strut
+    let parts = out.connected_components();
+    if parts.len() > 1 {
+        let min_v = (t * t * t) as f64;
+        let mut keep = Mesh::default();
+        for p in parts.into_iter().filter(|p| p.volume() > min_v) {
+            keep.append(&p);
+        }
+        out = keep;
+    }
+    Ok((out, h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,6 +956,33 @@ mod tests {
         p.cancel();
         let r = round_edges_with(&cuboid(Vec3::splat(20.0)), RoundOptions::default(), &p);
         assert!(matches!(r, Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn make_solid_closes_a_broken_box() {
+        let mut m = cuboid(Vec3::splat(20.0));
+        m.triangles.pop(); // a hole
+        let (o, _) = make_solid(&m, 0.5, SolidMode::Solid, true, 10_000_000, &Progress::new()).unwrap();
+        assert!(analyze(&o).is_watertight());
+        assert!((o.volume() - 8000.0).abs() / 8000.0 < 0.03, "{}", o.volume());
+        // an open sheet thickened into a shell
+        let mut sheet = cuboid(Vec3::new(20.0, 20.0, 0.0001));
+        sheet.triangles.truncate(2);
+        let (s, _) = make_solid(&sheet, 0.25, SolidMode::Shell(2.0), true, 10_000_000, &Progress::new()).unwrap();
+        assert!(analyze(&s).is_watertight());
+        assert!(s.volume() > 600.0, "{}", s.volume());
+    }
+
+    #[test]
+    fn patterns_are_closed_and_lighter() {
+        let m = sphere(15.0, 48, 24);
+        let full = m.volume();
+        for pat in [Pattern::Wireframe, Pattern::Voronoi, Pattern::Gyroid] {
+            let o = PatternOptions { pattern: pat, cell: 8.0, thickness: 1.6, skin: 0.0, voxel: 0.4, ..Default::default() };
+            let (p, _) = pattern(&m, o, &Progress::new()).unwrap();
+            assert!(analyze(&p).is_watertight(), "{pat:?}");
+            assert!(p.volume() > 0.0 && p.volume() < full * 0.7, "{pat:?}: {} of {full}", p.volume());
+        }
     }
 
     #[test]

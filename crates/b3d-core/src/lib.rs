@@ -6,14 +6,17 @@
 //! Conventions: millimetres, right-handed, **Z up** (same as 3MF / slicers).
 
 pub mod analysis;
+pub mod arrange;
 pub mod connectors;
 pub mod csg;
 pub mod extrude;
+pub mod faces;
 pub mod fonts;
 pub mod history;
 pub mod hollow;
 pub mod image3d;
 pub mod io;
+pub mod measure;
 pub mod mesh;
 pub mod paint;
 pub mod primitives;

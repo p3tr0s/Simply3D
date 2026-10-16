@@ -97,6 +97,11 @@ pub fn all() -> Vec<Command> {
         cmd!("Arrange", "Align bottoms (Z min)", "", two_sel, |a, _| a.align(2, 0)),
         cmd!("Arrange", "Align centres Z", "", two_sel, |a, _| a.align(2, 1)),
         cmd!("Arrange", "Align tops (Z max)", "", two_sel, |a, _| a.align(2, 2)),
+        cmd!("Arrange", "Auto-orient for printing (least overhang)", "", has_objects, |a, _| a.auto_orient_selected()),
+        cmd!("Arrange", "Auto-arrange on the plate", "A", has_objects, |a, _| {
+            let g = a.settings.arrange_gap;
+            a.auto_arrange(g)
+        }),
         cmd!("Arrange", "Distribute along X", "", three_sel, |a, _| a.distribute(0)),
         cmd!("Arrange", "Distribute along Y", "", three_sel, |a, _| a.distribute(1)),
         cmd!("Arrange", "Distribute along Z", "", three_sel, |a, _| a.distribute(2)),
@@ -120,6 +125,19 @@ pub fn all() -> Vec<Command> {
         cmd!("Mesh", "Round edges / bevel (preview)", "", has_sel, |a, _| {
             a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::Round)
+        }),
+        cmd!("Mesh", "Make solid: rebuild broken / open meshes as one closed solid (preview)", "", has_sel, |a, _| {
+            a.tab = PanelTab::Mesh;
+            a.start_preview(PreviewKind::MakeSolid)
+        }),
+        cmd!("Mesh", "Remesh: even triangles (preview)", "", has_sel, |a, _| {
+            a.tab = PanelTab::Mesh;
+            a.mesh_tools.solid_adaptive = false;
+            a.start_preview(PreviewKind::MakeSolid)
+        }),
+        cmd!("Mesh", "Pattern / lattice: wireframe, Voronoi, gyroid (preview)", "", has_sel, |a, _| {
+            a.tab = PanelTab::Mesh;
+            a.start_preview(PreviewKind::Pattern)
         }),
         cmd!("Mesh", "Hollow: shell with wall thickness (preview)", "", has_sel, |a, _| {
             a.tab = PanelTab::Mesh;
@@ -170,6 +188,7 @@ pub fn all() -> Vec<Command> {
         }),
         cmd!("Tools", "Picture to 3D (contour, height map, stamp, lithophane)…", "", always, |a, c| a.image_dialog(c)),
         cmd!("Tools", "Paint colours (multi-colour / AMS)", "P", has_objects, |a, _| a.start_paint_tool()),
+        cmd!("Tools", "Select faces: extrude, push in, delete, copy as solid", "S", has_objects, |a, _| a.start_faces_tool()),
         cmd!("Tools", "Paint: clear paint from selection", "", has_sel, |a, _| a.clear_paint_selected()),
         cmd!("Tools", "Paint: refine selection for finer painting", "", has_sel, |a, c| a.refine_for_paint(c)),
         cmd!("View", "Section view", "X", has_objects, |a, _| a.toggle_section()),

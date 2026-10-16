@@ -142,6 +142,8 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             ("Round edges…", PreviewKind::Round),
             ("Extrude down…", PreviewKind::ExtrudeDown),
             ("Hollow…", PreviewKind::Hollow),
+            ("Make solid / remesh…", PreviewKind::MakeSolid),
+            ("Pattern / lattice…", PreviewKind::Pattern),
         ] {
             if item(ui, true, label, "") {
                 app.tab = PanelTab::Mesh;
@@ -164,6 +166,9 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     }
     if item(ui, true, "Paint colours…", "P") {
         app.start_paint_tool();
+    }
+    if item(ui, true, "Select faces…", "S") {
+        app.start_faces_tool();
     }
     ui.separator();
     if item(ui, true, "Frame", "F") {
