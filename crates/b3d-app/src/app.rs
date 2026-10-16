@@ -52,6 +52,7 @@ pub struct Settings {
     pub paint: crate::paint_tool::PaintSettings,
     pub faces: crate::faces_tool::FaceSettings,
     pub texture: crate::texture_tool::TextureSettings,
+    pub sculpt: crate::sculpt_tool::SculptSettings,
     /// Align to the first selected object instead of the whole selection.
     pub align_to_first: bool,
     /// Gap between parts when arranging, mm.
@@ -89,6 +90,7 @@ impl Default for Settings {
             paint: Default::default(),
             faces: Default::default(),
             texture: Default::default(),
+            sculpt: Default::default(),
             align_to_first: false,
             arrange_gap: 6.0,
             see_through: true,
@@ -118,6 +120,8 @@ pub enum DragMode {
     },
     /// Painting a stroke.
     Paint,
+    /// A sculpt stroke.
+    Sculpt,
     /// Selecting faces (Shift: removing).
     FaceSel {
         remove: bool,
@@ -141,6 +145,7 @@ pub enum Tool {
     Paint,
     Faces,
     Texture,
+    Sculpt,
 }
 
 /// Section view: everything on the far side of a plane is cut away (display only).
@@ -461,6 +466,7 @@ pub struct App {
     pub paint_rt: crate::paint_tool::PaintRuntime,
     pub face_rt: crate::faces_tool::FaceRuntime,
     pub tex_rt: crate::texture_tool::TextureRuntime,
+    pub sculpt_rt: crate::sculpt_tool::SculptRuntime,
     /// Objects drawn see-through this frame (they overlap the selection).
     pub see_through: Vec<ObjectId>,
     pub holes: crate::holes::HoleCache,
@@ -542,6 +548,7 @@ impl App {
             paint_rt: Default::default(),
             face_rt: Default::default(),
             tex_rt: Default::default(),
+            sculpt_rt: Default::default(),
             see_through: vec![],
             holes: Default::default(),
             encode_srgb,
@@ -1454,6 +1461,7 @@ impl eframe::App for App {
         self.tick_image(ctx);
         self.tick_holes(ctx);
         self.tick_faces();
+        self.tick_sculpt();
         self.tick_autosave(ctx);
         self.handle_close(ctx);
         if self.job.is_some() {

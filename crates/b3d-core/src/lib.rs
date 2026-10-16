@@ -23,6 +23,7 @@ pub mod primitives;
 pub mod progress;
 pub mod repair;
 pub mod scene;
+pub mod sculpt;
 pub mod sdf;
 pub mod simplify;
 pub mod smooth;

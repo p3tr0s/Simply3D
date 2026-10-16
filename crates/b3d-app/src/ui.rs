@@ -140,6 +140,9 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if key(Key::S) {
         app.start_faces_tool();
     }
+    if key(Key::B) {
+        app.start_sculpt_tool();
+    }
     if key(Key::A) {
         let g = app.settings.arrange_gap;
         app.auto_arrange(g);
@@ -486,6 +489,9 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
             {
                 app.start_texture_tool();
             }
+            if tool_button(ui, app.tool == Tool::Sculpt, "Sculpt", "Sculpt brushes: draw, inflate, smooth, flatten, grab (B)").clicked() {
+                app.start_sculpt_tool();
+            }
             ui.separator();
             if ui
                 .add(egui::Button::selectable(app.section.enabled, "▣ Section"))
@@ -799,6 +805,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         Tool::Paint => crate::paint_tool::panel(app, ui, &ctx),
         Tool::Faces => crate::faces_tool::panel(app, ui, &ctx),
         Tool::Texture => crate::texture_tool::panel(app, ui),
+        Tool::Sculpt => crate::sculpt_tool::panel(app, ui),
         Tool::Select => {}
     }
     let Some(&id) = app.selection.first() else {

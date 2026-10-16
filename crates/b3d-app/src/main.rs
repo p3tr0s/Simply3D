@@ -16,6 +16,7 @@ mod organize;
 mod paint_tool;
 mod preview;
 mod render;
+mod sculpt_tool;
 mod snap;
 mod text_tool;
 mod texture_tool;

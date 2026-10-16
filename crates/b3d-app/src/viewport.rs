@@ -183,6 +183,20 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
             app.paint_rt.hover = None;
         }
     }
+    // ---------- sculpt: what's under the brush ----------
+    if app.tool == Tool::Sculpt {
+        if moved || app.sculpt_rt.hover.is_none() {
+            app.sculpt_rt.hover = ray.and_then(|(o, d)| pick(app, o, d, false)).map(|h| crate::paint_tool::PaintHover {
+                id: h.id,
+                point: h.point,
+                normal: h.normal,
+                tri: h.tri,
+            });
+        }
+        if pointer.is_none() {
+            app.sculpt_rt.hover = None;
+        }
+    }
     // ---------- select faces: what's under the brush ----------
     if matches!(app.tool, Tool::Faces | Tool::Texture) {
         if moved || app.face_rt.hover.is_none() {
@@ -197,8 +211,10 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
             app.face_rt.hover = None;
         }
     }
-    if matches!(app.tool, Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image | Tool::Paint | Tool::Faces | Tool::Texture)
-        && response.hovered()
+    if matches!(
+        app.tool,
+        Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image | Tool::Paint | Tool::Faces | Tool::Texture | Tool::Sculpt
+    ) && response.hovered()
     {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else if matches!(app.drag, DragMode::Move { .. }) {
@@ -238,6 +254,12 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                     app.paint_at(h, false);
                 }
             }
+            DragMode::Sculpt => {
+                if moved {
+                    let h = app.sculpt_rt.hover;
+                    app.sculpt_drag(h, ray);
+                }
+            }
             DragMode::FaceSel { remove } => {
                 if let (true, Some(h)) = (moved, app.face_rt.hover) {
                     let remove = *remove;
@@ -248,6 +270,9 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     if response.drag_stopped() {
+        if matches!(app.drag, DragMode::Sculpt) {
+            app.sculpt_end();
+        }
         if matches!(app.drag, DragMode::FaceSel { .. }) {
             app.face_rt.hover = None;
         }
@@ -294,6 +319,13 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                         }
                         (_, Some(h)) => app.apply_image_on_surface(&ctx, h),
                         _ => {}
+                    }
+                }
+                Tool::Sculpt => {
+                    if let Some(h) = pick(app, o, d, false) {
+                        let h = crate::paint_tool::PaintHover { id: h.id, point: h.point, normal: h.normal, tri: h.tri };
+                        app.sculpt_begin(h, d, shift, ctrl);
+                        app.sculpt_end();
                     }
                 }
                 Tool::Faces | Tool::Texture => {
@@ -696,6 +728,7 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
             let c = if s.erase { lin_rgba(1.0, 1.0, 1.0, 0.9) } else { lin([s.color[0], s.color[1], s.color[2], 255]) };
             (h, c, s.mode == crate::paint_tool::PaintMode::Brush, s.radius)
         }),
+        Tool::Sculpt => app.sculpt_rt.hover.map(|h| (h, lin_rgba(0.75, 0.9, 1.0, 1.0), true, app.settings.sculpt.radius)),
         Tool::Faces | Tool::Texture => app.face_rt.hover.map(|h| {
             let (mode, radius, _) = app.sel_params();
             (h, lin_rgba(1.0, 0.77, 0.16, 1.0), mode == Some(crate::faces_tool::SelMode::Brush), radius)
@@ -996,6 +1029,7 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             crate::texture_tool::TexArea::Fill => "Texture: click an area · Shift+click removes",
             crate::texture_tool::TexArea::Brush => "Texture: drag over the area · Shift removes",
         }),
+        Tool::Sculpt => Some("Sculpt: drag on the model · Shift reverses · Ctrl smooths · drag off it to orbit"),
         Tool::Select => None,
     };
     if let Some(h) = hint {
@@ -1087,6 +1121,14 @@ fn plate_warnings(app: &mut App, ui: &mut egui::Ui, view: &View) {
 
 /// Decide what a left-drag does, based on what is under the press point and modifiers.
 fn start_primary_drag(app: &mut App, view: &View, origin: Pos2, shift: bool, alt: bool, ctrl: bool, cad: bool) -> DragMode {
+    if app.tool == Tool::Sculpt && !alt {
+        let (o, d) = view.ray(origin);
+        if let Some(h) = pick(app, o, d, false).filter(|h| app.scene.get(h.id).is_some_and(|o| !o.hole && !o.locked)) {
+            app.sculpt_begin(crate::paint_tool::PaintHover { id: h.id, point: h.point, normal: h.normal, tri: h.tri }, d, shift, ctrl);
+            return DragMode::Sculpt;
+        }
+        return DragMode::Orbit;
+    }
     if matches!(app.tool, Tool::Faces | Tool::Texture) && !alt {
         let (o, d) = view.ray(origin);
         if let Some(h) = pick(app, o, d, false).filter(|h| app.scene.get(h.id).is_some_and(|o| !o.hole && !o.locked)) {
