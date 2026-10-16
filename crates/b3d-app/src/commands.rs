@@ -41,7 +41,7 @@ macro_rules! cmd {
 pub fn all() -> Vec<Command> {
     let mut v = vec![
         // file
-        cmd!("File", "New scene", "", always, |a, _| a.new_scene()),
+        cmd!("File", "New plate", "Ctrl+N", always, |a, _| a.request_new_plate()),
         cmd!("File", "Open / import…", "Ctrl+O", always, |a, c| a.open_dialog(c)),
         cmd!("File", "Save", "Ctrl+S", has_objects, |a, c| a.save(c)),
         cmd!("File", "Save as…", "Ctrl+Shift+S", has_objects, |a, c| a.save_as_dialog(c, false)),

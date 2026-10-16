@@ -440,6 +440,10 @@ pub struct App {
     pub autosave_busy: Arc<AtomicBool>,
     pub recovery: Option<RecoveryInfo>,
     pub close_prompt: bool,
+    /// "Save changes?" before starting a new plate.
+    pub new_prompt: bool,
+    /// Start a new plate once the save finishes.
+    pub new_after_save: bool,
     pub close_after_save: bool,
     pub allow_close: bool,
     pub pending_recovery_target: Option<Option<PathBuf>>,
@@ -528,6 +532,8 @@ impl App {
             autosave_busy: Arc::new(AtomicBool::new(false)),
             recovery: None,
             close_prompt: false,
+            new_prompt: false,
+            new_after_save: false,
             close_after_save: false,
             allow_close: false,
             pending_recovery_target: None,
@@ -647,6 +653,7 @@ impl App {
         if let Some(j) = self.job.take() {
             j.progress.cancel();
             self.close_after_save = false;
+            self.new_after_save = false;
             self.info(format!("Cancelled: {}", j.label.trim_end_matches('…')));
         }
     }
@@ -747,9 +754,14 @@ impl App {
                     self.allow_close = true;
                     self.close_after_save = false;
                 }
+                if self.new_after_save {
+                    self.new_after_save = false;
+                    self.new_scene();
+                }
             }
             JobOutput::Error(e) => {
                 self.close_after_save = false;
+                self.new_after_save = false;
                 if e != "cancelled" {
                     self.error(e)
                 }
@@ -958,13 +970,30 @@ impl App {
         });
     }
 
+    /// New plate (Ctrl+N): asks to save unsaved work first.
+    pub fn request_new_plate(&mut self) {
+        if self.dirty && !self.scene.objects.is_empty() {
+            self.new_prompt = true;
+        } else {
+            self.new_scene();
+        }
+    }
+
     pub fn new_scene(&mut self) {
-        self.checkpoint("New scene");
+        self.checkpoint("New plate");
+        if self.preview.is_some() {
+            self.cancel_preview();
+        }
+        self.tool = Tool::Select;
         self.scene = Scene::default();
         self.selection.clear();
+        self.measure.clear();
+        self.isolated = None;
         self.current_file = None;
         self.dirty = false;
         crate::autosave::clear();
+        self.autosaved_gen = self.edit_gen;
+        self.info("New plate");
     }
 
     // ---------- object actions ----------

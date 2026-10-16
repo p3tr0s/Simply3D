@@ -76,6 +76,9 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if sc(Modifiers::COMMAND, Key::D) {
         app.duplicate_selected();
     }
+    if sc(Modifiers::COMMAND, Key::N) {
+        app.request_new_plate();
+    }
     if sc(Modifiers::COMMAND, Key::A) {
         app.select_all();
     }
@@ -221,8 +224,8 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             let ctx = ui.ctx().clone();
             ui.menu_button("File", |ui| {
-                if ui.button("New").clicked() {
-                    app.new_scene();
+                if ui.add(egui::Button::new("New plate").shortcut_text("Ctrl+N")).clicked() {
+                    app.request_new_plate();
                 }
                 if ui.add(egui::Button::new("Open / Import…").shortcut_text("Ctrl+O")).clicked() {
                     app.open_dialog(&ctx);
@@ -1737,6 +1740,52 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                 app.allow_close = true;
             }
             Some(2) => app.close_prompt = false,
+            _ => {}
+        }
+    }
+
+    if app.new_prompt {
+        let mut choice = None;
+        let name = app
+            .current_file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".into());
+        egui::Modal::new(egui::Id::new("new_prompt")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Save before starting a new plate?");
+            ui.label(format!("{name} has unsaved changes."));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("Save").strong()).clicked() {
+                    choice = Some(0);
+                }
+                if ui.button("Don't save").clicked() {
+                    choice = Some(1);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(2);
+                }
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                choice = Some(2);
+            }
+        });
+        match choice {
+            Some(0) => {
+                app.new_prompt = false;
+                app.new_after_save = true;
+                app.save(ctx);
+                if app.job.is_none() {
+                    app.new_after_save = false; // save dialog cancelled: stay on this plate
+                }
+            }
+            Some(1) => {
+                app.new_prompt = false;
+                app.new_scene();
+            }
+            Some(2) => app.new_prompt = false,
             _ => {}
         }
     }
