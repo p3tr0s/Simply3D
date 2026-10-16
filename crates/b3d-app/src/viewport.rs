@@ -130,7 +130,15 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     if app.tool == Tool::Text {
         if moved || app.text_rt.hover.is_none() {
             app.text_rt.hover = ray.and_then(|(o, d)| match app.settings.text.mode {
-                TextMode::Object => plate_hit(o, d).map(TextHover::on_plate),
+                // a new object: lying on a face of another object, or on the plate
+                TextMode::Object => pick(app, o, d, false)
+                    .map(|h| TextHover {
+                        target: None,
+                        point: h.point,
+                        frame: app.surface_frame(h.point, h.normal, view.cam.right_up().1),
+                        bend: b3d_core::wrap::Bend::FLAT,
+                    })
+                    .or_else(|| plate_hit(o, d).map(TextHover::on_plate)),
                 _ => pick(app, o, d, false).map(|h| {
                     let frame = app.surface_frame(h.point, h.normal, view.cam.right_up().1);
                     let bend = match app.text_base() {
@@ -150,7 +158,14 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     if app.tool == Tool::Image {
         if moved || app.img_rt.hover.is_none() {
             app.img_rt.hover = ray.and_then(|(o, d)| match app.settings.image.place {
-                TextMode::Object => plate_hit(o, d).map(TextHover::on_plate),
+                TextMode::Object => pick(app, o, d, false)
+                    .map(|h| TextHover {
+                        target: None,
+                        point: h.point,
+                        frame: app.image_surface_frame(h.point, h.normal, view.cam.right_up().1),
+                        bend: b3d_core::wrap::Bend::FLAT,
+                    })
+                    .or_else(|| plate_hit(o, d).map(TextHover::on_plate)),
                 _ => pick(app, o, d, false).map(|h| {
                     let frame = app.image_surface_frame(h.point, h.normal, view.cam.right_up().1);
                     let bend = match &app.img_rt.unit {
@@ -166,6 +181,16 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     app.update_wrap_ghost();
+    // ---------- placing a new shape: on a face or the plate ----------
+    if app.placing.is_some() {
+        if moved || app.place_hover.is_none() {
+            app.place_hover = ray
+                .and_then(|(o, d)| pick(app, o, d, false).map(|h| (h.point, h.normal)).or_else(|| plate_hit(o, d).map(|p| (p, Vec3::Z))));
+        }
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+        }
+    }
     // ---------- paint tool: what's under the brush ----------
     if app.tool == Tool::Paint {
         if moved || app.paint_rt.hover.is_none() {
@@ -301,7 +326,10 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
 
     // ---------- clicks ----------
     let cmd = ui.input(|i| i.modifiers.shift || i.modifiers.command);
-    if response.clicked() && !app.gizmo_used {
+    if response.clicked() && !app.gizmo_used && app.placing.is_some() {
+        let at = app.place_hover;
+        app.commit_placing(at);
+    } else if response.clicked() && !app.gizmo_used {
         if let Some((o, d)) = ray {
             match app.tool {
                 Tool::Select | Tool::Cut => match pick(app, o, d, false) {
@@ -314,7 +342,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                     match (app.settings.image.place, app.img_rt.hover) {
                         (TextMode::Object, h) => {
                             if app.img_rt.mesh.is_some() {
-                                app.add_image_object(&ctx, h.map(|h| h.point));
+                                app.add_image_object(&ctx, h);
                             }
                         }
                         (_, Some(h)) => app.apply_image_on_surface(&ctx, h),
@@ -349,7 +377,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                 Tool::Text => {
                     let ctx = ui.ctx().clone();
                     match (app.settings.text.mode, app.text_rt.hover) {
-                        (TextMode::Object, h) => app.add_text_object(h.map(|h| h.point)),
+                        (TextMode::Object, h) => app.add_text_object(h),
                         (_, Some(h)) => app.apply_text_on_surface(&ctx, h),
                         _ => {}
                     }
@@ -669,14 +697,16 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
             });
         }
     }
+    // the shape being placed
+    if let Some(pl) = &app.placing {
+        let t = app.placement(app.place_hover, &pl.ghost.mesh);
+        ghosts.push(DrawItem { mesh: pl.ghost.clone(), model: t.matrix(), color: [0.3, 0.75, 1.0, 0.6], params: [0.45, 0.0, 0.0, 0.0] });
+    }
     // picture tool ghost
     if app.tool == Tool::Image {
         let s = &app.settings.image;
         let (mesh, model) = match (s.place, app.img_rt.hover) {
-            (TextMode::Object, h) => (
-                app.image_preview_mesh().cloned(),
-                Some(app.image_object_matrix(h.map(|h| h.point).unwrap_or_else(|| app.image_default_spot()))),
-            ),
+            (TextMode::Object, h) => (app.image_preview_mesh().cloned(), Some(app.image_object_matrix_h(h))),
             (_, Some(h)) if h.target.is_some() => match &app.img_rt.unit {
                 Some(u) => {
                     let (m, model) = app.surface_ghost(u, &h, s.height, s.place == TextMode::Engrave);
@@ -700,9 +730,7 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
         if let Some(base) = app.text_base() {
             let t = &app.settings.text;
             let ghost = match (t.mode, app.text_rt.hover) {
-                (TextMode::Object, h) => {
-                    app.text_object_matrix(h.map(|h| h.point).unwrap_or_else(|| app.text_default_spot())).map(|m| (base.clone(), m))
-                }
+                (TextMode::Object, h) => app.text_object_matrix_h(h).map(|m| (base.clone(), m)),
                 (_, Some(h)) if h.target.is_some() => Some(app.surface_ghost(base, &h, t.depth, t.mode == TextMode::Engrave)),
                 _ => None,
             };
@@ -1006,12 +1034,12 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
         Tool::LayFlat => Some("Lay flat: click the face that should touch the plate"),
         Tool::Cut => Some("Cut: set the plane in the right panel, Enter to cut"),
         Tool::Text => Some(match app.settings.text.mode {
-            TextMode::Object => "Text: click the plate to place it",
+            TextMode::Object => "Text: click the plate or a face to place it",
             TextMode::Emboss => "Emboss: click a face",
             TextMode::Engrave => "Engrave: click a face",
         }),
         Tool::Image => Some(match app.settings.image.place {
-            TextMode::Object => "Picture: click the plate to place it",
+            TextMode::Object => "Picture: click the plate or a face to place it",
             TextMode::Emboss => "Emboss picture: click a face",
             TextMode::Engrave => "Engrave picture: click a face",
         }),
@@ -1032,7 +1060,10 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
         Tool::Sculpt => Some("Sculpt: drag on the model · Shift reverses · Ctrl smooths · drag off it to orbit"),
         Tool::Select => None,
     };
-    if let Some(h) = hint {
+    if let Some(pl) = &app.placing {
+        let t = format!("Click the plate or a face to place {} · Enter: beside the others · Esc: cancel", pl.name);
+        label(p, rect.center_top() + egui::vec2(0.0, 18.0), t, Color32::WHITE);
+    } else if let Some(h) = hint {
         label(p, rect.center_top() + egui::vec2(0.0, 18.0), h.to_string(), Color32::WHITE);
     }
     axis_triad(app, ui, p, view);
@@ -1121,6 +1152,9 @@ fn plate_warnings(app: &mut App, ui: &mut egui::Ui, view: &View) {
 
 /// Decide what a left-drag does, based on what is under the press point and modifiers.
 fn start_primary_drag(app: &mut App, view: &View, origin: Pos2, shift: bool, alt: bool, ctrl: bool, cad: bool) -> DragMode {
+    if app.placing.is_some() {
+        return DragMode::Orbit;
+    }
     if app.tool == Tool::Sculpt && !alt {
         let (o, d) = view.ray(origin);
         if let Some(h) = pick(app, o, d, false).filter(|h| app.scene.get(h.id).is_some_and(|o| !o.hole && !o.locked)) {

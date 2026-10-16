@@ -194,6 +194,88 @@ pub fn copy_as_solid(m: &Mesh, sel: &[bool], thickness: f32) -> Mesh {
     out
 }
 
+/// Vertices of the selection that only selected triangles use (they can move freely
+/// without tearing the rest), and the neighbours of every vertex.
+fn interior(m: &Mesh, sel: &[bool]) -> (Vec<bool>, Vec<Vec<u32>>) {
+    let n = m.positions.len();
+    let (mut in_sel, mut in_rest) = (vec![false; n], vec![false; n]);
+    let mut nb: Vec<Vec<u32>> = vec![vec![]; n];
+    for (i, t) in m.triangles.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            if sel[i] {
+                in_sel[a as usize] = true;
+            } else {
+                in_rest[a as usize] = true;
+            }
+            if !nb[a as usize].contains(&b) {
+                nb[a as usize].push(b);
+            }
+            if !nb[b as usize].contains(&a) {
+                nb[b as usize].push(a);
+            }
+        }
+    }
+    ((0..n).map(|v| in_sel[v] && !in_rest[v]).collect(), nb)
+}
+
+/// Even out bumps inside the selected area; its edge stays put, so the area relaxes
+/// towards a smooth surface spanning that edge.
+pub fn smooth(m: &Mesh, sel: &[bool], iterations: u32) -> Mesh {
+    let (free, nb) = interior(m, sel);
+    let mut out = m.clone();
+    // A selection with no fixed edge (a whole object) would just shrink; alternate an
+    // inflating pass (Taubin) so it keeps its size.
+    let closed = !free.is_empty() && free.iter().zip(&nb).all(|(f, n)| *f || n.is_empty());
+    for it in 0..iterations * if closed { 2 } else { 1 } {
+        let f = if closed && it % 2 == 1 { -0.53 } else { 0.5 };
+        let old = out.positions.clone();
+        for v in 0..old.len() {
+            if !free[v] || nb[v].is_empty() {
+                continue;
+            }
+            let avg = nb[v].iter().map(|&q| old[q as usize]).sum::<Vec3>() / nb[v].len() as f32;
+            out.positions[v] = old[v] + (avg - old[v]) * f;
+        }
+    }
+    out
+}
+
+/// Press the selected area onto its best-fitting plane.
+pub fn flatten(m: &Mesh, sel: &[bool]) -> Mesh {
+    let Some(n) = average_normal(m, sel) else { return m.clone() };
+    let (mut c, mut w) = (Vec3::ZERO, 0.0);
+    for i in (0..m.triangles.len()).filter(|&i| sel[i]) {
+        let [a, b, cc] = m.tri(i);
+        let ar = (b - a).cross(cc - a).length();
+        c += (a + b + cc) / 3.0 * ar;
+        w += ar;
+    }
+    let c = c / w.max(1e-9);
+    let mut out = m.clone();
+    let mut moved = vec![false; m.positions.len()];
+    for (i, t) in m.triangles.iter().enumerate() {
+        if !sel[i] {
+            continue;
+        }
+        for &v in t {
+            if !moved[v as usize] {
+                moved[v as usize] = true;
+                let p = out.positions[v as usize];
+                out.positions[v as usize] = p - n * (p - c).dot(n);
+            }
+        }
+    }
+    out
+}
+
+/// Split the selected triangles off: (the rest, the piece). Both are open where they
+/// were joined — Repair or Make solid closes them.
+pub fn separate(m: &Mesh, sel: &[bool]) -> (Mesh, Mesh) {
+    let piece: Vec<usize> = (0..m.triangles.len()).filter(|&i| sel[i]).collect();
+    (delete(m, sel), subset(m, &piece))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +312,36 @@ mod tests {
         let c = copy_as_solid(&m, &top_of(&m), 2.0);
         assert!(analyze(&c).is_watertight(), "{:?}", analyze(&c).problems());
         assert!((c.volume() - 200.0).abs() < 1e-3, "{}", c.volume());
+    }
+
+    #[test]
+    fn smoothing_a_whole_object_keeps_its_size() {
+        let m = crate::primitives::sphere(10.0, 24, 12);
+        let sel = vec![true; m.triangles.len()];
+        let out = smooth(&m, &sel, 20);
+        let v0 = m.volume();
+        assert!((out.volume() - v0).abs() < v0 * 0.15, "{} vs {}", out.volume(), v0);
+    }
+
+    #[test]
+    fn smooth_and_flatten() {
+        // a bump on a refined top face: flatten presses it back, smooth lowers it
+        let mut m = crate::paint::refine(&cuboid(Vec3::splat(10.0)), 1.0, 100_000);
+        let sel = top_of(&m);
+        for p in m.positions.iter_mut() {
+            if p.z > 4.99 && p.x.abs() < 2.0 && p.y.abs() < 2.0 {
+                p.z += 2.0;
+            }
+        }
+        let peak = m.bounds().max.z;
+        let s = smooth(&m, &sel, 40);
+        assert!(s.bounds().max.z < peak - 0.3);
+        let f = flatten(&m, &sel);
+        let top: Vec<f32> = (0..f.triangles.len()).filter(|&i| sel[i]).flat_map(|i| f.tri(i)).map(|p| p.z).collect();
+        let (lo, hi) = top.iter().fold((f32::MAX, f32::MIN), |(a, b), &z| (a.min(z), b.max(z)));
+        assert!(hi - lo < 1e-3, "{lo} {hi}");
+        let (rest, piece) = separate(&m, &sel);
+        assert_eq!(rest.triangles.len() + piece.triangles.len(), m.triangles.len());
     }
 
     #[test]

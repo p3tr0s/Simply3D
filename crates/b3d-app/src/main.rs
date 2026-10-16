@@ -14,6 +14,7 @@ mod image_tool;
 mod measure_tool;
 mod organize;
 mod paint_tool;
+mod place_tool;
 mod preview;
 mod render;
 mod sculpt_tool;

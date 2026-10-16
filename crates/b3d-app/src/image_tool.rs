@@ -207,6 +207,15 @@ impl App {
         Mat4::from_translation(at) * Mat4::from_rotation_z(self.settings.image.angle.to_radians())
     }
 
+    /// Matrix for a new picture object: on a face (`h.frame`), on the plate, or beside the others.
+    pub fn image_object_matrix_h(&self, h: Option<TextHover>) -> Mat4 {
+        match h {
+            Some(h) if h.frame != Mat4::IDENTITY => h.frame,
+            Some(h) => self.image_object_matrix(h.point),
+            None => self.image_object_matrix(self.image_default_spot()),
+        }
+    }
+
     pub fn image_default_spot(&self) -> Vec3 {
         let existing = self.scene.bounds();
         if existing.is_empty() {
@@ -221,13 +230,12 @@ impl App {
     }
 
     /// Add the picture as a new object (final build in the background, reduced if asked).
-    pub fn add_image_object(&mut self, ctx: &egui::Context, at: Option<Vec3>) {
+    pub fn add_image_object(&mut self, ctx: &egui::Context, at: Option<TextHover>) {
         let Some(src) = &self.img_rt.source else {
             self.error("Open a picture first");
             return;
         };
-        let at = at.unwrap_or_else(|| self.image_default_spot());
-        let m = self.image_object_matrix(at);
+        let m = self.image_object_matrix_h(at);
         let gray = src.gray.clone();
         let o = self.settings.image.options(true);
         let name = std::path::Path::new(&src.name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or("Picture".into());
@@ -408,7 +416,7 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             if ui.add_enabled(app.img_rt.mesh.is_some(), egui::Button::new(RichText::new("Add to plate").strong())).clicked() {
                 app.add_image_object(ctx, None);
             }
-            ui.weak("…or click on the plate to drop it there.");
+            ui.weak("…or click the plate or any face to stand it there.");
         }
         _ => {
             ui.label("Hover over a face to preview, click to apply.");

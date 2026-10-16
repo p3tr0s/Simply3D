@@ -73,11 +73,16 @@ pub enum Primitive {
     },
     /// Bolt, nut, threaded rod or threaded-hole cutter.
     Fastener(crate::threads::Fastener),
+    Gear(crate::parts::Gear),
+    Spring(crate::parts::Spring),
+    Hinge(crate::parts::Hinge),
+    SnapClip(crate::parts::SnapClip),
 }
 
 impl Primitive {
     pub const ALL_NAMES: [&'static str; 8] = ["Box", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
     pub const FASTENER_NAMES: [&'static str; 4] = ["Bolt", "Nut", "Threaded rod", "Threaded hole"];
+    pub const PART_NAMES: [&'static str; 4] = ["Gear", "Spring", "Hinge", "Snap-fit clip"];
 
     pub fn default_for(name: &str) -> Primitive {
         match name {
@@ -98,6 +103,10 @@ impl Primitive {
                 };
                 Primitive::Fastener(Fastener { kind, ..Default::default() })
             }
+            "Gear" => Primitive::Gear(Default::default()),
+            "Spring" => Primitive::Spring(Default::default()),
+            "Hinge" => Primitive::Hinge(Default::default()),
+            "Snap-fit clip" => Primitive::SnapClip(Default::default()),
             _ => Primitive::Box { size: Vec3::splat(20.0), edge: Edge::default() },
         }
     }
@@ -118,6 +127,10 @@ impl Primitive {
                 crate::threads::FastenerKind::Rod => "Threaded rod",
                 crate::threads::FastenerKind::ThreadedHole => "Threaded hole",
             },
+            Primitive::Gear(_) => "Gear",
+            Primitive::Spring(_) => "Spring",
+            Primitive::Hinge(_) => "Hinge",
+            Primitive::SnapClip(_) => "Snap-fit clip",
         }
     }
 
@@ -141,6 +154,18 @@ impl Primitive {
             Primitive::Wedge { size } => wedge(size),
             Primitive::Fastener(f) => {
                 let mut m = crate::threads::fastener_mesh(&f).unwrap_or_default();
+                let c = m.bounds().center();
+                m.translate(-c);
+                m
+            }
+            Primitive::Gear(_) | Primitive::Spring(_) | Primitive::Hinge(_) | Primitive::SnapClip(_) => {
+                let mut m = match *self {
+                    Primitive::Gear(g) => crate::parts::gear_mesh(&g),
+                    Primitive::Spring(s) => crate::parts::spring_mesh(&s),
+                    Primitive::Hinge(h) => crate::parts::hinge_mesh(&h).unwrap_or_default(),
+                    Primitive::SnapClip(s) => crate::parts::snap_clip_mesh(&s),
+                    _ => unreachable!(),
+                };
                 let c = m.bounds().center();
                 m.translate(-c);
                 m

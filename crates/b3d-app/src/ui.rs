@@ -99,8 +99,14 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if key(Key::Delete) || key(Key::Backspace) {
         app.delete_selected();
     }
+    if app.placing.is_some() && key(Key::Enter) {
+        app.commit_placing(None);
+    }
     if app.preview.is_some() && key(Key::Enter) {
         app.apply_preview();
+    }
+    if app.placing.is_some() && key(Key::Escape) {
+        app.cancel_placing();
     }
     if key(Key::Escape) {
         if app.job.is_some() {
@@ -305,6 +311,12 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 }
                 ui.separator();
                 for name in Primitive::FASTENER_NAMES {
+                    if ui.button(name).clicked() {
+                        app.add_dialog = Some(Primitive::default_for(name));
+                    }
+                }
+                ui.separator();
+                for name in Primitive::PART_NAMES {
                     if ui.button(name).clicked() {
                         app.add_dialog = Some(Primitive::default_for(name));
                     }
@@ -551,6 +563,12 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                 }
                 ui.separator();
                 for name in Primitive::FASTENER_NAMES {
+                    if ui.button(name).clicked() {
+                        app.add_dialog = Some(Primitive::default_for(name));
+                    }
+                }
+                ui.separator();
+                for name in Primitive::PART_NAMES {
                     if ui.button(name).clicked() {
                         app.add_dialog = Some(Primitive::default_for(name));
                     }
@@ -1897,10 +1915,74 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                                 ui.end_row();
                             }
                         }
+                        Primitive::Gear(g) => {
+                            ui.label("Teeth");
+                            ui.add(egui::DragValue::new(&mut g.teeth).range(6..=300));
+                            ui.end_row();
+                            ui.label("Module");
+                            ui.add(num(&mut g.module, Kind::Length).speed(0.05).range(0.2..=20.0).suffix(" mm"))
+                                .on_hover_text("Tooth size. Gears that mesh need the same module. Pitch diameter = module × teeth");
+                            ui.end_row();
+                            mm(ui, "Thickness", &mut g.thickness);
+                            mm(ui, "Bore (hole)", &mut g.bore);
+                            ui.label("Pressure angle");
+                            ui.add(num(&mut g.pressure_deg, Kind::Angle).range(14.5..=30.0).suffix("°"));
+                            ui.end_row();
+                            ui.label("Backlash");
+                            ui.add(num(&mut g.backlash, Kind::Length).speed(0.01).range(0.0..=1.0).suffix(" mm"))
+                                .on_hover_text("Play between meshing teeth so printed gears turn freely");
+                            ui.end_row();
+                            ui.label("");
+                            ui.weak(format!(
+                                "Pitch Ø {:.2} mm. Two gears mesh when their centres are (Ø1 + Ø2) / 2 apart",
+                                g.module * g.teeth as f32
+                            ));
+                            ui.end_row();
+                        }
+                        Primitive::Spring(s) => {
+                            mm(ui, "Outside diameter", &mut s.diameter);
+                            mm(ui, "Wire thickness", &mut s.wire);
+                            mm(ui, "Free length", &mut s.length);
+                            ui.label("Coils");
+                            ui.add(egui::DragValue::new(&mut s.coils).speed(0.1).range(1.0..=100.0));
+                            ui.end_row();
+                            ui.label("Ends");
+                            ui.checkbox(&mut s.flat_ends, "Closed and flat (stands up)");
+                            ui.end_row();
+                        }
+                        Primitive::Hinge(h) => {
+                            mm(ui, "Length (along the pin)", &mut h.length);
+                            mm(ui, "Leaf width", &mut h.leaf);
+                            mm(ui, "Thickness", &mut h.thickness);
+                            ui.label("Knuckles");
+                            ui.add(egui::DragValue::new(&mut h.knuckles).range(3..=15))
+                                .on_hover_text("Odd number, so the pin is held at both ends");
+                            ui.end_row();
+                            mm(ui, "Pin diameter", &mut h.pin);
+                            ui.label("Clearance");
+                            ui.add(num(&mut h.clearance, Kind::Length).speed(0.01).range(0.1..=1.0).suffix(" mm"))
+                                .on_hover_text("Gap between the moving parts: 0.3–0.4 mm prints in place on most printers");
+                            ui.end_row();
+                        }
+                        Primitive::SnapClip(c) => {
+                            mm(ui, "Beam length", &mut c.length);
+                            mm(ui, "Width", &mut c.width);
+                            mm(ui, "Beam thickness", &mut c.thickness);
+                            mm(ui, "Hook", &mut c.hook);
+                            ui.label("Base");
+                            ui.add(num(&mut c.base, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"))
+                                .on_hover_text("Block under the beam; 0 to attach the clip to your own part (Union)");
+                            ui.end_row();
+                            ui.label("");
+                            ui.weak("Tip: duplicate it, make the copy a Hole and scale it up a little to cut the matching slot.");
+                            ui.end_row();
+                        }
                     }
                 });
                 ui.add_space(6.0);
-                if ui.button(RichText::new("Add to scene").strong()).clicked() {
+                if ui.button(RichText::new("Add to scene").strong()).on_hover_text("Enter").clicked()
+                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                {
                     add = true;
                 }
             });
@@ -1927,6 +2009,10 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                 ui.end_row();
                 ui.label("Grid spacing");
                 ui.add(num(&mut s.grid_step, Kind::Length).range(0.5..=100.0).suffix(" mm"));
+                ui.end_row();
+                ui.label("New shapes");
+                ui.checkbox(&mut s.place_by_click, "Click to place them (on the plate or on a face)")
+                    .on_hover_text("Off: new shapes go straight onto the plate beside the others");
                 ui.end_row();
                 ui.label("Snap: move");
                 ui.add(num(&mut s.snap_move, Kind::Length).range(0.01..=100.0).suffix(" mm"));

@@ -19,6 +19,7 @@ pub mod io;
 pub mod measure;
 pub mod mesh;
 pub mod paint;
+pub mod parts;
 pub mod primitives;
 pub mod progress;
 pub mod repair;

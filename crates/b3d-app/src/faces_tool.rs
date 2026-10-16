@@ -220,7 +220,20 @@ impl App {
             .unwrap_or(1.0)
     }
 
-    /// Apply an edit to the selected faces. `op`: 0 extrude, 1 delete, 2 copy as solid.
+    /// Replace the object's mesh with an edit that keeps the triangles (and so the
+    /// selection) in place.
+    fn face_swap_keep_selection(&mut self, id: ObjectId, out: b3d_core::Mesh) {
+        let h = MeshHandle::new(out);
+        let sel = std::mem::take(&mut self.face_rt.sel);
+        if let Some(ob) = self.scene.get_mut(id) {
+            ob.mesh = h.clone();
+        }
+        self.face_rt = FaceRuntime { obj: Some(id), mesh_id: h.id, sel, dirty: true, ..Default::default() };
+        self.report_cache = None;
+    }
+
+    /// Apply an edit to the selected faces. `op`: 0 extrude, 1 delete, 2 copy as solid,
+    /// 3 smooth, 4 flatten, 5 paint, 6 lay flat on the area, 7 separate.
     pub fn face_edit(&mut self, op: u8) {
         let Some(id) = self.face_rt.obj else { return };
         let n = self.face_rt.count();
@@ -257,6 +270,55 @@ impl App {
                 }
                 self.report_cache = None;
                 self.info(format!("Deleted {n} triangles — the model now has an opening (Repair closes it)"));
+            }
+            3 => {
+                self.checkpoint("Smooth faces");
+                let out = faces::smooth(m, &sel, 10);
+                self.face_swap_keep_selection(id, out);
+                self.info("Smoothed the selected area (press again to smooth more)");
+            }
+            4 => {
+                self.checkpoint("Flatten faces");
+                let out = faces::flatten(m, &sel);
+                self.face_swap_keep_selection(id, out);
+                self.info("Flattened the selected area");
+            }
+            5 => {
+                self.checkpoint("Paint faces");
+                let c = b3d_core::paint::pack(self.settings.paint.color);
+                let c = if c == b3d_core::paint::pack(o.color) { 0 } else { c };
+                if let Some(ob) = self.scene.get_mut(id) {
+                    ob.mesh.repaint(|p| {
+                        for (i, s) in sel.iter().enumerate() {
+                            if *s {
+                                p[i] = c;
+                            }
+                        }
+                    });
+                }
+                self.face_rt.dirty = true;
+                self.info(format!("Painted {n} triangles (colour from the Paint tool)"));
+            }
+            6 => {
+                let Some(nl) = faces::average_normal(m, &sel) else { return };
+                let xf = o.matrix();
+                let mut nw = xf.inverse().transpose().transform_vector3(nl).normalize_or_zero();
+                if xf.determinant() < 0.0 {
+                    nw = -nw;
+                }
+                self.lay_flat(id, nw);
+            }
+            7 => {
+                self.checkpoint("Separate faces");
+                let (rest, piece) = faces::separate(m, &sel);
+                if let Some(ob) = self.scene.get_mut(id) {
+                    ob.mesh = MeshHandle::new(rest);
+                }
+                let name = self.scene.unique_name(&format!("{} piece", o.name));
+                let nid = self.scene.add_object(name, piece, Transform { ..o.transform }, Some(o.color));
+                self.selection = vec![nid];
+                self.report_cache = None;
+                self.info("Separated — both parts are open where they were joined; Make solid or Repair closes them");
             }
             _ => {
                 self.checkpoint("Copy faces as solid");
@@ -331,9 +393,41 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
             ui.add(num(&mut s.thickness, Kind::Length).speed(0.05).range(0.1..=100.0).suffix(" mm"));
         });
-        if ui.button("Delete faces").on_hover_text("Leaves an opening (Repair fills it) — handy for cleaning scans").clicked() {
-            op = Some(1);
-        }
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Smooth").on_hover_text("Even out bumps in the area (its edge stays put); press again for more").clicked() {
+                op = Some(3);
+            }
+            if ui.button("Flatten").on_hover_text("Press the area onto its best-fitting plane").clicked() {
+                op = Some(4);
+            }
+            if ui.button("Paint").on_hover_text("Paint the area with the Paint tool's colour (for multi-colour prints)").clicked() {
+                op = Some(5);
+            }
+            if ui.button("Lay flat on this").on_hover_text("Turn the object so this area rests on the plate").clicked() {
+                op = Some(6);
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button("Separate")
+                .on_hover_text("Split the area off as its own object (both are left open; Make solid closes them)")
+                .clicked()
+            {
+                op = Some(7);
+            }
+            if ui.button("Delete faces").on_hover_text("Leaves an opening (Repair fills it) — handy for cleaning scans").clicked() {
+                op = Some(1);
+            }
+        });
+        let c = app.settings.paint.color;
+        ui.horizontal(|ui| {
+            ui.weak("Paint colour:");
+            let mut c32 = egui::Color32::from_rgb(c[0], c[1], c[2]);
+            if ui.color_edit_button_srgba(&mut c32).changed() {
+                app.settings.paint.color = [c32.r(), c32.g(), c32.b(), 255];
+            }
+        });
     });
     if let Some(op) = op {
         app.face_edit(op);

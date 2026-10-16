@@ -55,6 +55,8 @@ pub struct Settings {
     pub sculpt: crate::sculpt_tool::SculptSettings,
     /// Align to the first selected object instead of the whole selection.
     pub align_to_first: bool,
+    /// New shapes follow the pointer and are placed with a click (on the plate or a face).
+    pub place_by_click: bool,
     /// Gap between parts when arranging, mm.
     pub arrange_gap: f32,
     /// Objects that overlap the selection are drawn see-through.
@@ -92,6 +94,7 @@ impl Default for Settings {
             texture: Default::default(),
             sculpt: Default::default(),
             align_to_first: false,
+            place_by_click: true,
             arrange_gap: 6.0,
             see_through: true,
             holes_cut: false,
@@ -471,6 +474,9 @@ pub struct App {
     pub face_rt: crate::faces_tool::FaceRuntime,
     pub tex_rt: crate::texture_tool::TextureRuntime,
     pub sculpt_rt: crate::sculpt_tool::SculptRuntime,
+    /// A new shape waiting to be placed, and where it would go (point, normal).
+    pub placing: Option<crate::place_tool::Placing>,
+    pub place_hover: Option<(Vec3, Vec3)>,
     /// Objects drawn see-through this frame (they overlap the selection).
     pub see_through: Vec<ObjectId>,
     pub holes: crate::holes::HoleCache,
@@ -555,6 +561,8 @@ impl App {
             face_rt: Default::default(),
             tex_rt: Default::default(),
             sculpt_rt: Default::default(),
+            placing: None,
+            place_hover: None,
             see_through: vec![],
             holes: Default::default(),
             encode_srgb,
@@ -999,30 +1007,19 @@ impl App {
     // ---------- object actions ----------
 
     pub fn add_primitive(&mut self, p: Primitive) {
-        self.checkpoint(&format!("Add {}", p.name()));
         let mesh = p.build();
+        if mesh.is_empty() {
+            self.error(format!("{}: those settings don't make a valid shape", p.name()));
+            return;
+        }
         let label = match p {
             Primitive::Fastener(f) => f.label(),
+            Primitive::Gear(g) => format!("Gear {}T m{}", g.teeth, g.module),
             _ => p.name().to_string(),
         };
-        let name = self.scene.unique_name(&label);
-        let existing = self.scene.bounds();
-        let size = mesh.bounds().size();
-        let mut pos = Vec3::new(0.0, 0.0, size.z * 0.5);
-        if !existing.is_empty() {
-            pos.x = existing.max.x + 10.0 + size.x * 0.5;
-            pos.y = existing.center().y;
-        }
-        let id = self.scene.add_object(name, mesh, Transform { translation: pos, ..Default::default() }, None);
-        self.selection = vec![id];
-        if let Primitive::Fastener(f) = p {
-            if f.kind == b3d_core::threads::FastenerKind::ThreadedHole {
-                if let Some(o) = self.scene.get_mut(id) {
-                    o.hole = true;
-                }
-                self.info("Threaded hole added as a hole: move it into a part and it cuts the thread there");
-            }
-        }
+        let hole = matches!(p, Primitive::Fastener(f) if f.kind == b3d_core::threads::FastenerKind::ThreadedHole);
+        let note = hole.then(|| "Threaded hole added as a hole: it cuts the thread into whatever it overlaps".to_string());
+        self.begin_placing(mesh, label, hole, note);
     }
 
     pub fn delete_selected(&mut self) {

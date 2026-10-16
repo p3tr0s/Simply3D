@@ -259,6 +259,20 @@ impl App {
         })
     }
 
+    /// Matrix for a new text object at the hovered spot: lying on a face of another
+    /// object (`h.frame`), on the plate, or (None) beside the others.
+    pub fn text_object_matrix_h(&self, h: Option<TextHover>) -> Option<Mat4> {
+        match h {
+            Some(h) if h.frame != Mat4::IDENTITY => {
+                let depth = self.settings.text.depth.max(0.05);
+                self.text_base()?;
+                Some(h.frame * Mat4::from_scale(Vec3::new(1.0, 1.0, depth)))
+            }
+            Some(h) => self.text_object_matrix(h.point),
+            None => self.text_object_matrix(self.text_default_spot()),
+        }
+    }
+
     /// Where "Add" puts the text: beside what is already on the plate.
     pub fn text_default_spot(&self) -> Vec3 {
         let existing = self.scene.bounds();
@@ -269,9 +283,8 @@ impl App {
         Vec3::new(existing.max.x + 10.0 + w * 0.5, existing.center().y, 0.0)
     }
 
-    pub fn add_text_object(&mut self, at: Option<Vec3>) {
-        let at = at.unwrap_or_else(|| self.text_default_spot());
-        let (Some(base), Some(m)) = (self.text_base().cloned(), self.text_object_matrix(at)) else {
+    pub fn add_text_object(&mut self, at: Option<TextHover>) {
+        let (Some(base), Some(m)) = (self.text_base().cloned(), self.text_object_matrix_h(at)) else {
             self.error("Text: nothing to add yet");
             return;
         };
@@ -280,7 +293,7 @@ impl App {
         let name = self.scene.unique_name(&format!("Text \"{}\"", name.trim()));
         let id = self.scene.add_world_mesh(name, base.mesh.transformed(&m), None);
         self.selection = vec![id];
-        self.info("Text added — drag it anywhere, or click the plate to add another");
+        self.info("Text added — drag it anywhere, or click the plate or a face to add another");
     }
 
     /// How the target's surface curves under a shape of half-size `half` placed at
@@ -583,7 +596,7 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
             if ui.add_enabled(app.text_base().is_some(), egui::Button::new(RichText::new("Add to plate").strong())).clicked() {
                 app.add_text_object(None);
             }
-            ui.weak("…or click on the plate to drop it there.");
+            ui.weak("…or click the plate or any face to stand it there.");
         }
         _ => {
             ui.label(if mode == TextMode::Emboss {
