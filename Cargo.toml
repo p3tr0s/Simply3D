@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/b3d-core", "crates/b3d-app"]
+members = ["crates/s3d-core", "crates/s3d-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,5 +15,5 @@ codegen-units = 4
 [profile.dev.package."*"]
 opt-level = 2
 
-[profile.dev.package.b3d-core]
+[profile.dev.package.s3d-core]
 opt-level = 3

@@ -1,0 +1,25 @@
+[package]
+name = "s3d-app"
+version = "0.1.0"
+edition = "2021"
+description = "Simply3D desktop app"
+
+[[bin]]
+name = "simply3d"
+path = "src/main.rs"
+
+[dependencies]
+s3d-core = { path = "../s3d-core" }
+bytemuck = { version = "1.25", features = ["derive"] }
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
+egui = "0.36"
+resvg = "0.45"
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+egui-wgpu = "0.36"
+env_logger = "0.11"
+glam = { version = "0.34", features = ["bytemuck", "serde"] }
+log = "0.4"
+rfd = "0.17"
+serde = { version = "1.0.229", features = ["derive"] }
+transform-gizmo-egui = "0.11"
+epaint_default_fonts = "0.36"
