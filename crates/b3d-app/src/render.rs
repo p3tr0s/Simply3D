@@ -56,48 +56,257 @@ struct GpuMesh {
     vbuf: wgpu::Buffer,
     /// Per-vertex paint (sRGBA8, alpha 0 = object colour).
     cbuf: wgpu::Buffer,
-    /// None = painted mesh, drawn unindexed with 3 vertices per triangle.
+    /// Per-vertex normal (Snorm16x4); all zero = flat shading.
+    nbuf: wgpu::Buffer,
+    /// None = drawn unindexed with 3 vertices per triangle.
     ibuf: Option<wgpu::Buffer>,
     count: u32,
+    /// Wireframe: one line per edge, indexing `vbuf`.
+    edges: Option<(wgpu::Buffer, u32)>,
     rev: u64,
+    /// Whether `cbuf` has one entry per triangle corner (painted layout).
+    painted: bool,
+    smooth: bool,
+    /// In-place updates received: (stroke tag, count). (0, 0) = none / not trustworthy.
+    live: (u64, u64),
+}
+
+/// Vertices that moved since the last frame (sculpting a big mesh): written straight into
+/// the existing buffers instead of uploading the whole mesh again.
+pub struct LiveDelta {
+    /// The stroke, and this update's number within it (1, 2, …).
+    pub tag: u64,
+    pub seq: u64,
+    pub positions: Vec<(u32, Vec3)>,
+    /// New smooth-shading normals by vertex group (empty when shading is flat).
+    pub normals: Vec<(u32, Vec3)>,
+    /// Needed for smooth or painted layouts (where a vertex has several copies).
+    pub shading: Option<std::sync::Arc<b3d_core::normals::Shading>>,
+}
+
+/// Write scattered entries, one call per run of consecutive indices.
+fn write_runs<T: Pod>(queue: &wgpu::Queue, buf: &wgpu::Buffer, mut items: Vec<(u32, T)>) {
+    let stride = std::mem::size_of::<T>() as u64;
+    items.sort_by_key(|x| x.0);
+    items.dedup_by(|b, a| {
+        // keep the later value for a repeated index
+        if a.0 == b.0 {
+            *a = *b;
+            true
+        } else {
+            false
+        }
+    });
+    let mut i = 0;
+    while i < items.len() {
+        let mut j = i + 1;
+        while j < items.len() && items[j].0 == items[j - 1].0 + 1 {
+            j += 1;
+        }
+        let vals: Vec<T> = items[i..j].iter().map(|x| x.1).collect();
+        queue.write_buffer(buf, items[i].0 as u64 * stride, bytemuck::cast_slice(&vals));
+        i = j;
+    }
+}
+
+/// How meshes are turned into GPU buffers.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub struct MeshStyle {
+    pub smooth: bool,
+    pub wireframe: bool,
+}
+
+fn pack_normal(n: Vec3) -> [i16; 4] {
+    let q = |x: f32| (x.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+    [q(n.x), q(n.y), q(n.z), 0]
 }
 
 impl GpuMesh {
-    fn new(device: &wgpu::Device, h: &MeshHandle) -> GpuMesh {
+    fn new(device: &wgpu::Device, h: &MeshHandle, style: MeshStyle) -> GpuMesh {
         let m = &h.mesh;
         let init = |label: &str, contents: &[u8], usage: wgpu::BufferUsages| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
         };
+        let zeros = |label: &str, bytes: usize| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes.max(4) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
         let vertex = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
-        if m.is_painted() {
+        let painted = m.is_painted();
+        let shading = style.smooth.then(|| h.shading());
+        // vertex in the buffers for each triangle corner
+        let corner_vertex: Box<dyn Fn(usize) -> u32> = match (&shading, painted) {
+            (_, true) => Box::new(|c: usize| c as u32),
+            (Some(sh), false) => {
+                let sh = sh.clone();
+                Box::new(move |c: usize| sh.corner[c])
+            }
+            (None, false) => Box::new(|c: usize| m.triangles[c / 3][c % 3]),
+        };
+        let edges = style.wireframe.then(|| {
+            let mut e: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(m.triangles.len() * 3);
+            for (f, t) in m.triangles.iter().enumerate() {
+                for k in 0..3 {
+                    let (a, b) = (t[k], t[(k + 1) % 3]);
+                    let (ca, cb) = (corner_vertex(f * 3 + k), corner_vertex(f * 3 + (k + 1) % 3));
+                    e.push((a.min(b), a.max(b), ca, cb));
+                }
+            }
+            e.sort_unstable_by_key(|x| (x.0, x.1));
+            e.dedup_by_key(|x| (x.0, x.1));
+            let idx: Vec<u32> = e.iter().flat_map(|x| [x.2, x.3]).collect();
+            (init("mesh edges", bytemuck::cast_slice(&idx), wgpu::BufferUsages::INDEX), idx.len() as u32)
+        });
+        if painted {
             let pos: Vec<glam::Vec3> = m.triangles.iter().flat_map(|t| t.map(|i| m.positions[i as usize])).collect();
+            let nbuf = match &shading {
+                Some(sh) => {
+                    let n: Vec<[i16; 4]> = sh.corner.iter().map(|&g| pack_normal(sh.normals[g as usize])).collect();
+                    init("mesh normals", bytemuck::cast_slice(&n), vertex)
+                }
+                None => zeros("mesh normals", pos.len() * 8),
+            };
             GpuMesh {
-                vbuf: init("mesh vb", bytemuck::cast_slice(&pos), wgpu::BufferUsages::VERTEX),
+                vbuf: init("mesh vb", bytemuck::cast_slice(&pos), vertex),
                 cbuf: init("mesh paint", bytemuck::cast_slice(&paint_vertices(m)), vertex),
+                nbuf,
                 ibuf: None,
                 count: pos.len() as u32,
+                edges,
                 rev: h.paint_rev,
+                painted,
+                smooth: style.smooth,
+                live: (0, 0),
+            }
+        } else if let Some(sh) = &shading {
+            let pos: Vec<glam::Vec3> = sh.vertex.iter().map(|&v| m.positions[v as usize]).collect();
+            let n: Vec<[i16; 4]> = sh.normals.iter().map(|&n| pack_normal(n)).collect();
+            GpuMesh {
+                vbuf: init("mesh vb", bytemuck::cast_slice(&pos), vertex),
+                cbuf: zeros("mesh paint", pos.len() * 4),
+                nbuf: init("mesh normals", bytemuck::cast_slice(&n), vertex),
+                ibuf: Some(init("mesh ib", bytemuck::cast_slice(&sh.corner), wgpu::BufferUsages::INDEX)),
+                count: sh.corner.len() as u32,
+                edges,
+                rev: h.paint_rev,
+                painted,
+                smooth: style.smooth,
+                live: (0, 0),
             }
         } else {
             GpuMesh {
-                vbuf: init("mesh vb", bytemuck::cast_slice(&m.positions), wgpu::BufferUsages::VERTEX),
-                cbuf: init("mesh paint", &vec![0u8; m.positions.len().max(1) * 4], vertex),
+                vbuf: init("mesh vb", bytemuck::cast_slice(&m.positions), vertex),
+                cbuf: zeros("mesh paint", m.positions.len() * 4),
+                nbuf: zeros("mesh normals", m.positions.len() * 8),
                 ibuf: Some(init("mesh ib", bytemuck::cast_slice(&m.triangles), wgpu::BufferUsages::INDEX)),
                 count: (m.triangles.len() * 3) as u32,
+                edges,
                 rev: h.paint_rev,
+                painted,
+                smooth: style.smooth,
+                live: (0, 0),
             }
+        }
+    }
+
+    /// Bring the paint up to date, rewriting only the repainted triangles when possible.
+    fn update_paint(&mut self, queue: &wgpu::Queue, h: &MeshHandle) {
+        if self.rev == h.paint_rev {
+            return;
+        }
+        let mut tris: Vec<u32> = vec![];
+        let mut d = h.paint_delta.as_deref();
+        let mut reached = false;
+        while let Some(x) = d {
+            tris.extend_from_slice(&x.tris);
+            if x.from == self.rev {
+                reached = true;
+                break;
+            }
+            d = x.prev.as_deref();
+        }
+        if reached && self.painted {
+            let m = &h.mesh;
+            let items: Vec<(u32, u32)> = tris.iter().flat_map(|&t| (0..3).map(move |k| (t * 3 + k, m.paint_of(t as usize)))).collect();
+            write_runs(queue, &self.cbuf, items);
+        } else if self.painted {
+            queue.write_buffer(&self.cbuf, 0, bytemuck::cast_slice(&paint_vertices(&h.mesh)));
+        }
+        self.rev = h.paint_rev;
+    }
+
+    fn apply_live(&mut self, queue: &wgpu::Queue, d: &LiveDelta) {
+        // the first update of a stroke starts from what's shown; later ones must follow on
+        if d.seq != 1 && self.live != (d.tag, d.seq - 1) {
+            self.live = (0, 0);
+            return;
+        }
+        self.live = (d.tag, d.seq);
+        if !self.painted && !self.smooth {
+            write_runs(queue, &self.vbuf, d.positions.clone());
+            return;
+        }
+        let Some(sh) = d.shading.as_deref() else { return };
+        let mut pos: Vec<(u32, Vec3)> = Vec::with_capacity(d.positions.len() * 6);
+        for &(v, p) in &d.positions {
+            let v = v as usize;
+            if v + 1 >= sh.first.len() {
+                continue;
+            }
+            if self.painted {
+                for &c in &sh.vcorners[sh.vstart[v] as usize..sh.vstart[v + 1] as usize] {
+                    pos.push((c, p));
+                }
+            } else if self.smooth {
+                for g in sh.first[v]..sh.first[v + 1] {
+                    pos.push((g, p));
+                }
+            } else {
+                pos.push((v as u32, p));
+            }
+        }
+        write_runs(queue, &self.vbuf, pos);
+        if self.smooth && !d.normals.is_empty() {
+            let mut nrm: Vec<(u32, [i16; 4])> = Vec::with_capacity(d.normals.len() * 6);
+            for &(g, n) in &d.normals {
+                let q = pack_normal(n);
+                if self.painted {
+                    let v = sh.vertex[g as usize] as usize;
+                    for &c in &sh.vcorners[sh.vstart[v] as usize..sh.vstart[v + 1] as usize] {
+                        if sh.corner[c as usize] == g {
+                            nrm.push((c, q));
+                        }
+                    }
+                } else {
+                    nrm.push((g, q));
+                }
+            }
+            write_runs(queue, &self.nbuf, nrm);
         }
     }
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'static>) {
         pass.set_vertex_buffer(0, self.vbuf.slice(..));
         pass.set_vertex_buffer(1, self.cbuf.slice(..));
+        pass.set_vertex_buffer(2, self.nbuf.slice(..));
         match &self.ibuf {
             Some(ib) => {
                 pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..self.count, 0, 0..1);
             }
             None => pass.draw(0..self.count, 0..1),
+        }
+    }
+
+    fn draw_edges(&self, pass: &mut wgpu::RenderPass<'static>) {
+        if let Some((eb, n)) = &self.edges {
+            pass.set_vertex_buffer(0, self.vbuf.slice(..));
+            pass.set_index_buffer(eb.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..*n, 0, 0..1);
         }
     }
 }
@@ -143,6 +352,8 @@ pub struct ViewportRenderer {
     overlay_pipeline: wgpu::RenderPipeline,
     ghost_pipeline: wgpu::RenderPipeline,
     xray_pipeline: wgpu::RenderPipeline,
+    wire_pipeline: wgpu::RenderPipeline,
+    style: MeshStyle,
     cam_buf: wgpu::Buffer,
     cam_bg: wgpu::BindGroup,
     model_bgl: wgpu::BindGroupLayout,
@@ -236,6 +447,11 @@ impl ViewportRenderer {
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &wgpu::vertex_attr_array![1 => Unorm8x4],
             }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: 8,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![2 => Snorm16x4],
+            }),
         ];
         let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("mesh pipeline"),
@@ -252,7 +468,11 @@ impl ViewportRenderer {
                 cull_mode: None,
                 ..Default::default()
             },
-            depth_stencil: depth(true, wgpu::CompareFunction::Less),
+            // pushed back a hair so wireframe lines and overlays on the surface win cleanly
+            depth_stencil: depth(true, wgpu::CompareFunction::Less).map(|mut d| {
+                d.bias = wgpu::DepthBiasState { constant: 2, slope_scale: 1.0, clamp: 0.0 };
+                d
+            }),
             multisample: ms,
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -291,6 +511,32 @@ impl ViewportRenderer {
                 cache: None,
             })
         };
+        let wire_vb = [Some(wgpu::VertexBufferLayout {
+            array_stride: 12,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+        })];
+        let wire_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wire pipeline"),
+            layout: Some(&mesh_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_wire"),
+                compilation_options: Default::default(),
+                buffers: &wire_vb,
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::LineList, cull_mode: None, ..Default::default() },
+            depth_stencil: depth(false, wgpu::CompareFunction::LessEqual),
+            multisample: ms,
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_wire"),
+                compilation_options: Default::default(),
+                targets: &blend_target,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let ghost_pipeline = make_ghost("ghost pipeline", "fs_ghost", wgpu::CompareFunction::LessEqual);
         let xray_pipeline = make_ghost("x-ray pipeline", "fs_ghost_xray", wgpu::CompareFunction::Always);
         let line_vb = [Some(wgpu::VertexBufferLayout {
@@ -333,6 +579,8 @@ impl ViewportRenderer {
             overlay_pipeline,
             ghost_pipeline,
             xray_pipeline,
+            wire_pipeline,
+            style: MeshStyle::default(),
             cam_buf,
             cam_bg,
             model_bgl,
@@ -374,6 +622,9 @@ pub struct ViewportFrame {
     pub lines: Vec<LineVertex>,
     /// Always-on-top lines (measurements, bounding boxes).
     pub overlay: Vec<LineVertex>,
+    pub style: MeshStyle,
+    /// In-place updates for meshes being sculpted, by mesh id.
+    pub live: Vec<(u64, std::sync::Arc<LiveDelta>)>,
 }
 
 impl egui_wgpu::CallbackTrait for ViewportFrame {
@@ -389,22 +640,36 @@ impl egui_wgpu::CallbackTrait for ViewportFrame {
         queue.write_buffer(&r.cam_buf, 0, bytemuck::bytes_of(&self.camera));
 
         // upload new meshes, drop unused ones
-        let mut used = HashSet::new();
-        for it in self.items.iter().chain(&self.ghosts) {
-            used.insert(it.mesh.id);
+        if r.style != self.style {
+            r.meshes.clear();
+            r.style = self.style;
+        }
+        let used: HashSet<u64> = self.items.iter().chain(&self.ghosts).map(|it| it.mesh.id).collect();
+        for (i, it) in self.items.iter().chain(&self.ghosts).enumerate() {
             let painted = it.mesh.mesh.is_painted();
-            match r.meshes.get_mut(&it.mesh.id) {
-                Some(g) if g.ibuf.is_none() == painted => {
-                    if g.rev != it.mesh.paint_rev {
-                        if painted {
-                            queue.write_buffer(&g.cbuf, 0, bytemuck::cast_slice(&paint_vertices(&it.mesh.mesh)));
+            // ghosts are always drawn flat and without wires
+            let style = if i < self.items.len() { self.style } else { MeshStyle::default() };
+            // a mesh that was updated in place: take over the older one's buffers
+            if !r.meshes.contains_key(&it.mesh.id) {
+                if let Some(a) = it.mesh.gpu_alias.filter(|a| !used.contains(&a.id)) {
+                    if r.meshes.get(&a.id).is_some_and(|g| g.live == (a.tag, a.seq)) {
+                        if let Some(mut g) = r.meshes.remove(&a.id) {
+                            g.rev = it.mesh.paint_rev;
+                            r.meshes.insert(it.mesh.id, g);
                         }
-                        g.rev = it.mesh.paint_rev;
                     }
                 }
+            }
+            match r.meshes.get_mut(&it.mesh.id) {
+                Some(g) if g.painted == painted && (g.edges.is_some() || !style.wireframe) => g.update_paint(queue, &it.mesh),
                 _ => {
-                    r.meshes.insert(it.mesh.id, GpuMesh::new(device, &it.mesh));
+                    r.meshes.insert(it.mesh.id, GpuMesh::new(device, &it.mesh, style));
                 }
+            }
+        }
+        for (id, d) in &self.live {
+            if let Some(g) = r.meshes.get_mut(id) {
+                g.apply_live(queue, d);
             }
         }
         r.meshes.retain(|k, _| used.contains(k));
@@ -460,6 +725,14 @@ impl egui_wgpu::CallbackTrait for ViewportFrame {
                 pass.draw(range.clone(), 0..1);
             }
         };
+        if r.style.wireframe {
+            pass.set_pipeline(&r.wire_pipeline);
+            for (mesh_id, offset) in &r.frame {
+                let Some(g) = r.meshes.get(mesh_id) else { continue };
+                pass.set_bind_group(1, &r.model_bg, &[*offset]);
+                g.draw_edges(pass);
+            }
+        }
         draw_lines(pass, &r.tri_pipeline, &r.line_ranges[0]);
         draw_lines(pass, &r.line_pipeline, &r.line_ranges[1]);
         // ghosts: a faint x-ray pass (visible through other objects), then a depth-tested pass

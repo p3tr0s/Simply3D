@@ -164,6 +164,8 @@ pub fn all() -> Vec<Command> {
         cmd!("View", "Bottom view", "", always, |a, _| a.settings.camera.set_preset(ViewPreset::Bottom)),
         cmd!("View", "Isometric view", "0", always, |a, _| a.settings.camera.set_preset(ViewPreset::Iso)),
         cmd!("View", "Toggle orthographic", "O", always, |a, _| a.settings.camera.ortho = !a.settings.camera.ortho),
+        cmd!("View", "Smooth shading on / off", "Shift+S", always, |a, _| a.settings.smooth_shading = !a.settings.smooth_shading),
+        cmd!("View", "Wireframe on / off", "Shift+W", always, |a, _| a.settings.wireframe = !a.settings.wireframe),
         cmd!("View", "Frame selection", "F", always, |a, _| a.frame_selection()),
         cmd!("View", "Frame all", "Home", always, |a, _| a.frame_all()),
         cmd!("View", "Toggle see-through for overlapping objects", "", always, |a, _| a.settings.see_through = !a.settings.see_through),

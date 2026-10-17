@@ -112,7 +112,8 @@ impl App {
                     Some((id, p)) if id == h.id && p.distance(h.point) < s.radius * 8.0 => p,
                     _ => h.point,
                 };
-                let mut all = paint::brush_stroke(m, inv.transform_point3(from), inv.transform_point3(h.point), r, n);
+                let mut all =
+                    paint::brush_stroke(m, o.mesh.bvh().as_deref(), inv.transform_point3(from), inv.transform_point3(h.point), r, n);
                 if !all.contains(&h.tri) {
                     all.push(h.tri);
                 }
@@ -124,11 +125,7 @@ impl App {
             return;
         }
         if let Some(o) = self.scene.get_mut(h.id) {
-            o.mesh.repaint(|p| {
-                for &i in &tris {
-                    p[i] = value;
-                }
-            });
+            o.mesh.repaint_tris(&tris, |_| value);
         }
         self.dirty = true;
         self.edit_gen += 1;

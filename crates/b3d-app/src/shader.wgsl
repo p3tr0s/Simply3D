@@ -22,16 +22,36 @@ struct VOut {
     @location(0) world: vec3<f32>,
     // painted colour (sRGB), alpha 0 = use the object colour
     @location(1) @interpolate(flat) paint: vec4<f32>,
+    // smooth-shading normal in world space; zero = flat shading
+    @location(2) normal: vec3<f32>,
 };
 
 @vertex
-fn vs_mesh(@location(0) p: vec3<f32>, @location(1) paint: vec4<f32>) -> VOut {
+fn vs_mesh(@location(0) p: vec3<f32>, @location(1) paint: vec4<f32>, @location(2) n: vec4<f32>) -> VOut {
     var out: VOut;
     let w = obj.model * vec4<f32>(p, 1.0);
     out.world = w.xyz;
     out.paint = paint;
     out.pos = cam.view_proj * w;
+    // cofactor matrix: transforms normals correctly under non-uniform scale
+    let c0 = obj.model[0].xyz;
+    let c1 = obj.model[1].xyz;
+    let c2 = obj.model[2].xyz;
+    let nm = mat3x3<f32>(cross(c1, c2), cross(c2, c0), cross(c0, c1));
+    out.normal = nm * n.xyz;
     return out;
+}
+
+/// Shading normal: the smooth one when there is one, kept on the same side as the face.
+fn shading_normal(in: VOut, flat: vec3<f32>) -> vec3<f32> {
+    if (dot(in.normal, in.normal) < 1e-12) {
+        return flat;
+    }
+    var n = normalize(in.normal);
+    if (dot(n, flat) < 0.0) {
+        n = -n;
+    }
+    return n;
 }
 
 fn to_srgb(c: vec3<f32>) -> vec3<f32> {
@@ -101,14 +121,15 @@ fn fs_ghost_xray(in: VOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_mesh(in: VOut, @builtin(front_facing) ff_raw: bool) -> @location(0) vec4<f32> {
     // flat normal from screen-space derivatives
-    var n = normalize(cross(dpdx(in.world), dpdy(in.world)));
+    var f = normalize(cross(dpdx(in.world), dpdy(in.world)));
     if (clipped(in.world)) {
         discard;
     }
     let v = normalize(cam.eye.xyz - in.world);
-    if (dot(n, v) < 0.0) {
-        n = -n;
+    if (dot(f, v) < 0.0) {
+        f = -f;
     }
+    let n = shading_normal(in, f);
     var ff = ff_raw;
     if (obj.params.z > 0.5) {
         ff = !ff;
@@ -145,6 +166,27 @@ fn fs_mesh(in: VOut, @builtin(front_facing) ff_raw: bool) -> @location(0) vec4<f
         c += vec3<f32>(0.06) + vec3<f32>(0.18) * rim;
     }
     return vec4<f32>(encode(c), obj.color.a);
+}
+
+// ---- wireframe ----
+
+@vertex
+fn vs_wire(@location(0) p: vec3<f32>) -> LOut {
+    var out: LOut;
+    let w = obj.model * vec4<f32>(p, 1.0);
+    out.pos = cam.view_proj * w;
+    out.color = vec4<f32>(w.xyz, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_wire(in: LOut) -> @location(0) vec4<f32> {
+    if (clipped(in.color.xyz)) {
+        discard;
+    }
+    let c = obj.color.rgb * 0.35;
+    let a = 0.75;
+    return vec4<f32>(encode(c) * a, a);
 }
 
 // ---- lines (grid, axes, overlays) ----

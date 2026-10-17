@@ -34,6 +34,8 @@ pub struct SaveOptions {
     /// Cut the holes into the solids (works in every slicer) instead of writing them as
     /// negative parts (Bambu Studio / OrcaSlicer).
     pub cut_holes: bool,
+    /// Store a picture of the plate (3MF), shown by slicers and the file manager.
+    pub thumbnail: bool,
 }
 
 /// Bake every hole into the solids it overlaps (world space) and drop the holes.

@@ -63,6 +63,10 @@ pub struct Settings {
     pub see_through: bool,
     /// Save holes into 3MF already cut (any slicer) instead of as negative parts.
     pub holes_cut: bool,
+    /// Curved surfaces shaded smooth (sharp edges stay sharp).
+    pub smooth_shading: bool,
+    /// Triangle edges drawn over the models.
+    pub wireframe: bool,
 }
 
 impl Default for Settings {
@@ -98,6 +102,8 @@ impl Default for Settings {
             arrange_gap: 6.0,
             see_through: true,
             holes_cut: false,
+            smooth_shading: true,
+            wireframe: false,
         }
     }
 }
@@ -135,6 +141,8 @@ pub enum DragMode {
         bounds: Aabb,
         vertical: bool,
     },
+    /// Done (typed move confirmed / cancelled) but the button is still held.
+    Finished,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -457,6 +465,11 @@ pub struct App {
     pub snap_guides: Vec<(Vec3, Vec3)>,
     /// Text shown next to the cursor while moving (e.g. the offset).
     pub drag_label: Option<String>,
+    /// Distance typed while dragging objects.
+    pub move_typed: String,
+    /// Direction of the current drag (for a typed distance).
+    pub move_dir: Vec3,
+    pub last_nudge: Option<std::time::Instant>,
     /// Transforms + group bounds when a gizmo move started.
     pub gizmo_start: Vec<(ObjectId, Transform)>,
     pub gizmo_start_bounds: Aabb,
@@ -547,6 +560,9 @@ impl App {
             drag: DragMode::None,
             snap_guides: vec![],
             drag_label: None,
+            move_typed: String::new(),
+            move_dir: Vec3::X,
+            last_nudge: None,
             gizmo_start: vec![],
             gizmo_start_bounds: Aabb::EMPTY,
             collapsed: HashSet::new(),
@@ -971,7 +987,7 @@ impl App {
             self.error("Nothing to save");
             return;
         }
-        let opts = io::SaveOptions { cut_holes: self.settings.holes_cut };
+        let opts = io::SaveOptions { cut_holes: self.settings.holes_cut, thumbnail: true };
         self.spawn_job(ctx, format!("Saving {}", path.display()), move |_p| match io::save_with(&path, &objs, opts) {
             Ok(()) => JobOutput::Saved { path },
             Err(e) => JobOutput::Error(format!("Save failed: {e}")),

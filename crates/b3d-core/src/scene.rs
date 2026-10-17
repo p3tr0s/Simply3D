@@ -1,7 +1,9 @@
+use crate::bvh::Bvh;
 use crate::mesh::{Aabb, Mesh};
+use crate::normals::Shading;
 use glam::{EulerRot, Mat4, Quat, Vec3};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub type ObjectId = u64;
 
@@ -18,6 +20,49 @@ pub struct PickHit {
 
 static NEXT_MESH_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Meshes up to this size get their picking index built right away; bigger ones in the
+/// background (picking falls back to testing every triangle until it's ready).
+const BVH_SYNC_LIMIT: usize = 150_000;
+
+/// Things worked out once per mesh: bounds and the picking index.
+#[derive(Default)]
+pub struct MeshCache {
+    bounds: OnceLock<Aabb>,
+    bvh: Mutex<Option<Arc<Bvh>>>,
+    building: AtomicBool,
+    /// Bounds of the rotated + scaled vertices, for the last rotation and scale asked for.
+    world: Mutex<Option<(Quat, Vec3, Aabb)>>,
+    shading: OnceLock<Arc<Shading>>,
+    /// Grouping from an earlier mesh with the same triangles (normals still to update).
+    inherited: Mutex<Option<Arc<Shading>>>,
+}
+
+/// Which older mesh's display shows this mesh: valid only if that display has received
+/// exactly the in-place updates `tag`/`seq` (a stroke and how many updates it sent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuAlias {
+    pub id: u64,
+    pub tag: u64,
+    pub seq: u64,
+}
+
+/// Triangles repainted between two paint revisions, newest first (lets the display
+/// update just those instead of the whole mesh).
+#[derive(Debug)]
+pub struct PaintDelta {
+    pub from: u64,
+    pub to: u64,
+    pub tris: Vec<u32>,
+    pub prev: Option<Arc<PaintDelta>>,
+    depth: u32,
+}
+
+impl std::fmt::Debug for MeshCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MeshCache")
+    }
+}
+
 /// Immutable, shareable mesh with a unique id (used as the GPU cache key).
 #[derive(Debug, Clone)]
 pub struct MeshHandle {
@@ -25,12 +70,40 @@ pub struct MeshHandle {
     pub mesh: Arc<Mesh>,
     /// Changes whenever the paint changes while the geometry (and `id`) stays the same.
     pub paint_rev: u64,
+    /// The latest repaints, if they were small (see [`PaintDelta`]).
+    pub paint_delta: Option<Arc<PaintDelta>>,
+    /// The display of an older mesh already shows this one (it was updated in place while
+    /// sculpting), so it can be reused instead of uploaded again.
+    pub gpu_alias: Option<GpuAlias>,
+    cache: Arc<MeshCache>,
 }
 
 impl MeshHandle {
     pub fn new(mesh: Mesh) -> Self {
         let id = NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed);
-        Self { id, mesh: Arc::new(mesh), paint_rev: id }
+        Self { id, mesh: Arc::new(mesh), paint_rev: id, paint_delta: None, gpu_alias: None, cache: Arc::default() }
+    }
+
+    /// The same triangles as `prev` with some vertices moved: shares its smooth-shading
+    /// layout, reuses its display, and comes with a ready picking index.
+    pub fn moved_from(prev: &MeshHandle, mesh: Mesh, bvh: Arc<Bvh>, tag: u64, seq: u64) -> Self {
+        let mut h = Self::with_bvh(mesh, bvh);
+        h.gpu_alias = Some(GpuAlias { id: prev.id, tag, seq });
+        if let Some(sh) = prev.cache.shading.get() {
+            if h.mesh.triangles.len() == prev.mesh.triangles.len() {
+                *h.cache.inherited.lock().unwrap() = Some(sh.clone());
+            }
+        }
+        h
+    }
+
+    /// A new mesh whose picking index is already known (e.g. refitted while sculpting).
+    pub fn with_bvh(mesh: Mesh, bvh: Arc<Bvh>) -> Self {
+        let h = Self::new(mesh);
+        if bvh.len() == h.mesh.triangles.len() {
+            *h.cache.bvh.lock().unwrap() = Some(bvh);
+        }
+        h
     }
 
     /// Same geometry, new paint (keeps the id so geometry caches stay valid).
@@ -39,6 +112,101 @@ impl MeshHandle {
         f(m.paint_mut());
         m.tidy_paint();
         self.paint_rev = NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed);
+        self.paint_delta = None;
+    }
+
+    /// Set the paint of a few triangles (the display updates only those).
+    pub fn repaint_tris(&mut self, tris: &[usize], value: impl Fn(usize) -> u32) {
+        let was_painted = self.mesh.is_painted();
+        let m = Arc::make_mut(&mut self.mesh);
+        let p = m.paint_mut();
+        for &t in tris {
+            p[t] = value(t);
+        }
+        m.tidy_paint();
+        let from = self.paint_rev;
+        self.paint_rev = NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed);
+        // painting the first triangle or clearing the last changes the display layout
+        if was_painted != self.mesh.is_painted() {
+            self.paint_delta = None;
+            return;
+        }
+        let prev = self.paint_delta.take().filter(|d| d.to == from && d.depth < 64);
+        let depth = prev.as_ref().map_or(0, |d| d.depth + 1);
+        self.paint_delta =
+            Some(Arc::new(PaintDelta { from, to: self.paint_rev, tris: tris.iter().map(|&t| t as u32).collect(), prev, depth }));
+    }
+
+    /// A fresh unique number (for tagging in-place display updates).
+    pub fn next_tag() -> u64 {
+        NEXT_MESH_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Smooth-shading layout (worked out once).
+    pub fn shading(&self) -> Arc<Shading> {
+        self.cache
+            .shading
+            .get_or_init(|| match self.cache.inherited.lock().unwrap().take() {
+                Some(sh) => Arc::new(sh.with_positions(&self.mesh)),
+                None => Arc::new(crate::normals::shading(&self.mesh, crate::normals::CREASE_DEG)),
+            })
+            .clone()
+    }
+
+    /// Bounding box of the mesh (worked out once).
+    pub fn bounds(&self) -> Aabb {
+        *self.cache.bounds.get_or_init(|| self.mesh.bounds())
+    }
+
+    /// The picking index, if it's ready. Small meshes build it now; big ones start it in
+    /// the background and return `None` until it's done.
+    pub fn bvh(&self) -> Option<Arc<Bvh>> {
+        if let Some(b) = self.cache.bvh.lock().unwrap().as_ref() {
+            return Some(b.clone());
+        }
+        if self.mesh.triangles.len() <= BVH_SYNC_LIMIT {
+            let b = Arc::new(Bvh::build(&self.mesh));
+            *self.cache.bvh.lock().unwrap() = Some(b.clone());
+            return Some(b);
+        }
+        if !self.cache.building.swap(true, Ordering::AcqRel) {
+            let (mesh, cache) = (self.mesh.clone(), self.cache.clone());
+            std::thread::spawn(move || {
+                let b = Arc::new(Bvh::build(&mesh));
+                *cache.bvh.lock().unwrap() = Some(b);
+            });
+        }
+        None
+    }
+
+    /// Nearest ray hit in mesh space: (distance, triangle).
+    pub fn ray_cast_where(&self, origin: Vec3, dir: Vec3, accept: impl Fn(Vec3) -> bool) -> Option<(f32, usize)> {
+        self.bounds().ray_hit(origin, dir)?;
+        match self.bvh() {
+            Some(b) => b.ray_cast_where(&self.mesh, origin, dir, accept),
+            None => self.mesh.ray_cast_where(origin, dir, accept),
+        }
+    }
+
+    /// Exact bounds of the mesh after `t` (cached for the last rotation and scale, so
+    /// moving an object doesn't walk all its vertices again).
+    pub fn world_bounds(&self, t: &Transform) -> Aabb {
+        let mut w = self.cache.world.lock().unwrap();
+        if let Some((r, s, b)) = *w {
+            if r == t.rotation && s == t.scale {
+                return Aabb { min: b.min + t.translation, max: b.max + t.translation };
+            }
+        }
+        let m = Mat4::from_scale_rotation_translation(t.scale, t.rotation, Vec3::ZERO);
+        let mut b = Aabb::EMPTY;
+        for p in &self.mesh.positions {
+            b.grow(m.transform_point3(*p));
+        }
+        *w = Some((t.rotation, t.scale, b));
+        if b.is_empty() {
+            return b;
+        }
+        Aabb { min: b.min + t.translation, max: b.max + t.translation }
     }
 }
 
@@ -111,13 +279,12 @@ impl Object {
         self.mesh.mesh.transformed(&self.matrix())
     }
     pub fn world_bounds(&self) -> Aabb {
-        // exact (not box-of-box) bounds: transform all vertices
-        let m = self.matrix();
-        Aabb::from_points(self.mesh.mesh.positions.iter().map(|p| m.transform_point3(*p)).collect::<Vec<_>>().iter())
+        // exact (not box-of-box) bounds of the transformed vertices
+        self.mesh.world_bounds(&self.transform)
     }
     /// Size of the local mesh times scale (rotation-independent dimensions).
     pub fn local_size(&self) -> Vec3 {
-        self.mesh.mesh.bounds().size() * self.transform.scale.abs()
+        self.mesh.bounds().size() * self.transform.scale.abs()
     }
 }
 
@@ -296,7 +463,7 @@ impl Scene {
             let inv = m.inverse();
             let lo = inv.transform_point3(origin);
             let ld = inv.transform_vector3(dir);
-            if let Some((t, tri)) = o.mesh.mesh.ray_cast_where(lo, ld, |lp| accept_point(m.transform_point3(lp))) {
+            if let Some((t, tri)) = o.mesh.ray_cast_where(lo, ld, |lp| accept_point(m.transform_point3(lp))) {
                 let point = m.transform_point3(lo + ld * t);
                 let dist = (point - origin).length();
                 if best.as_ref().is_none_or(|b| dist < b.0) {

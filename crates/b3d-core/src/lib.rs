@@ -7,6 +7,7 @@
 
 pub mod analysis;
 pub mod arrange;
+pub mod bvh;
 pub mod connectors;
 pub mod csg;
 pub mod extrude;
@@ -18,6 +19,7 @@ pub mod image3d;
 pub mod io;
 pub mod measure;
 pub mod mesh;
+pub mod normals;
 pub mod paint;
 pub mod parts;
 pub mod primitives;
@@ -31,6 +33,7 @@ pub mod smooth;
 pub mod text;
 pub mod texture;
 pub mod threads;
+pub mod thumbnail;
 pub mod wrap;
 
 pub use glam;

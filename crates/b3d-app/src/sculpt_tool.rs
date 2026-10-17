@@ -66,7 +66,18 @@ pub struct SculptRuntime {
     invert: bool,
     smooth_override: bool,
     pub stroke: bool,
+    /// Big meshes: the scene keeps the mesh from the start of the stroke and the display
+    /// is updated in place from these moved vertices; the scene gets the result at the end.
+    pending: std::cell::RefCell<Vec<u32>>,
+    unpushed: bool,
+    /// This stroke's tag and how many display updates it has sent.
+    live_tag: u64,
+    live_seq: std::cell::Cell<u64>,
 }
+
+/// Above this many triangles, strokes update the display in place instead of handing a
+/// new copy of the mesh to the scene after every dab.
+const BIG_MESH: usize = 250_000;
 
 /// Mean scale of a transform (brush sizes are in mm on screen, the mesh in its own units).
 fn mean_scale(m: &Mat4) -> f32 {
@@ -90,15 +101,89 @@ impl App {
         if rt.obj != Some(id) || rt.mesh_id != o.mesh.id || rt.sc.is_none() {
             rt.obj = Some(id);
             rt.mesh_id = o.mesh.id;
-            rt.sc = Some(Sculpt::new((*o.mesh.mesh).clone()));
+            rt.sc = Some(Sculpt::with_bvh((*o.mesh.mesh).clone(), o.mesh.bvh()));
+            rt.pending.borrow_mut().clear();
+            rt.unpushed = false;
         }
         true
     }
 
-    /// Put the sculpted mesh back on the object (shown right away).
+    /// The object being sculpted, while the sculpt tool has one.
+    pub fn sculpt_target_id(&self) -> Option<ObjectId> {
+        let id = self.sculpt_rt.sc.as_ref().and(self.sculpt_rt.obj)?;
+        // after an undo the scene has moved on: the sculpt copy no longer applies
+        (self.scene.get(id)?.mesh.id == self.sculpt_rt.mesh_id).then_some(id)
+    }
+
+    /// Ray hit on the sculpted object, using the up-to-date sculpt copy.
+    pub fn sculpt_hit(&self, o: Vec3, d: Vec3, keep: impl Fn(Vec3) -> bool) -> Option<(f32, PaintHover)> {
+        let (id, sc) = (self.sculpt_target_id()?, self.sculpt_rt.sc.as_ref()?);
+        let ob = self.scene.get(id).filter(|ob| ob.visible)?;
+        let m = ob.matrix();
+        let inv = m.inverse();
+        let (lo, ld) = (inv.transform_point3(o), inv.transform_vector3(d));
+        let (t, tri) = sc.bvh.ray_cast_where(&sc.mesh, lo, ld, |lp| keep(m.transform_point3(lp)))?;
+        let point = m.transform_point3(lo + ld * t);
+        let mut normal = inv.transpose().transform_vector3(sc.mesh.face_normal(tri)).normalize_or_zero();
+        if m.determinant() < 0.0 {
+            normal = -normal;
+        }
+        Some(((point - o).length(), PaintHover { id, point, normal, tri }))
+    }
+
+    /// Display updates for a big mesh being sculpted (called once per frame).
+    pub fn sculpt_live(&self) -> Option<(u64, std::sync::Arc<crate::render::LiveDelta>)> {
+        let (id, sc) = (self.sculpt_rt.obj?, self.sculpt_rt.sc.as_ref()?);
+        let mut moved = std::mem::take(&mut *self.sculpt_rt.pending.borrow_mut());
+        if moved.is_empty() {
+            return None;
+        }
+        let h = &self.scene.get(id)?.mesh;
+        if h.mesh.triangles.len() != sc.mesh.triangles.len() {
+            return None;
+        }
+        moved.sort_unstable();
+        moved.dedup();
+        let smooth = self.settings.smooth_shading;
+        let shading = (smooth || h.mesh.is_painted()).then(|| h.shading());
+        let normals = match (&shading, smooth) {
+            (Some(sh), true) => sh.renormal(&sc.mesh, &moved),
+            _ => vec![],
+        };
+        let positions = moved.iter().map(|&v| (v, sc.mesh.positions[v as usize])).collect();
+        let seq = self.sculpt_rt.live_seq.get() + 1;
+        self.sculpt_rt.live_seq.set(seq);
+        let tag = self.sculpt_rt.live_tag;
+        Some((h.id, std::sync::Arc::new(crate::render::LiveDelta { tag, seq, positions, normals, shading })))
+    }
+
+    /// After some dabs: show them. Small meshes get a new mesh on the object right away;
+    /// big ones are updated in place on screen and handed to the scene when the stroke ends.
     fn sculpt_push(&mut self) {
+        let Some(sc) = self.sculpt_rt.sc.as_mut() else { return };
+        let topo = std::mem::take(&mut sc.topology_changed);
+        if sc.mesh.triangles.len() > BIG_MESH && !topo {
+            let moved = std::mem::take(&mut sc.moved);
+            self.sculpt_rt.pending.borrow_mut().extend(moved);
+            self.sculpt_rt.unpushed = true;
+            self.dirty = true;
+            return;
+        }
+        sc.moved.clear();
+        self.sculpt_rt.pending.borrow_mut().clear();
+        self.sculpt_push_now(false);
+    }
+
+    /// Hand the sculpted mesh to the scene. `in_place`: the display already shows it.
+    fn sculpt_push_now(&mut self, in_place: bool) {
         let (Some(id), Some(sc)) = (self.sculpt_rt.obj, &self.sculpt_rt.sc) else { return };
-        let h = MeshHandle::new(sc.mesh.clone());
+        self.sculpt_rt.unpushed = false;
+        let h = match self.scene.get(id) {
+            Some(o) if in_place => {
+                MeshHandle::moved_from(&o.mesh, sc.mesh.clone(), sc.bvh.clone(), self.sculpt_rt.live_tag, self.sculpt_rt.live_seq.get())
+            }
+            _ => MeshHandle::with_bvh(sc.mesh.clone(), sc.bvh.clone()),
+        };
         self.sculpt_rt.mesh_id = h.id;
         if let Some(o) = self.scene.get_mut(id) {
             o.mesh = h;
@@ -140,6 +225,12 @@ impl App {
         self.checkpoint("Sculpt");
         let rt = &mut self.sculpt_rt;
         rt.stroke = true;
+        if !rt.unpushed {
+            // a new stroke from what the scene (and the display) shows
+            rt.live_tag = MeshHandle::next_tag();
+            rt.live_seq.set(0);
+            rt.pending.borrow_mut().clear();
+        }
         rt.invert = invert;
         rt.smooth_override = smooth;
         rt.last = Some(h.point);
@@ -221,6 +312,10 @@ impl App {
     }
 
     pub fn sculpt_end(&mut self) {
+        if self.sculpt_rt.unpushed {
+            self.sculpt_push_now(true);
+        }
+        self.edit_gen += 1;
         let rt = &mut self.sculpt_rt;
         rt.stroke = false;
         rt.grab = None;

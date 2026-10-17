@@ -139,16 +139,26 @@ pub fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 /// Triangles within `radius` of `center` whose face points the same way as `normal`
 /// (so the brush doesn't paint through a thin wall).
 pub fn brush(m: &Mesh, center: Vec3, radius: f32, normal: Vec3) -> Vec<usize> {
-    brush_stroke(m, center, center, radius, normal)
+    brush_stroke(m, None, center, center, radius, normal)
 }
 
 /// Like [`brush`], along the segment `from`–`to` (one step of a stroke).
-pub fn brush_stroke(m: &Mesh, from: Vec3, to: Vec3, radius: f32, normal: Vec3) -> Vec<usize> {
+/// `bvh` (built for `m`) makes it only look at nearby triangles.
+pub fn brush_stroke(m: &Mesh, bvh: Option<&crate::bvh::Bvh>, from: Vec3, to: Vec3, radius: f32, normal: Vec3) -> Vec<usize> {
     let r2 = radius * radius;
     let (blo, bhi) = (from.min(to) - Vec3::splat(radius), from.max(to) + Vec3::splat(radius));
     let steps = ((from.distance(to) / (radius * 0.5).max(1e-6)).ceil() as usize).clamp(1, 64);
     let mut out = vec![];
-    for i in 0..m.triangles.len() {
+    let candidates: Vec<usize> = match bvh.filter(|b| b.len() == m.triangles.len()) {
+        Some(b) => {
+            let mut c = vec![];
+            b.tris_in_box(blo, bhi, &mut c);
+            c.sort_unstable();
+            c
+        }
+        None => (0..m.triangles.len()).collect(),
+    };
+    for i in candidates {
         let [a, b, c] = m.tri(i);
         if a.min(b).min(c).cmpgt(bhi).any() || a.max(b).max(c).cmplt(blo).any() {
             continue;

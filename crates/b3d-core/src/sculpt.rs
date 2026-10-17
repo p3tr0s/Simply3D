@@ -1,9 +1,11 @@
 //! Sculpting: brushes that push, pull, smooth and flatten the surface, with detail added
 //! under the brush on the fly so even low-poly models can be sculpted.
 
+use crate::bvh::Bvh;
 use crate::mesh::Mesh;
 use crate::paint::refine_where;
 use glam::Vec3;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Brush {
@@ -24,6 +26,15 @@ pub struct Sculpt {
     pub mesh: Mesh,
     nbrs: Vec<Vec<u32>>,
     vfaces: Vec<Vec<u32>>,
+    /// Picking index, kept in step with `mesh` (shared with the scene's copy).
+    pub bvh: Arc<Bvh>,
+    /// Scratch: last query each vertex was seen in.
+    stamp: Vec<u32>,
+    query: u32,
+    /// Vertices moved since this was last emptied (for updating the display in place).
+    pub moved: Vec<u32>,
+    /// Set when detail was added (the triangles changed, not just the positions).
+    pub topology_changed: bool,
 }
 
 /// Smooth falloff: 1 at the centre, 0 at the rim.
@@ -34,12 +45,27 @@ fn falloff(d: f32, r: f32) -> f32 {
 
 impl Sculpt {
     pub fn new(mesh: Mesh) -> Sculpt {
-        let mut s = Sculpt { mesh, nbrs: vec![], vfaces: vec![] };
-        s.rebuild();
+        Self::with_bvh(mesh, None)
+    }
+
+    /// Start from a mesh whose picking index is already built.
+    pub fn with_bvh(mesh: Mesh, bvh: Option<Arc<Bvh>>) -> Sculpt {
+        let bvh = bvh.filter(|b| b.len() == mesh.triangles.len()).unwrap_or_else(|| Arc::new(Bvh::build(&mesh)));
+        let mut s = Sculpt { mesh, nbrs: vec![], vfaces: vec![], bvh, stamp: vec![], query: 0, moved: vec![], topology_changed: false };
+        s.rebuild_adjacency();
         s
     }
 
     fn rebuild(&mut self) {
+        self.topology_changed = true;
+        self.moved.clear();
+        self.bvh = Arc::new(Bvh::build(&self.mesh));
+        self.rebuild_adjacency();
+    }
+
+    fn rebuild_adjacency(&mut self) {
+        self.stamp = vec![0; self.mesh.positions.len()];
+        self.query = 0;
         let n = self.mesh.positions.len();
         self.nbrs = vec![vec![]; n];
         self.vfaces = vec![vec![]; n];
@@ -66,17 +92,42 @@ impl Sculpt {
         n.normalize_or_zero()
     }
 
-    fn within(&self, c: Vec3, r: f32) -> Vec<(usize, f32)> {
+    fn within(&mut self, c: Vec3, r: f32) -> Vec<(usize, f32)> {
         let r2 = r * r;
-        self.mesh
-            .positions
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                let d2 = p.distance_squared(c);
-                (d2 < r2).then(|| (i, falloff(d2.sqrt(), r)))
-            })
-            .collect()
+        let mut tris = vec![];
+        self.bvh.tris_near(c, r, &mut tris);
+        self.query = self.query.wrapping_add(1);
+        if self.query == 0 {
+            self.stamp.iter_mut().for_each(|s| *s = 0);
+            self.query = 1;
+        }
+        let mut out = vec![];
+        for t in tris {
+            for &v in &self.mesh.triangles[t] {
+                let v = v as usize;
+                if self.stamp[v] == self.query {
+                    continue;
+                }
+                self.stamp[v] = self.query;
+                let d2 = self.mesh.positions[v].distance_squared(c);
+                if d2 < r2 {
+                    out.push((v, falloff(d2.sqrt(), r)));
+                }
+            }
+        }
+        out
+    }
+
+    /// Bring the picking index up to date after these vertices moved.
+    fn refit(&mut self, moved: impl Iterator<Item = usize>) {
+        let mut tris: Vec<usize> = vec![];
+        for v in moved {
+            self.moved.push(v as u32);
+            tris.extend(self.vfaces[v].iter().map(|&f| f as usize));
+        }
+        tris.sort_unstable();
+        tris.dedup();
+        Arc::make_mut(&mut self.bvh).refit(&self.mesh, &tris);
     }
 
     /// Split triangles near `c` that are too big for a brush of radius `r`. Returns true
@@ -84,20 +135,18 @@ impl Sculpt {
     pub fn ensure_detail(&mut self, c: Vec3, r: f32, budget: usize) -> bool {
         let max_edge = r * 0.3;
         let reach = r * 1.5;
+        let mut near_tris = vec![];
+        self.bvh.tris_near(c, reach, &mut near_tris);
         let mut any = false;
-        let sel: Vec<bool> = (0..self.mesh.triangles.len())
-            .map(|i| {
-                let [a, b, cc] = self.mesh.tri(i);
-                let (lo, hi) = (a.min(b).min(cc) - Vec3::splat(reach), a.max(b).max(cc) + Vec3::splat(reach));
-                if c.cmplt(lo).any() || c.cmpgt(hi).any() {
-                    return false;
-                }
-                let near = crate::paint::closest_on_triangle(c, a, b, cc).distance(c) < reach;
-                let big = near && (a.distance(b) > max_edge || b.distance(cc) > max_edge || cc.distance(a) > max_edge);
-                any |= big;
-                near
-            })
-            .collect();
+        let mut sel = vec![false; self.mesh.triangles.len()];
+        for i in near_tris {
+            let [a, b, cc] = self.mesh.tri(i);
+            let near = crate::paint::closest_on_triangle(c, a, b, cc).distance(c) < reach;
+            if near {
+                sel[i] = true;
+                any |= a.distance(b) > max_edge || b.distance(cc) > max_edge || cc.distance(a) > max_edge;
+            }
+        }
         if !any || self.mesh.triangles.len() >= budget {
             return false;
         }
@@ -126,7 +175,9 @@ impl Sculpt {
         }
         let an = an.normalize_or(n);
         let centre = centre / wsum.max(1e-9);
-        let old = self.mesh.positions.clone();
+        // work out every new position from the current ones, then apply them
+        let old = &self.mesh.positions;
+        let mut moved: Vec<(usize, Vec3)> = Vec::with_capacity(hits.len());
         for &(v, w) in &hits {
             let p = old[v];
             let np = match brush {
@@ -147,12 +198,16 @@ impl Sculpt {
                 }
                 Brush::Grab => p,
             };
+            moved.push((v, np));
+        }
+        for &(v, np) in &moved {
             self.mesh.positions[v] = np;
         }
+        self.refit(hits.iter().map(|h| h.0));
     }
 
     /// Start a grab: the vertices within `r` of `c` and how much each follows.
-    pub fn grab_begin(&self, c: Vec3, r: f32) -> (Vec<(usize, f32)>, Vec<Vec3>) {
+    pub fn grab_begin(&mut self, c: Vec3, r: f32) -> (Vec<(usize, f32)>, Vec<Vec3>) {
         let hits = self.within(c, r);
         let base = hits.iter().map(|&(v, _)| self.mesh.positions[v]).collect();
         (hits, base)
@@ -165,6 +220,8 @@ impl Sculpt {
                 self.mesh.positions[v] = *b + delta * w;
             }
         }
+        let n = self.vfaces.len();
+        self.refit(hits.iter().map(|h| h.0).filter(move |&v| v < n));
     }
 }
 
@@ -197,5 +254,10 @@ mod tests {
         s.grab_move(&hits, &base, Vec3::Z * 3.0);
         assert!(analyze(&s.mesh).is_watertight());
         assert!(s.mesh.bounds().max.z > 12.0);
+        // the picking index followed every change
+        let o = Vec3::new(0.3, 0.2, 100.0);
+        let a = s.mesh.ray_cast(o, -Vec3::Z).unwrap();
+        let b = s.bvh.ray_cast_where(&s.mesh, o, -Vec3::Z, |_| true).unwrap();
+        assert!((a.0 - b.0).abs() < 1e-4);
     }
 }

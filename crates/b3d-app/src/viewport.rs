@@ -120,7 +120,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     let moved = pointer != app.last_pointer;
     app.last_pointer = pointer;
     let total_tris: usize = app.scene.objects.iter().map(|o| o.mesh.mesh.triangles.len()).sum();
-    if moved && !response.dragged() && total_tris < 1_500_000 {
+    if moved && !response.dragged() {
         app.hovered = ray.and_then(|(o, d)| pick(app, o, d, false)).map(|h| h.id);
     }
     if pointer.is_none() {
@@ -211,11 +211,19 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     // ---------- sculpt: what's under the brush ----------
     if app.tool == Tool::Sculpt {
         if moved || app.sculpt_rt.hover.is_none() {
-            app.sculpt_rt.hover = ray.and_then(|(o, d)| pick(app, o, d, false)).map(|h| crate::paint_tool::PaintHover {
-                id: h.id,
-                point: h.point,
-                normal: h.normal,
-                tri: h.tri,
+            // the object being sculpted is picked on its live copy (the scene may still
+            // hold the mesh from before the current stroke)
+            let sec = app.section;
+            app.sculpt_rt.hover = ray.and_then(|(o, d)| {
+                let target = app.sculpt_target_id();
+                let other = pick(app, o, d, false)
+                    .filter(|h| Some(h.id) != target)
+                    .map(|h| (h.distance, crate::paint_tool::PaintHover { id: h.id, point: h.point, normal: h.normal, tri: h.tri }));
+                let live = app.sculpt_hit(o, d, |p| sec.keeps(p));
+                match (other, live) {
+                    (Some(a), Some(b)) => Some(if a.0 < b.0 { a.1 } else { b.1 }),
+                    (a, b) => a.or(b).map(|x| x.1),
+                }
             });
         }
         if pointer.is_none() {
@@ -270,8 +278,11 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
             DragMode::Orbit => app.settings.camera.orbit(Vec2::new(d.x, d.y)),
             DragMode::Pan => app.settings.camera.pan(Vec2::new(d.x, d.y), rect.height()),
             DragMode::Move { .. } => {
-                if let Some(p) = pointer.or(ui.input(|i| i.pointer.latest_pos())) {
-                    update_move(app, &view, p, shift, ctrl);
+                // once a distance is typed, the mouse no longer moves the objects
+                if app.move_typed.is_empty() {
+                    if let Some(p) = pointer.or(ui.input(|i| i.pointer.latest_pos())) {
+                        update_move(app, &view, p, shift, ctrl);
+                    }
                 }
             }
             DragMode::Paint => {
@@ -926,7 +937,9 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
     if app.tool == Tool::Measure {
         app.measure_overlay(&mut tris, &mut overlay);
     }
-    ViewportFrame { camera, items, ghosts, tris, lines, overlay }
+    let style = crate::render::MeshStyle { smooth: app.settings.smooth_shading, wireframe: app.settings.wireframe };
+    let live = app.sculpt_live().into_iter().collect();
+    ViewportFrame { camera, items, ghosts, tris, lines, overlay, style, live }
 }
 
 fn push_box(out: &mut Vec<LineVertex>, b: &Aabb, c: [f32; 4]) {
@@ -1278,13 +1291,16 @@ fn update_move(app: &mut App, view: &View, p: Pos2, shift: bool, ctrl: bool) {
             ob.transform.translation = t0.translation + delta;
         }
     }
+    if delta.x.abs() + delta.y.abs() > 1e-4 {
+        app.move_dir = Vec3::new(delta.x, delta.y, 0.0);
+    }
     let dec = app.settings.decimals;
     app.drag_label = Some(if vertical {
         format!("ΔZ {:+.*} mm", dec, delta.z)
     } else if delta.z.abs() > 1e-4 {
         format!("ΔX {:+.*}  ΔY {:+.*}  on top (Z {:.*})", dec, delta.x, dec, delta.y, dec, bounds.min.z + delta.z)
     } else {
-        format!("ΔX {:+.*}  ΔY {:+.*} mm", dec, delta.x, dec, delta.y)
+        format!("ΔX {:+.*}  ΔY {:+.*} mm  ·  type a distance for an exact move", dec, delta.x, dec, delta.y)
     });
 }
 

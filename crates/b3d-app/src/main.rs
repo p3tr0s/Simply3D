@@ -21,6 +21,7 @@ mod sculpt_tool;
 mod snap;
 mod text_tool;
 mod texture_tool;
+mod typed_move;
 mod ui;
 mod viewport;
 

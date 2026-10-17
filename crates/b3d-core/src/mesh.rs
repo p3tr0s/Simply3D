@@ -230,29 +230,12 @@ impl Mesh {
             return None;
         }
         let mut best: Option<(f32, usize)> = None;
-        for (i, _) in self.triangles.iter().enumerate() {
+        for i in 0..self.triangles.len() {
             let [a, b, c] = self.tri(i);
-            let e1 = b - a;
-            let e2 = c - a;
-            let p = dir.cross(e2);
-            let det = e1.dot(p);
-            if det.abs() < 1e-12 {
-                continue;
-            }
-            let inv = 1.0 / det;
-            let s = origin - a;
-            let u = s.dot(p) * inv;
-            if !(0.0..=1.0).contains(&u) {
-                continue;
-            }
-            let q = s.cross(e1);
-            let v = dir.dot(q) * inv;
-            if v < 0.0 || u + v > 1.0 {
-                continue;
-            }
-            let t = e2.dot(q) * inv;
-            if t > 1e-6 && best.map_or(true, |(bt, _)| t < bt) && accept(origin + dir * t) {
-                best = Some((t, i));
+            if let Some(t) = crate::bvh::ray_triangle(origin, dir, a, b, c) {
+                if best.is_none_or(|(bt, _)| t < bt) && accept(origin + dir * t) {
+                    best = Some((t, i));
+                }
             }
         }
         best

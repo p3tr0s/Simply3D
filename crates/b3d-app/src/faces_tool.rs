@@ -48,7 +48,10 @@ pub struct FaceRuntime {
     last: Option<Vec3>,
     /// Display copy of the object with the selection painted in.
     display: Option<MeshHandle>,
+    /// Redraw the whole highlight.
     dirty: bool,
+    /// Redraw just these triangles (brush strokes).
+    touched: Vec<usize>,
 }
 
 impl FaceRuntime {
@@ -105,8 +108,20 @@ impl App {
                 None => self.face_rt = FaceRuntime::default(),
             }
         }
+        if !self.face_rt.dirty && !self.face_rt.touched.is_empty() {
+            let touched = std::mem::take(&mut self.face_rt.touched);
+            if let (Some(o), Some(disp)) = (self.face_rt.obj.and_then(|id| self.scene.get(id)), self.face_rt.display.as_mut()) {
+                let base = o.mesh.mesh.clone();
+                let sel = &self.face_rt.sel;
+                let hi = paint::pack(HIGHLIGHT);
+                disp.repaint_tris(&touched, |i| if sel.get(i).copied().unwrap_or(false) { hi } else { base.paint_of(i) });
+            } else {
+                self.face_rt.dirty = true;
+            }
+        }
         if self.face_rt.dirty {
             self.face_rt.dirty = false;
+            self.face_rt.touched.clear();
             let Some(o) = self.face_rt.obj.and_then(|id| self.scene.get(id)) else { return };
             let base = o.mesh.mesh.clone();
             let sel = self.face_rt.sel.clone();
@@ -167,21 +182,23 @@ impl App {
                 let r = s.radius / ((sc.x + sc.y + sc.z) / 3.0).max(1e-6);
                 let n = inv.transpose().transform_vector3(h.normal).normalize_or_zero();
                 let from = self.face_rt.last.filter(|p| p.distance(h.point) < s.radius * 8.0).unwrap_or(h.point);
-                let mut t = paint::brush_stroke(m, inv.transform_point3(from), inv.transform_point3(h.point), r, n);
+                let mut t =
+                    paint::brush_stroke(m, o.mesh.bvh().as_deref(), inv.transform_point3(from), inv.transform_point3(h.point), r, n);
                 t.push(h.tri);
                 t
             }
         };
         self.face_rt.last = Some(h.point);
         let sel = &mut self.face_rt.sel;
-        let mut changed = false;
+        let mut changed = vec![];
         for i in tris {
-            if sel[i] == remove {
+            if sel.get(i) == Some(&remove) {
                 sel[i] = !remove;
-                changed = true;
+                changed.push(i);
             }
         }
-        self.face_rt.dirty |= changed;
+        // only these triangles need redrawing
+        self.face_rt.touched.extend(changed);
     }
 
     /// (area mode — None = whole object, brush radius, fill angle) for the active tool.

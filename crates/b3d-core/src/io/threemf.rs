@@ -526,10 +526,40 @@ pub fn write_with(objects: &[IoObject], opts: super::SaveOptions) -> Result<Vec<
     let opt = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     zw.start_file("[Content_Types].xml", opt)?;
     zw.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/></Types>"#)?;
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="config" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/></Types>"#)?;
     zw.start_file("_rels/.rels", opt)?;
-    zw.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>"#)?;
+    let thumb_rels = if opts.thumbnail {
+        // the standard package thumbnail (Windows, PrusaSlicer), and Bambu Studio's covers
+        concat!(
+            r#"<Relationship Target="/Metadata/thumbnail.png" Id="rel1" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail"/>"#,
+            r#"<Relationship Target="/Metadata/plate_1.png" Id="rel2" Type="http://schemas.bambulab.com/package/2021/cover-thumbnail-middle"/>"#,
+            r#"<Relationship Target="/Metadata/plate_1_small.png" Id="rel3" Type="http://schemas.bambulab.com/package/2021/cover-thumbnail-small"/>"#
+        )
+    } else {
+        ""
+    };
+    zw.write_all(
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>{thumb_rels}</Relationships>"#
+        )
+        .as_bytes(),
+    )?;
+    if opts.thumbnail {
+        let img = crate::thumbnail::render(objects, 512);
+        let enc = |img: &image::RgbaImage| {
+            let mut out = Cursor::new(Vec::new());
+            let _ = img.write_to(&mut out, image::ImageFormat::Png);
+            out.into_inner()
+        };
+        let big = enc(&img);
+        let small = enc(&image::imageops::resize(&img, 128, 128, image::imageops::FilterType::Triangle));
+        let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, bytes) in [("Metadata/thumbnail.png", &big), ("Metadata/plate_1.png", &big), ("Metadata/plate_1_small.png", &small)] {
+            zw.start_file(name, stored)?;
+            zw.write_all(bytes)?;
+        }
+    }
     zw.start_file("3D/3dmodel.model", opt)?;
     zw.write_all(main.as_bytes())?;
     if !config.is_empty() {
@@ -815,7 +845,7 @@ mod tests {
             },
         ];
         // negative parts: the block becomes block + negative hole; the far block is untouched
-        let bytes = write_with(&objs, crate::io::SaveOptions { cut_holes: false }).unwrap();
+        let bytes = write_with(&objs, crate::io::SaveOptions { cut_holes: false, ..Default::default() }).unwrap();
         let cfg = read_model(&bytes, "Metadata/model_settings.config").unwrap();
         assert_eq!(cfg.matches("negative_part").count(), 1, "{cfg}");
         assert_eq!(cfg.matches("normal_part").count(), 1, "{cfg}");
@@ -827,7 +857,11 @@ mod tests {
         assert!(back[1].hole && !back[0].hole && back[1].group.is_none());
 
         // cut: the slicer model has the hole cut out, no negative parts
-        let bytes = write_with(&objs, crate::io::SaveOptions { cut_holes: true }).unwrap();
+        let bytes = write_with(&objs, crate::io::SaveOptions { cut_holes: true, thumbnail: true }).unwrap();
+        {
+            let mut z = zip::ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+            assert!(z.by_name("Metadata/thumbnail.png").unwrap().size() > 100);
+        }
         assert!(read_model(&bytes, "Metadata/model_settings.config").is_none());
         let main = read_model(&bytes, "3D/3dmodel.model").unwrap();
         assert_eq!(main.matches("<item ").count(), 2);

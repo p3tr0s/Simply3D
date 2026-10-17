@@ -54,6 +54,9 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if app.palette.is_some() {
         return; // the palette owns the keyboard
     }
+    if app.typed_move_input(ctx) {
+        return; // typing a distance while dragging
+    }
     if sc(Modifiers::COMMAND, Key::O) {
         app.open_dialog(ctx);
     }
@@ -94,6 +97,13 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if sc(Modifiers::SHIFT, Key::H) {
         app.show_all();
     }
+    if sc(Modifiers::SHIFT, Key::S) {
+        app.settings.smooth_shading = !app.settings.smooth_shading;
+    }
+    if sc(Modifiers::SHIFT, Key::W) {
+        app.settings.wireframe = !app.settings.wireframe;
+    }
+    app.arrow_nudge(ctx);
     // single-key shortcuts
     let key = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
     if key(Key::Delete) || key(Key::Backspace) {
@@ -381,6 +391,9 @@ fn menu_bar(app: &mut App, ui: &mut egui::Ui) {
                 }
                 ui.separator();
                 ui.checkbox(&mut app.settings.camera.ortho, "Orthographic (O)");
+                ui.checkbox(&mut app.settings.smooth_shading, "Smooth shading (Shift+S)")
+                    .on_hover_text("Curved and sculpted surfaces look smooth; sharp edges stay sharp");
+                ui.checkbox(&mut app.settings.wireframe, "Wireframe (Shift+W)").on_hover_text("Show the triangles");
                 ui.checkbox(&mut app.settings.show_plate, "Build plate");
                 ui.checkbox(&mut app.settings.show_dimensions, "Dimensions");
                 ui.checkbox(&mut app.settings.show_problems, "Highlight mesh problems");
@@ -2079,6 +2092,8 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                 for (k, d) in [
                     ("Left-drag on an object", "Move it (rests on objects under the cursor)"),
                     ("  + Alt / + Shift (while moving)", "Move vertically / lock to X or Y"),
+                    ("  + type 25 Enter (while moving)", "Move exactly 25 mm that way (10,5 = X and Y; Esc cancels)"),
+                    ("Arrow keys / Page Up, Down", "Nudge the selection one grid step (Shift ×10, Alt ×0.1)"),
                     ("Left-drag on empty space", "Orbit (or box select in CAD mouse mode)"),
                     ("Shift + left-drag", "Box select, adds to selection (drag right: inside, drag left: touching)"),
                     ("Alt + left-drag", "Always orbit"),
@@ -2100,6 +2115,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("F / Home", "Frame selection / all"),
                     ("1 / 3 / 7 / 0", "Front / right / top / iso view"),
                     ("O", "Toggle orthographic"),
+                    ("Shift+S / Shift+W", "Smooth shading / wireframe"),
                     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                     ("Ctrl+D, Del", "Duplicate, delete"),
                     ("Ctrl+K / F3", "Command palette: search every action"),
