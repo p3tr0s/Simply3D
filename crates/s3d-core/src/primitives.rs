@@ -77,12 +77,16 @@ pub enum Primitive {
     Spring(crate::parts::Spring),
     Hinge(crate::parts::Hinge),
     SnapClip(crate::parts::SnapClip),
+    Enclosure(crate::organizers::Enclosure),
+    GridBin(crate::organizers::GridBin),
+    GridPlate(crate::organizers::GridPlate),
 }
 
 impl Primitive {
     pub const ALL_NAMES: [&'static str; 8] = ["Box", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
     pub const FASTENER_NAMES: [&'static str; 4] = ["Bolt", "Nut", "Threaded rod", "Threaded hole"];
     pub const PART_NAMES: [&'static str; 4] = ["Gear", "Spring", "Hinge", "Snap-fit clip"];
+    pub const STORAGE_NAMES: [&'static str; 3] = ["Box with lid", "Gridfinity bin", "Gridfinity baseplate"];
 
     pub fn default_for(name: &str) -> Primitive {
         match name {
@@ -107,6 +111,9 @@ impl Primitive {
             "Spring" => Primitive::Spring(Default::default()),
             "Hinge" => Primitive::Hinge(Default::default()),
             "Snap-fit clip" => Primitive::SnapClip(Default::default()),
+            "Box with lid" => Primitive::Enclosure(Default::default()),
+            "Gridfinity bin" => Primitive::GridBin(Default::default()),
+            "Gridfinity baseplate" => Primitive::GridPlate(Default::default()),
             _ => Primitive::Box { size: Vec3::splat(20.0), edge: Edge::default() },
         }
     }
@@ -131,6 +138,9 @@ impl Primitive {
             Primitive::Spring(_) => "Spring",
             Primitive::Hinge(_) => "Hinge",
             Primitive::SnapClip(_) => "Snap-fit clip",
+            Primitive::Enclosure(_) => "Box with lid",
+            Primitive::GridBin(_) => "Gridfinity bin",
+            Primitive::GridPlate(_) => "Gridfinity baseplate",
         }
     }
 
@@ -158,8 +168,17 @@ impl Primitive {
                 m.translate(-c);
                 m
             }
-            Primitive::Gear(_) | Primitive::Spring(_) | Primitive::Hinge(_) | Primitive::SnapClip(_) => {
+            Primitive::Gear(_)
+            | Primitive::Spring(_)
+            | Primitive::Hinge(_)
+            | Primitive::SnapClip(_)
+            | Primitive::Enclosure(_)
+            | Primitive::GridBin(_)
+            | Primitive::GridPlate(_) => {
                 let mut m = match *self {
+                    Primitive::Enclosure(e) => crate::organizers::enclosure_mesh(&e).unwrap_or_default(),
+                    Primitive::GridBin(b) => crate::organizers::gridfinity_bin(&b).unwrap_or_default(),
+                    Primitive::GridPlate(p) => crate::organizers::gridfinity_baseplate(&p).unwrap_or_default(),
                     Primitive::Gear(g) => crate::parts::gear_mesh(&g),
                     Primitive::Spring(s) => crate::parts::spring_mesh(&s),
                     Primitive::Hinge(h) => crate::parts::hinge_mesh(&h).unwrap_or_default(),

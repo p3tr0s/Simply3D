@@ -232,6 +232,10 @@ pub fn all() -> Vec<Command> {
     }
     v.push(cmd!("Add", "Add bolt (metric thread)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Bolt"))));
     v.push(cmd!("Add", "Add gear (involute spur gear)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Gear"))));
+    v.push(cmd!("Add", "Add box with lid (enclosure, dividers)", "", always, |a, _| a.add_dialog =
+        Some(Primitive::default_for("Box with lid"))));
+    v.push(cmd!("Add", "Add Gridfinity bin", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Gridfinity bin"))));
+    v.push(cmd!("Add", "Add Gridfinity baseplate", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Gridfinity baseplate"))));
     v.push(cmd!("Add", "Add spring (compression)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Spring"))));
     v.push(cmd!("Add", "Add hinge (print-in-place)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Hinge"))));
     v.push(cmd!("Add", "Add snap-fit clip", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Snap-fit clip"))));

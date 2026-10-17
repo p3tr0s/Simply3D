@@ -1044,6 +1044,9 @@ impl App {
         let label = match p {
             Primitive::Fastener(f) => f.label(),
             Primitive::Gear(g) => format!("Gear {}T m{}", g.teeth, g.module),
+            Primitive::Enclosure(e) => format!("Box {:.0}×{:.0}×{:.0}", e.size.x, e.size.y, e.size.z),
+            Primitive::GridBin(b) => format!("Gridfinity bin {}×{}×{}", b.units_x, b.units_y, b.height_units),
+            Primitive::GridPlate(p) => format!("Gridfinity baseplate {}×{}", p.units_x, p.units_y),
             _ => p.name().to_string(),
         };
         let hole = matches!(p, Primitive::Fastener(f) if f.kind == s3d_core::threads::FastenerKind::ThreadedHole);

@@ -268,6 +268,16 @@ fn insert_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         let r = big(ui, "cog", "Mechanical", true, false, true).on_hover_text("Gears, springs, hinges, snap-fit clips");
         egui::Popup::menu(&r).show(|ui| add_menu(ui, app, &Primitive::PART_NAMES));
     });
+    group(ui, "Storage", |ui| {
+        if big(ui, "package", "Box & lid", true, false, false)
+            .on_hover_text("A box with a slide, snap or hinged lid, rounded corners and dividers")
+            .clicked()
+        {
+            app.add_dialog = Some(Primitive::default_for("Box with lid"));
+        }
+        let r = big(ui, "boxes", "Gridfinity", true, false, true).on_hover_text("Gridfinity bins and baseplates (42 mm grid)");
+        egui::Popup::menu(&r).show(|ui| add_menu(ui, app, &Primitive::STORAGE_NAMES[1..]));
+    });
     group(ui, "Text & pictures", |ui| {
         if big(ui, "type", "Text", true, app.tool == Tool::Text, false)
             .on_hover_text("3D text, or emboss / engrave it onto a face (T)")

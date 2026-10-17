@@ -1656,6 +1656,90 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                             ui.weak("Tip: duplicate it, make the copy a Hole and scale it up a little to cut the matching slot.");
                             ui.end_row();
                         }
+                        Primitive::Enclosure(e) => {
+                            use s3d_core::organizers::LidKind;
+                            mm(ui, "Width (X)", &mut e.size.x);
+                            mm(ui, "Depth (Y)", &mut e.size.y);
+                            mm(ui, "Height (Z)", &mut e.size.z);
+                            mm(ui, "Wall", &mut e.wall);
+                            mm(ui, "Floor", &mut e.floor);
+                            mm(ui, "Corner radius", &mut e.radius);
+                            ui.label("Lid");
+                            ui.horizontal(|ui| {
+                                for (k, n, tip) in [
+                                    (LidKind::Snap, "Snap", "A lid with a lip that clicks into a groove inside the walls"),
+                                    (LidKind::Slide, "Slide", "A plate that slides in along grooves from the +X end"),
+                                    (LidKind::Hinged, "Hinged", "Pin hinge along the back; the pin is included (or use 1.75 mm filament)"),
+                                    (LidKind::None, "None", "Just the box"),
+                                ] {
+                                    ui.selectable_value(&mut e.lid, k, n).on_hover_text(tip);
+                                }
+                            });
+                            ui.end_row();
+                            if e.lid != LidKind::None {
+                                mm(ui, "Lid thickness", &mut e.lid_thickness);
+                                ui.label("Clearance");
+                                ui.add(num(&mut e.clearance, Kind::Length).speed(0.01).range(0.05..=1.0).suffix(" mm"))
+                                    .on_hover_text("Gap between lid and box: 0.2 mm is snug on most printers");
+                                ui.end_row();
+                            }
+                            ui.label("Dividers");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut e.dividers_x).range(0..=20).prefix("across X: "));
+                                ui.add(egui::DragValue::new(&mut e.dividers_y).range(0..=20).prefix("across Y: "));
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            ui.weak("The lid is laid out next to the box, ready to print. Edit → Separate splits them.");
+                            ui.end_row();
+                        }
+                        Primitive::GridBin(b) => {
+                            ui.label("Size (grid squares)");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut b.units_x).range(1..=8).suffix(" ×"));
+                                ui.add(egui::DragValue::new(&mut b.units_y).range(1..=8));
+                            });
+                            ui.end_row();
+                            ui.label("Height (7 mm units)");
+                            ui.add(egui::DragValue::new(&mut b.height_units).range(2..=20))
+                                .on_hover_text(format!("{} mm, plus the stacking lip", b.height_units * 7));
+                            ui.end_row();
+                            ui.label("Compartments");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut b.compartments_x).range(1..=12).suffix(" ×"));
+                                ui.add(egui::DragValue::new(&mut b.compartments_y).range(1..=12));
+                            });
+                            ui.end_row();
+                            mm(ui, "Wall", &mut b.wall);
+                            ui.label("Options");
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut b.lip, "Stacking lip");
+                                ui.checkbox(&mut b.magnets, "Magnet pockets (6×2 mm)");
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            ui.weak(format!(
+                                "{:.1} × {:.1} mm, fits the standard 42 mm Gridfinity grid",
+                                b.units_x as f32 * 42.0 - 0.5,
+                                b.units_y as f32 * 42.0 - 0.5
+                            ));
+                            ui.end_row();
+                        }
+                        Primitive::GridPlate(p) => {
+                            ui.label("Size (grid squares)");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut p.units_x).range(1..=12).suffix(" ×"));
+                                ui.add(egui::DragValue::new(&mut p.units_y).range(1..=12));
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            ui.weak(format!(
+                                "{:.1} × {:.1} mm (check it fits your plate; big ones can be printed in parts with Cut)",
+                                p.units_x as f32 * 42.0 + 0.5,
+                                p.units_y as f32 * 42.0 + 0.5
+                            ));
+                            ui.end_row();
+                        }
                     }
                 });
                 ui.add_space(6.0);

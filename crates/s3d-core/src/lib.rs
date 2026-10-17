@@ -20,6 +20,7 @@ pub mod io;
 pub mod measure;
 pub mod mesh;
 pub mod normals;
+pub mod organizers;
 pub mod paint;
 pub mod parts;
 pub mod primitives;
