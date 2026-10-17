@@ -159,7 +159,7 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                 let on = app.ribbon == t;
                 let txt = RichText::new(t.name()).size(13.5);
                 let txt = if on { txt.color(ACCENT).strong() } else { txt };
-                let r = ui.add(egui::Label::new(txt).sense(Sense::click()));
+                let r = ui.add(egui::Label::new(txt).selectable(false).sense(Sense::click()));
                 if on {
                     let y = r.rect.bottom() + 3.0;
                     ui.painter().hline(r.rect.x_range(), y, egui::Stroke::new(2.5, ACCENT));

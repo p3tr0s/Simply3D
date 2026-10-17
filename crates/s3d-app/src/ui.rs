@@ -50,6 +50,8 @@ pub fn apply_theme(ctx: &egui::Context, dark: bool) {
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = egui::vec2(6.0, 5.0);
         s.spacing.button_padding = egui::vec2(8.0, 4.0);
+        // app-style text: labels aren't text selections (no I-beam cursor over them)
+        s.interaction.selectable_labels = false;
     });
 }
 
