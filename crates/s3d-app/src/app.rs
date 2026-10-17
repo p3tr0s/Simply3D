@@ -86,7 +86,7 @@ impl Default for Settings {
             show_plate: true,
             show_problems: true,
             show_dimensions: true,
-            dark: false,
+            dark: true,
             camera: OrbitCamera::default(),
             weld_tolerance: 1e-4,
             recent: vec![],
