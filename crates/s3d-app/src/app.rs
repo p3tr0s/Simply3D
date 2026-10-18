@@ -477,6 +477,8 @@ pub struct App {
     pub drag_label: Option<String>,
     /// Distance typed while dragging objects.
     pub move_typed: String,
+    /// The start card was closed with "Empty plate" (shown again on New plate).
+    pub start_closed: bool,
     /// Direction of the current drag (for a typed distance).
     pub move_dir: Vec3,
     pub last_nudge: Option<std::time::Instant>,
@@ -574,6 +576,7 @@ impl App {
             snap_guides: vec![],
             drag_label: None,
             move_typed: String::new(),
+            start_closed: false,
             move_dir: Vec3::X,
             last_nudge: None,
             gizmo_start: vec![],
@@ -1030,6 +1033,7 @@ impl App {
         self.dirty = false;
         crate::autosave::clear();
         self.autosaved_gen = self.edit_gen;
+        self.start_closed = false;
         self.info("New plate");
     }
 

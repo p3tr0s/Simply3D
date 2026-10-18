@@ -732,7 +732,7 @@ pub fn object_box(app: &mut App, ui: &mut Ui, view: Rect) {
 
 /// On an empty plate: what you can do to get started.
 pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
-    if !app.scene.objects.is_empty() || app.placing.is_some() || app.tool != Tool::Select || app.add_dialog.is_some() {
+    if app.start_closed || !app.scene.objects.is_empty() || app.placing.is_some() || app.tool != Tool::Select || app.add_dialog.is_some() {
         return;
     }
     let ctx = ui.ctx().clone();
@@ -779,8 +779,8 @@ pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
                     if tile(ui, "folder-open", "Open a model").clicked() {
                         app.open_dialog(&ctx);
                     }
-                    if tile(ui, "type", "Add text").clicked() {
-                        app.start_text_tool();
+                    if tile(ui, "grid-3x3", "Empty plate").on_hover_text("Start with an empty plate").clicked() {
+                        app.start_closed = true;
                     }
                 });
                 let recent: Vec<_> = app.settings.recent.iter().filter(|p| p.exists()).take(5).cloned().collect();
