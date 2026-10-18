@@ -78,7 +78,7 @@ fn moved(mut m: Mesh, d: Vec3) -> Mesh {
 
 // ---------- boxes ----------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LidKind {
     None,
     /// A plate sliding in grooves near the top of the long walls.
@@ -89,7 +89,7 @@ pub enum LidKind {
     Hinged,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Enclosure {
     /// Outside width, depth and height of the box (without the lid).
     pub size: Vec3,
@@ -272,7 +272,7 @@ pub fn enclosure_mesh(e: &Enclosure) -> crate::Result<Mesh> {
 pub const GRID: f32 = 42.0;
 pub const HEIGHT_UNIT: f32 = 7.0;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GridBin {
     pub units_x: u32,
     pub units_y: u32,
@@ -378,7 +378,7 @@ pub fn gridfinity_bin(b: &GridBin) -> crate::Result<Mesh> {
     Ok(bin)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GridPlate {
     pub units_x: u32,
     pub units_y: u32,

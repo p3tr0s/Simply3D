@@ -71,6 +71,11 @@ pub struct Settings {
     pub sidebar: bool,
     /// The objects list is unfolded.
     pub objects_open: bool,
+    /// Build height of the printer, mm.
+    pub plate_height: f32,
+    /// Colour overhangs, thin walls and islands.
+    pub print_check: bool,
+    pub check: s3d_core::printcheck::CheckOptions,
 }
 
 impl Default for Settings {
@@ -110,6 +115,9 @@ impl Default for Settings {
             wireframe: false,
             sidebar: true,
             objects_open: true,
+            plate_height: 256.0,
+            print_check: false,
+            check: Default::default(),
         }
     }
 }
@@ -361,6 +369,18 @@ impl Default for MeshTools {
 pub struct ArrayParams {
     pub count: [u32; 3],
     pub spacing: Vec3,
+    /// Copies around a centre instead of a grid.
+    pub circular: bool,
+    /// Total number around the circle, the original included.
+    pub circ_count: u32,
+    /// Angle the copies spread over (360 = all the way round, evenly).
+    pub circ_angle: f32,
+    /// Around the plate centre (0, 0) instead of a point beside the selection.
+    pub circ_plate_centre: bool,
+    /// Distance from the selection's centre to the centre of the circle.
+    pub circ_radius: f32,
+    /// Turn each copy to face the centre, like spokes.
+    pub circ_rotate: bool,
 }
 
 pub enum JobOutput {
@@ -429,8 +449,15 @@ pub struct App {
     pub array: ArrayParams,
     pub mesh_tools: MeshTools,
     pub add_dialog: Option<Primitive>,
+    /// Print check results per object (see [`App::check_display`]).
+    pub check_cache: std::collections::HashMap<ObjectId, CheckEntry>,
+    /// Unapplied edits to a generated object's settings (side panel).
+    pub param_edit: Option<(ObjectId, Primitive)>,
     pub show_settings: bool,
     pub show_about: bool,
+    /// The "split to fit the printer" window.
+    pub split_dialog: bool,
+    pub split_opts: s3d_core::split::SplitOptions,
     pub show_shortcuts: bool,
     pub pos_ref: PosRef,
     pub lock_ratio: bool,
@@ -536,10 +563,21 @@ impl App {
             measure: MeasureState { snap_vertices: true, target: 10.0, tube_d: 3.0, ..Default::default() },
             cut: CutState { axis: 2, offset: 0.0, keep: CutKeep::Both, conn: Default::default() },
             mesh_tools: MeshTools::default(),
-            array: ArrayParams { count: [3, 1, 1], spacing: Vec3::new(25.0, 25.0, 25.0) },
+            array: ArrayParams {
+                count: [3, 1, 1],
+                spacing: Vec3::new(25.0, 25.0, 25.0),
+                circular: false,
+                circ_count: 6,
+                circ_angle: 360.0,
+                circ_plate_centre: false,
+                circ_radius: 30.0,
+                circ_rotate: true,
+            },
             add_dialog: None,
             show_settings: false,
             show_about: false,
+            split_dialog: false,
+            split_opts: Default::default(),
             show_shortcuts: false,
             pos_ref: PosRef::BottomCenter,
             lock_ratio: true,
@@ -577,6 +615,8 @@ impl App {
             drag_label: None,
             move_typed: String::new(),
             start_closed: false,
+            param_edit: None,
+            check_cache: Default::default(),
             move_dir: Vec3::X,
             last_nudge: None,
             gizmo_start: vec![],
@@ -901,6 +941,9 @@ impl App {
                 ob.visible = !o.hidden;
                 ob.locked = o.locked;
                 ob.hole = o.hole;
+                if let Some(p) = o.params.as_deref().and_then(Primitive::from_json) {
+                    ob.set_params(p);
+                }
             }
             if let Some(g) = o.group {
                 match groups.iter_mut().find(|(n, _)| *n == g) {
@@ -959,6 +1002,7 @@ impl App {
                         locked: o.locked,
                         keep_position: true,
                         hole: o.hole,
+                        params: o.parametric().and_then(|p| p.to_json()),
                     }
                 } else {
                     // plain export: world meshes; 3MF still keeps groups as multi-part objects
@@ -1045,29 +1089,44 @@ impl App {
             self.error(format!("{}: those settings don't make a valid shape", p.name()));
             return;
         }
-        let label = match p {
-            Primitive::Fastener(f) => f.label(),
-            Primitive::Gear(g) => format!("Gear {}T m{}", g.teeth, g.module),
-            Primitive::Enclosure(e) => format!("Box {:.0}×{:.0}×{:.0}", e.size.x, e.size.y, e.size.z),
-            Primitive::GridBin(b) => format!("Gridfinity bin {}×{}×{}", b.units_x, b.units_y, b.height_units),
-            Primitive::GridPlate(p) => format!("Gridfinity baseplate {}×{}", p.units_x, p.units_y),
-            Primitive::Brick(b) => {
-                let plate = b.height < b.system.dims().brick_units;
-                let kind = match (b.system, b.studs, plate) {
-                    (s3d_core::bricks::BrickSystem::Lego, false, _) => "Tile",
-                    (s3d_core::bricks::BrickSystem::Lego, true, true) => "Plate",
-                    (s3d_core::bricks::BrickSystem::Lego, true, false) => "Brick",
-                    (_, false, _) => "Duplo tile",
-                    (_, true, true) => "Duplo plate",
-                    (_, true, false) => "Duplo brick",
-                };
-                format!("{kind} {}×{}", b.studs_x, b.studs_y)
-            }
-            _ => p.display_name().to_string(),
-        };
+        let label = primitive_label(&p);
         let hole = matches!(p, Primitive::Fastener(f) if f.kind == s3d_core::threads::FastenerKind::ThreadedHole);
         let note = hole.then(|| "Threaded hole added as a hole: it cuts the thread into whatever it overlaps".to_string());
-        self.begin_placing(mesh, label, hole, note);
+        self.begin_placing(mesh, label, hole, note, Some(p));
+    }
+
+    /// Rebuild a generated object from new settings, keeping where it stands.
+    pub fn rebuild_parametric(&mut self, id: ObjectId, p: Primitive) {
+        let mut mesh = p.build();
+        if mesh.is_empty() {
+            self.error(format!("{}: those settings don't make a valid shape", p.name()));
+            return;
+        }
+        let c = mesh.bounds().center();
+        mesh.translate(-c);
+        let Some(o) = self.scene.get(id) else { return };
+        let old = o.world_bounds();
+        let old_label = o.parametric().map(|q| primitive_label(&q));
+        let auto_name = old_label.as_ref().is_some_and(|l| o.name == *l || o.name.starts_with(&format!("{l} (")));
+        self.checkpoint(&format!("Edit {}", p.display_name()));
+        let new_name = auto_name.then(|| self.scene.unique_name(&primitive_label(&p)));
+        let Some(ob) = self.scene.get_mut(id) else { return };
+        ob.mesh = MeshHandle::new(mesh);
+        let nb = ob.world_bounds();
+        // same footprint centre, same bottom
+        ob.transform.translation +=
+            Vec3::new(old.center().x - nb.center().x, old.center().y - nb.center().y, old.min.z - nb.min.z);
+        if let Primitive::Fastener(f) = p {
+            ob.hole = f.kind == s3d_core::threads::FastenerKind::ThreadedHole;
+        }
+        ob.set_params(p);
+        if let Some(n) = new_name {
+            ob.name = n;
+        }
+        self.report_cache = None;
+        self.dirty = true;
+        self.edit_gen += 1;
+        self.info(format!("Updated {}", p.display_name()));
     }
 
     pub fn delete_selected(&mut self) {
@@ -1094,6 +1153,10 @@ impl App {
             t.translation.x += shift;
             let name = self.scene.unique_name(&o.name);
             let nid = self.scene.add_object(name, (*o.mesh.mesh).clone(), t, Some(o.color));
+            if let (Some(p), Some(n)) = (o.parametric(), self.scene.get_mut(nid)) {
+                n.hole = o.hole;
+                n.set_params(p);
+            }
             if let Some(g) = o.group {
                 match groups.iter_mut().find(|x| x.0 == g) {
                     Some(x) => x.1.push(nid),
@@ -1112,6 +1175,29 @@ impl App {
         self.selection = new;
     }
 
+    /// A copy of an object with a new placement (keeps its generator settings).
+    fn copy_object(&mut self, o: &s3d_core::Object, t: Transform) -> ObjectId {
+        let name = self.scene.unique_name(&o.name);
+        let id = self.scene.add_object(name, (*o.mesh.mesh).clone(), t, Some(o.color));
+        if let Some(n) = self.scene.get_mut(id) {
+            n.hole = o.hole;
+            if let Some(p) = o.parametric() {
+                n.set_params(p);
+            }
+        }
+        id
+    }
+
+    /// Where the centre of a circular array is, for the current selection.
+    pub fn circular_centre(&self) -> Vec3 {
+        let b = self.selection_bounds();
+        if self.array.circular && self.array.circ_plate_centre {
+            Vec3::new(0.0, 0.0, b.center().z)
+        } else {
+            b.center() - Vec3::X * self.array.circ_radius
+        }
+    }
+
     pub fn array_selected(&mut self) {
         if self.selection.is_empty() {
             return;
@@ -1119,18 +1205,37 @@ impl App {
         self.checkpoint("Array");
         let p = self.array.clone();
         let mut new = vec![];
-        for id in self.selection.clone() {
-            let Some(o) = self.scene.get(id).cloned() else { continue };
-            for ix in 0..p.count[0].max(1) {
-                for iy in 0..p.count[1].max(1) {
-                    for iz in 0..p.count[2].max(1) {
-                        if ix == 0 && iy == 0 && iz == 0 {
-                            continue;
+        if p.circular {
+            let n = p.circ_count.max(2);
+            let sweep = p.circ_angle.clamp(-360.0, 360.0);
+            // all the way round: evenly spaced; otherwise the last copy lands on the angle
+            let step = if (sweep.abs() - 360.0).abs() < 1e-3 { sweep / n as f32 } else { sweep / (n - 1) as f32 };
+            let c = self.circular_centre();
+            for id in self.selection.clone() {
+                let Some(o) = self.scene.get(id).cloned() else { continue };
+                for k in 1..n {
+                    let r = Quat::from_rotation_z((step * k as f32).to_radians());
+                    let mut t = o.transform;
+                    t.translation = c + r * (t.translation - c);
+                    if p.circ_rotate {
+                        t.rotation = r * t.rotation;
+                    }
+                    new.push(self.copy_object(&o, t));
+                }
+            }
+        } else {
+            for id in self.selection.clone() {
+                let Some(o) = self.scene.get(id).cloned() else { continue };
+                for ix in 0..p.count[0].max(1) {
+                    for iy in 0..p.count[1].max(1) {
+                        for iz in 0..p.count[2].max(1) {
+                            if ix == 0 && iy == 0 && iz == 0 {
+                                continue;
+                            }
+                            let mut t = o.transform;
+                            t.translation += Vec3::new(ix as f32, iy as f32, iz as f32) * p.spacing;
+                            new.push(self.copy_object(&o, t));
                         }
-                        let mut t = o.transform;
-                        t.translation += Vec3::new(ix as f32, iy as f32, iz as f32) * p.spacing;
-                        let name = self.scene.unique_name(&o.name);
-                        new.push(self.scene.add_object(name, (*o.mesh.mesh).clone(), t, Some(o.color)));
                     }
                 }
             }
@@ -1328,6 +1433,66 @@ impl App {
                 add: vec![(base.name, m, base.color)],
             },
             Err(e) => JobOutput::Error(format!("{name} failed: {e}")),
+        });
+    }
+
+    /// The printer's build volume (plate and height).
+    pub fn build_volume(&self) -> Vec3 {
+        Vec3::new(self.settings.plate.x, self.settings.plate.y, self.settings.plate_height)
+    }
+
+    /// Selected solids that don't fit the printer: (id, name, colour, world mesh).
+    pub fn oversize_selected(&self) -> Vec<(ObjectId, String, [u8; 4], s3d_core::Mesh)> {
+        let mut o = self.split_opts;
+        o.volume = self.build_volume();
+        self.selection
+            .iter()
+            .filter_map(|id| self.scene.get(*id))
+            .filter(|x| !x.hole && !s3d_core::split::fits(x.world_bounds().size(), &o))
+            .map(|x| (x.id, x.name.clone(), x.color, x.world_mesh()))
+            .collect()
+    }
+
+    /// Cut the selected models that are too big for the printer into pieces that fit.
+    pub fn split_to_fit_selected(&mut self, ctx: &egui::Context) {
+        let objs = self.oversize_selected();
+        if objs.is_empty() {
+            self.info("The selection already fits the printer");
+            return;
+        }
+        let mut opts = self.split_opts;
+        opts.volume = self.build_volume();
+        self.spawn_job(ctx, "Splitting to fit…", move |p| {
+            let (mut add, mut remove) = (vec![], vec![]);
+            let n = objs.len() as f32;
+            let mut total = 0;
+            let mut short = false;
+            for (i, (id, name, color, mesh)) in objs.into_iter().enumerate() {
+                match s3d_core::split::split_to_fit(&mesh, &opts, &p.range(i as f32 / n, (i + 1) as f32 / n)) {
+                    Ok(r) => {
+                        let pieces = r.pieces.len() - r.dowels;
+                        if opts.connectors.kind != s3d_core::connectors::ConnectorKind::None && pieces > 1 && r.dowels == 0 {
+                            short |= opts.connectors.kind == s3d_core::connectors::ConnectorKind::Dowels;
+                        }
+                        total += pieces;
+                        remove.push(id);
+                        for (k, m) in r.pieces.into_iter().enumerate() {
+                            let label = if k < pieces { format!("{name} piece {}", k + 1) } else { format!("{name} pin {}", k + 1 - pieces) };
+                            add.push((label, m, color));
+                        }
+                    }
+                    Err(s3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
+                    Err(e) => return JobOutput::Error(format!("Splitting {name} failed: {e}")),
+                }
+            }
+            let note = if short { " (some cuts were too small for pins)" } else { "" };
+            let plates = if total > 1 { ". Print them a plate at a time if they don't all fit" } else { "" };
+            JobOutput::Replace {
+                label: "Split to fit".into(),
+                remove,
+                add,
+                message: format!("Split into {total} pieces that each fit the printer{note}{plates}"),
+            }
         });
     }
 
@@ -1581,5 +1746,96 @@ impl eframe::App for App {
         if !self.dirty || self.allow_close {
             crate::autosave::clear();
         }
+    }
+}
+
+/// The default object name for a generated shape.
+pub fn primitive_label(p: &Primitive) -> String {
+    match *p {
+        Primitive::Fastener(f) => f.label(),
+        Primitive::Gear(g) => format!("Gear {}T m{}", g.teeth, g.module),
+        Primitive::Enclosure(e) => format!("Box {:.0}×{:.0}×{:.0}", e.size.x, e.size.y, e.size.z),
+        Primitive::GridBin(b) => format!("Gridfinity bin {}×{}×{}", b.units_x, b.units_y, b.height_units),
+        Primitive::GridPlate(p) => format!("Gridfinity baseplate {}×{}", p.units_x, p.units_y),
+        Primitive::Brick(b) => {
+            let plate = b.height < b.system.dims().brick_units;
+            let kind = match (b.system, b.studs, plate) {
+                (s3d_core::bricks::BrickSystem::Lego, false, _) => "Tile",
+                (s3d_core::bricks::BrickSystem::Lego, true, true) => "Plate",
+                (s3d_core::bricks::BrickSystem::Lego, true, false) => "Brick",
+                (_, false, _) => "Duplo tile",
+                (_, true, true) => "Duplo plate",
+                (_, true, false) => "Duplo brick",
+            };
+            format!("{kind} {}×{}", b.studs_x, b.studs_y)
+        }
+        _ => p.display_name().to_string(),
+    }
+}
+
+/// Print check of one object: what it was computed for, and the coloured copy to draw.
+pub struct CheckEntry {
+    key: CheckKey,
+    pub result: Option<(MeshHandle, s3d_core::printcheck::CheckStats)>,
+    pending: Option<std::sync::mpsc::Receiver<(MeshHandle, s3d_core::printcheck::CheckStats)>>,
+}
+
+type CheckKey = (u64, [i32; 9], u32, u32);
+
+pub const CHECK_COLORS: [(u8, [u8; 3], &str); 3] = [
+    (s3d_core::printcheck::ISLAND, [214, 60, 214], "Islands"),
+    (s3d_core::printcheck::OVERHANG, [235, 90, 45], "Overhangs"),
+    (s3d_core::printcheck::THIN, [240, 200, 40], "Thin walls"),
+];
+
+impl App {
+    /// The print-check colouring of `mesh` placed by `m`: computed in the background, so
+    /// `None` until it's ready.
+    pub fn check_display(&mut self, id: ObjectId, mesh: &MeshHandle, m: &Mat4) -> Option<MeshHandle> {
+        let q = |v: f32| (v * 1000.0).round() as i32;
+        let c = m.to_cols_array();
+        let key: CheckKey = (
+            mesh.id,
+            [q(c[0]), q(c[1]), q(c[2]), q(c[4]), q(c[5]), q(c[6]), q(c[8]), q(c[9]), q(c[10])],
+            self.settings.check.overhang_deg.to_bits(),
+            self.settings.check.min_wall.to_bits(),
+        );
+        let e = self.check_cache.entry(id).or_insert(CheckEntry { key, result: None, pending: None });
+        if e.key != key || (e.result.is_none() && e.pending.is_none()) {
+            e.key = key;
+            e.result = None;
+            let (tx, rx) = std::sync::mpsc::channel();
+            e.pending = Some(rx);
+            let (h, xf, opts) = (mesh.clone(), *m, self.settings.check);
+            std::thread::spawn(move || {
+                let bvh = h.bvh();
+                let (flags, stats) = s3d_core::printcheck::check(&h.mesh, &xf, &opts, bvh.as_deref());
+                let mut painted = (*h.mesh).clone();
+                painted.paint = flags
+                    .iter()
+                    .map(|&f| match CHECK_COLORS.iter().find(|c| f & c.0 != 0) {
+                        Some((_, c, _)) => s3d_core::paint::pack([c[0], c[1], c[2], 255]),
+                        None => 0,
+                    })
+                    .collect();
+                let _ = tx.send((MeshHandle::new(painted), stats));
+            });
+        }
+        if let Some(rx) = &e.pending {
+            match rx.try_recv() {
+                Ok(r) => {
+                    e.result = Some(r);
+                    e.pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => e.pending = None,
+                Err(_) => {}
+            }
+        }
+        e.result.as_ref().map(|r| r.0.clone())
+    }
+
+    /// Whether some print checks are still being computed.
+    pub fn checks_pending(&self) -> bool {
+        self.check_cache.values().any(|e| e.pending.is_some())
     }
 }

@@ -13,17 +13,19 @@ pub struct Placing {
     pub hole: bool,
     /// Shown after placing.
     pub note: Option<String>,
+    /// Generator settings, kept on the object so it can be edited later.
+    pub params: Option<s3d_core::primitives::Primitive>,
 }
 
 impl App {
     /// Start placing a new shape (its mesh centred on its bounding box).
-    pub fn begin_placing(&mut self, mesh: Mesh, name: String, hole: bool, note: Option<String>) {
+    pub fn begin_placing(&mut self, mesh: Mesh, name: String, hole: bool, note: Option<String>, params: Option<s3d_core::primitives::Primitive>) {
         if !self.settings.place_by_click {
             let t = self.placement(None, &mesh);
-            self.add_placed(mesh, name, hole, note, t);
+            self.add_placed(mesh, name, hole, note, t, params);
             return;
         }
-        self.placing = Some(Placing { ghost: MeshHandle::new(mesh), name, hole, note });
+        self.placing = Some(Placing { ghost: MeshHandle::new(mesh), name, hole, note, params });
         self.place_hover = None;
     }
 
@@ -50,13 +52,14 @@ impl App {
         }
     }
 
-    fn add_placed(&mut self, mesh: Mesh, name: String, hole: bool, note: Option<String>, t: Transform) {
+    fn add_placed(&mut self, mesh: Mesh, name: String, hole: bool, note: Option<String>, t: Transform, params: Option<s3d_core::primitives::Primitive>) {
         self.checkpoint(&format!("Add {name}"));
         let name = self.scene.unique_name(&name);
         let id = self.scene.add_object(name, mesh, t, None);
-        if hole {
-            if let Some(o) = self.scene.get_mut(id) {
-                o.hole = true;
+        if let Some(o) = self.scene.get_mut(id) {
+            o.hole = hole;
+            if let Some(p) = params {
+                o.set_params(p);
             }
         }
         self.selection = vec![id];
@@ -70,7 +73,7 @@ impl App {
         let Some(p) = self.placing.take() else { return };
         let mesh = (*p.ghost.mesh).clone();
         let t = self.placement(at, &mesh);
-        self.add_placed(mesh, p.name, p.hole, p.note, t);
+        self.add_placed(mesh, p.name, p.hole, p.note, t, p.params);
     }
 
     pub fn cancel_placing(&mut self) {

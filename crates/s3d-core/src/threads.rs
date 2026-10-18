@@ -50,7 +50,7 @@ pub const SIZES: [MetricSize; 13] = [
     m!("M24", 24.0, 3.0, 36.0, 21.5, 15.0, 36.0, 24.0, 19.0),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FastenerKind {
     Bolt,
     Nut,
@@ -59,7 +59,7 @@ pub enum FastenerKind {
     ThreadedHole,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Head {
     Hex,
     Socket,
@@ -87,7 +87,7 @@ impl Head {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NutShape {
     Hex,
     Square,
@@ -102,7 +102,7 @@ impl NutShape {
 }
 
 /// Thread form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThreadProfile {
     /// 60° V thread (ISO metric, UNC / UNF).
     Metric,
@@ -147,7 +147,7 @@ impl ThreadProfile {
 }
 
 /// The thread itself: any diameter, pitch, form, number of starts and hand.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Thread {
     /// Major (outside) diameter, mm.
     pub diameter: f32,
@@ -240,7 +240,7 @@ pub fn standards() -> impl Iterator<Item = Standard> {
     SIZES.iter().map(|&m| Standard::from(m)).chain(UNC.iter().copied())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Fastener {
     pub kind: FastenerKind,
     pub thread: Thread,

@@ -10,7 +10,7 @@ use crate::mesh::Mesh;
 use crate::primitives::{cuboid, frustum};
 use glam::Vec3;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BrickSystem {
     /// 8 mm pitch, 9.6 mm bricks, 3.2 mm plates.
     Lego,
@@ -69,7 +69,7 @@ impl BrickSystem {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Brick {
     pub system: BrickSystem,
     pub studs_x: u32,

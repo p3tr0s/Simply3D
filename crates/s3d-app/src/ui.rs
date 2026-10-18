@@ -614,6 +614,10 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     ui.separator();
     let tab = app.tab;
     egui::ScrollArea::vertical().id_salt("tab_scroll").auto_shrink([false, false]).show(ui, |ui| {
+        // ----- generator settings: edit a generated shape again -----
+        if tab == PanelTab::Object && n == 1 {
+            shape_settings(app, ui, id);
+        }
         // ----- transform (primary object) -----
         if tab == PanelTab::Object {
             section(ui, "Transform");
@@ -825,28 +829,66 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                 });
                 section(ui, "Array copies");
                 ui.horizontal(|ui| {
-                    for a in 0..3 {
-                        ui.label(RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a]));
-                        ui.add(egui::DragValue::new(&mut app.array.count[a]).range(1..=100).suffix("×"));
-                    }
+                    ui.selectable_value(&mut app.array.circular, false, "Grid");
+                    ui.selectable_value(&mut app.array.circular, true, "Circular").on_hover_text("Copies around a centre: spokes, bolt circles, petals");
                 });
-                ui.horizontal(|ui| {
-                    ui.label("Pitch");
-                    for a in 0..3 {
-                        ui.add(num(&mut app.array.spacing[a], Kind::Length).speed(0.5).suffix(" mm")).on_hover_text(NUM_TIP);
-                    }
-                });
-                ui.horizontal(|ui| {
+                if app.array.circular {
+                    let a = &mut app.array;
+                    egui::Grid::new("circ_array").num_columns(2).show(ui, |ui| {
+                        ui.label("Copies");
+                        ui.add(egui::DragValue::new(&mut a.circ_count).range(2..=360).suffix(" in total"));
+                        ui.end_row();
+                        ui.label("Spread over");
+                        ui.horizontal(|ui| {
+                            ui.add(num(&mut a.circ_angle, Kind::Angle).speed(1.0).range(-360.0..=360.0).suffix("°"));
+                            if ui.small_button("Full circle").clicked() {
+                                a.circ_angle = 360.0;
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Centre");
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut a.circ_plate_centre, false, "Beside it");
+                            ui.selectable_value(&mut a.circ_plate_centre, true, "Plate centre");
+                        });
+                        ui.end_row();
+                        if !a.circ_plate_centre {
+                            ui.label("Radius");
+                            ui.add(num(&mut a.circ_radius, Kind::Length).speed(0.5).range(0.0..=10000.0).suffix(" mm"))
+                                .on_hover_text("The centre is this far to the left (−X) of the selection's centre");
+                            ui.end_row();
+                        }
+                        ui.label("");
+                        ui.checkbox(&mut a.circ_rotate, "Turn copies to face the centre");
+                        ui.end_row();
+                    });
                     if ui.button("Create array").clicked() {
                         app.array_selected();
                     }
-                    if ui.small_button("Fit pitch to size").clicked() {
-                        let s = app.selection_bounds().size();
-                        app.array.spacing = s + Vec3::splat(5.0);
-                    }
-                });
+                } else {
+                    ui.horizontal(|ui| {
+                        for a in 0..3 {
+                            ui.label(RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a]));
+                            ui.add(egui::DragValue::new(&mut app.array.count[a]).range(1..=100).suffix("×"));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Pitch");
+                        for a in 0..3 {
+                            ui.add(num(&mut app.array.spacing[a], Kind::Length).speed(0.5).suffix(" mm")).on_hover_text(NUM_TIP);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Create array").clicked() {
+                            app.array_selected();
+                        }
+                        if ui.small_button("Fit pitch to size").clicked() {
+                            let s = app.selection_bounds().size();
+                            app.array.spacing = s + Vec3::splat(5.0);
+                        }
+                    });
+                }
             });
-
             section(ui, "Combine & split");
             ui.scope(|ui| {
                 ui.weak("Booleans use the first selected object as the base.");
@@ -959,6 +1001,50 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             });
         }
     });
+}
+
+/// Settings of a generated object (gear, bolt, box…), applied by rebuilding it.
+fn shape_settings(app: &mut App, ui: &mut egui::Ui, id: s3d_core::ObjectId) {
+    let Some(o) = app.scene.get(id) else { return };
+    let Some(orig) = o.parametric() else {
+        if app.param_edit.is_some_and(|(i, _)| i == id) {
+            app.param_edit = None;
+        }
+        return;
+    };
+    let painted = o.mesh.mesh.is_painted();
+    let locked = o.locked;
+    let mut work = match app.param_edit {
+        Some((i, w)) if i == id => w,
+        _ => orig,
+    };
+    egui::CollapsingHeader::new(RichText::new(format!("{} settings", orig.display_name())).strong())
+        .id_salt("shape_settings")
+        .default_open(true)
+        .show(ui, |ui| {
+            // long hints wrap instead of widening the panel
+            ui.set_max_width(ui.available_width());
+            ui.add_enabled_ui(!locked, |ui| {
+                primitive_fields(ui, &mut work, "side_params");
+                let changed = work != orig;
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(changed, egui::Button::new(RichText::new("Apply").strong())).on_hover_text("Rebuild with these settings").clicked() {
+                        app.rebuild_parametric(id, work);
+                        work = app.scene.get(id).and_then(|o| o.parametric()).unwrap_or(work);
+                    }
+                    if ui.add_enabled(changed, egui::Button::new("Revert")).clicked() {
+                        work = orig;
+                    }
+                    if changed && painted {
+                        ui.weak("Applying removes the paint");
+                    } else if !changed {
+                        ui.weak("Change a setting, then Apply");
+                    }
+                });
+            });
+        });
+    app.param_edit = Some((id, work));
+    ui.separator();
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
@@ -1501,436 +1587,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 90.0])
             .show(ctx, |ui| {
-                egui::Grid::new("prim").num_columns(2).show(ui, |ui| {
-                    let mm = |ui: &mut egui::Ui, label: &str, v: &mut f32| {
-                        ui.label(label);
-                        ui.add(num(v, Kind::Length).speed(0.2).range(0.01..=10000.0).suffix(" mm")).on_hover_text(NUM_TIP);
-                        ui.end_row();
-                    };
-                    let segs = |ui: &mut egui::Ui, label: &str, v: &mut u32| {
-                        ui.label(label);
-                        ui.add(egui::DragValue::new(v).range(3..=512));
-                        ui.end_row();
-                    };
-                    match &mut p {
-                        Primitive::Box { size, edge } => {
-                            mm(ui, "Width (X)", &mut size.x);
-                            mm(ui, "Depth (Y)", &mut size.y);
-                            mm(ui, "Height (Z)", &mut size.z);
-                            edge_controls(ui, edge);
-                        }
-                        Primitive::Wedge { size } => {
-                            mm(ui, "Width (X)", &mut size.x);
-                            mm(ui, "Depth (Y)", &mut size.y);
-                            mm(ui, "Height (Z)", &mut size.z);
-                        }
-                        Primitive::Cylinder { radius, height, segments, edge } => {
-                            mm(ui, "Radius", radius);
-                            mm(ui, "Height", height);
-                            segs(ui, "Segments", segments);
-                            edge_controls(ui, edge);
-                        }
-                        Primitive::Cone { bottom_radius, top_radius, height, segments } => {
-                            mm(ui, "Bottom radius", bottom_radius);
-                            ui.label("Top radius");
-                            ui.add(num(top_radius, Kind::Length).speed(0.2).range(0.0..=10000.0).suffix(" mm"));
-                            ui.end_row();
-                            mm(ui, "Height", height);
-                            segs(ui, "Segments", segments);
-                        }
-                        Primitive::Sphere { radius, segments, rings } => {
-                            mm(ui, "Radius", radius);
-                            segs(ui, "Segments", segments);
-                            segs(ui, "Rings", rings);
-                        }
-                        Primitive::Torus { major_radius, minor_radius, major_segments, minor_segments } => {
-                            mm(ui, "Ring radius", major_radius);
-                            mm(ui, "Tube radius", minor_radius);
-                            segs(ui, "Ring segments", major_segments);
-                            segs(ui, "Tube segments", minor_segments);
-                        }
-                        Primitive::Tube { outer_radius, inner_radius, height, segments } => {
-                            mm(ui, "Outer radius", outer_radius);
-                            mm(ui, "Inner radius", inner_radius);
-                            mm(ui, "Height", height);
-                            segs(ui, "Segments", segments);
-                        }
-                        Primitive::Pyramid { base, height } => {
-                            mm(ui, "Base", base);
-                            mm(ui, "Height", height);
-                        }
-                        Primitive::Fastener(f) => {
-                            use s3d_core::threads::{standards, FastenerKind, Head, NutShape, ThreadProfile, SIZES};
-                            ui.label("Type");
-                            ui.horizontal(|ui| {
-                                ui.selectable_value(&mut f.kind, FastenerKind::Bolt, "Bolt");
-                                ui.selectable_value(&mut f.kind, FastenerKind::Nut, "Nut");
-                                ui.selectable_value(&mut f.kind, FastenerKind::Rod, "Rod");
-                                ui.selectable_value(&mut f.kind, FastenerKind::ThreadedHole, "Hole").on_hover_text(
-                                    "A threaded hole: added as a hole object that cuts the thread into whatever it overlaps",
-                                );
-                            });
-                            ui.end_row();
-                            ui.label("Size");
-                            let current = f.standard_index();
-                            egui::ComboBox::from_id_salt("thread_size")
-                                .selected_text(if current.is_some() { f.thread_name() } else { "Custom".to_string() })
-                                .height(420.0)
-                                .show_ui(ui, |ui| {
-                                    ui.label(RichText::new("Metric coarse").weak().small());
-                                    for (i, s) in standards().enumerate() {
-                                        if i == SIZES.len() {
-                                            ui.label(RichText::new("Inch (UNC)").weak().small());
-                                        }
-                                        let pitch = format!("{:.3}", s.pitch);
-                                        let text = format!("{}  (pitch {} mm)", s.name, pitch.trim_end_matches('0').trim_end_matches('.'));
-                                        if ui.selectable_label(current == Some(i), text).clicked() {
-                                            f.apply_standard(i);
-                                        }
-                                    }
-                                });
-                            ui.end_row();
-
-                            // the thread itself
-                            ui.label("Diameter");
-                            ui.horizontal(|ui| {
-                                ui.add(num(&mut f.thread.diameter, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm")).on_hover_text(NUM_TIP);
-                                ui.label("Pitch");
-                                ui.add(num(&mut f.thread.pitch, Kind::Length).speed(0.01).range(0.1..=50.0).suffix(" mm"))
-                                    .on_hover_text("Distance between neighbouring crests. For inch threads type 25.4/TPI, e.g. 25.4/20");
-                                ui.weak(format!("{:.1} TPI", 25.4 / f.thread.pitch.max(0.01)));
-                            });
-                            ui.end_row();
-                            ui.label("Profile");
-                            ui.horizontal(|ui| {
-                                egui::ComboBox::from_id_salt("thread_profile")
-                                    .selected_text(ThreadProfile::ALL.iter().find(|p| p.0 == f.thread.profile).map(|p| p.1).unwrap_or(""))
-                                    .show_ui(ui, |ui| {
-                                        for (p, name) in ThreadProfile::ALL {
-                                            ui.selectable_value(&mut f.thread.profile, p, name);
-                                        }
-                                    });
-                            });
-                            ui.end_row();
-                            ui.label("Thread depth");
-                            ui.horizontal(|ui| {
-                                let auto = f.thread.depth <= 0.0;
-                                let mut custom = !auto;
-                                if ui.checkbox(&mut custom, "Custom").on_hover_text("Off: the standard depth for the profile").changed() {
-                                    f.thread.depth = if custom { f.thread.profile.depth(f.thread.pitch) } else { 0.0 };
-                                }
-                                if custom {
-                                    ui.add(num(&mut f.thread.depth, Kind::Length).speed(0.01).range(0.05..=50.0).suffix(" mm"));
-                                } else {
-                                    ui.weak(format!("{:.2} mm", f.thread.depth()));
-                                }
-                                ui.weak(format!("minor Ø {:.2} mm", f.thread.minor()));
-                            });
-                            ui.end_row();
-                            ui.label("Starts");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut f.thread.starts).range(1..=12)).on_hover_text(
-                                    "Threads wound side by side. More starts turn faster: jar lids and quick-release screws use 2–4",
-                                );
-                                ui.weak(format!("lead {:.2} mm per turn", f.thread.lead()));
-                                ui.separator();
-                                ui.selectable_value(&mut f.thread.left_hand, false, "Right hand");
-                                ui.selectable_value(&mut f.thread.left_hand, true, "Left hand");
-                            });
-                            ui.end_row();
-
-                            if f.kind != FastenerKind::Nut {
-                                ui.label(if f.kind == FastenerKind::ThreadedHole { "Depth of hole" } else { "Thread length" });
-                                ui.add(num(&mut f.length, Kind::Length).speed(0.5).range(1.0..=1000.0).suffix(" mm")).on_hover_text(NUM_TIP);
-                                ui.end_row();
-                            }
-                            if matches!(f.kind, FastenerKind::Bolt | FastenerKind::Rod) {
-                                ui.label("Bore");
-                                ui.add(num(&mut f.bore, Kind::Length).speed(0.1).range(0.0..=1000.0).suffix(" mm")).on_hover_text(
-                                    "A hole along the middle (0 = solid): threaded tubes and jar necks, or hollow bolts for cables",
-                                );
-                                ui.end_row();
-                            }
-                            if f.kind == FastenerKind::Bolt {
-                                ui.label("Plain shank");
-                                ui.add(num(&mut f.shank, Kind::Length).speed(0.5).range(0.0..=1000.0).suffix(" mm"))
-                                    .on_hover_text("Unthreaded part between the head and the thread");
-                                ui.end_row();
-                                ui.label("Head");
-                                ui.horizontal_wrapped(|ui| {
-                                    for (h, name) in Head::ALL {
-                                        if ui.selectable_value(&mut f.head, h, name).changed() {
-                                            f.reset_head();
-                                        }
-                                    }
-                                });
-                                ui.end_row();
-                                if f.head != Head::None {
-                                    ui.label(if f.head == Head::Hex { "Head across flats" } else { "Head diameter" });
-                                    ui.horizontal(|ui| {
-                                        ui.add(num(&mut f.head_size, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm"));
-                                        ui.label("Height");
-                                        ui.add(num(&mut f.head_height, Kind::Length).speed(0.1).range(0.4..=1000.0).suffix(" mm"));
-                                        if f.head.has_key() {
-                                            ui.label("Key");
-                                            ui.add(num(&mut f.key, Kind::Length).speed(0.05).range(0.0..=100.0).suffix(" mm"))
-                                                .on_hover_text("Hex key socket, across flats (0 = none)");
-                                        }
-                                    });
-                                    ui.end_row();
-                                }
-                            }
-                            if f.kind == FastenerKind::Nut {
-                                ui.label("Shape");
-                                ui.horizontal(|ui| {
-                                    for (s, name) in NutShape::ALL {
-                                        if ui.selectable_value(&mut f.nut_shape, s, name).changed() {
-                                            f.reset_nut();
-                                        }
-                                    }
-                                });
-                                ui.end_row();
-                                ui.label(if matches!(f.nut_shape, NutShape::Hex | NutShape::Square) { "Across flats" } else { "Diameter" });
-                                ui.horizontal(|ui| {
-                                    ui.add(num(&mut f.nut_size, Kind::Length).speed(0.1).range(1.0..=1000.0).suffix(" mm"));
-                                    ui.label("Height");
-                                    ui.add(num(&mut f.nut_height, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm"));
-                                });
-                                ui.end_row();
-                                ui.label("Closed top");
-                                ui.add(num(&mut f.cap, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"))
-                                    .on_hover_text("Thickness of a closed end, for caps and jar lids (0 = open nut). It prints on the closed face");
-                                ui.end_row();
-                            }
-                            if matches!(f.kind, FastenerKind::Nut | FastenerKind::ThreadedHole) {
-                                ui.label("Clearance");
-                                ui.add(num(&mut f.clearance, Kind::Length).speed(0.01).range(0.0..=2.0).suffix(" mm"))
-                                    .on_hover_text("Extra room on the internal thread so printed parts fit (0.15–0.3 mm is typical)");
-                                ui.end_row();
-                            }
-                            if matches!(f.kind, FastenerKind::Bolt | FastenerKind::Rod) {
-                                ui.label("");
-                                ui.checkbox(&mut f.chamfer, "Chamfer the end").on_hover_text("A 45° lead-in so it starts easily in the nut");
-                                ui.end_row();
-                            }
-                            ui.label("");
-                            ui.horizontal(|ui| {
-                                if ui.small_button("Reset head / nut sizes").on_hover_text("Sizes to suit the thread").clicked() {
-                                    f.reset_head();
-                                    f.reset_nut();
-                                }
-                                ui.weak("Print a test pair and tune the clearance for your printer.");
-                            });
-                            ui.end_row();
-                        }
-                        Primitive::Gear(g) => {
-                            ui.label("Teeth");
-                            ui.add(egui::DragValue::new(&mut g.teeth).range(6..=300));
-                            ui.end_row();
-                            ui.label("Module");
-                            ui.add(num(&mut g.module, Kind::Length).speed(0.05).range(0.2..=20.0).suffix(" mm"))
-                                .on_hover_text("Tooth size. Gears that mesh need the same module. Pitch diameter = module × teeth");
-                            ui.end_row();
-                            mm(ui, "Thickness", &mut g.thickness);
-                            mm(ui, "Bore (hole)", &mut g.bore);
-                            ui.label("Pressure angle");
-                            ui.add(num(&mut g.pressure_deg, Kind::Angle).range(14.5..=30.0).suffix("°"));
-                            ui.end_row();
-                            ui.label("Backlash");
-                            ui.add(num(&mut g.backlash, Kind::Length).speed(0.01).range(0.0..=1.0).suffix(" mm"))
-                                .on_hover_text("Play between meshing teeth so printed gears turn freely");
-                            ui.end_row();
-                            ui.label("");
-                            ui.weak(format!(
-                                "Pitch Ø {:.2} mm. Two gears mesh when their centres are (Ø1 + Ø2) / 2 apart",
-                                g.module * g.teeth as f32
-                            ));
-                            ui.end_row();
-                        }
-                        Primitive::Spring(s) => {
-                            mm(ui, "Outside diameter", &mut s.diameter);
-                            mm(ui, "Wire thickness", &mut s.wire);
-                            mm(ui, "Free length", &mut s.length);
-                            ui.label("Coils");
-                            ui.add(egui::DragValue::new(&mut s.coils).speed(0.1).range(1.0..=100.0));
-                            ui.end_row();
-                            ui.label("Ends");
-                            ui.checkbox(&mut s.flat_ends, "Closed and flat (stands up)");
-                            ui.end_row();
-                        }
-                        Primitive::Hinge(h) => {
-                            mm(ui, "Length (along the pin)", &mut h.length);
-                            mm(ui, "Leaf width", &mut h.leaf);
-                            mm(ui, "Thickness", &mut h.thickness);
-                            ui.label("Knuckles");
-                            ui.add(egui::DragValue::new(&mut h.knuckles).range(3..=15))
-                                .on_hover_text("Odd number, so the pin is held at both ends");
-                            ui.end_row();
-                            mm(ui, "Pin diameter", &mut h.pin);
-                            ui.label("Clearance");
-                            ui.add(num(&mut h.clearance, Kind::Length).speed(0.01).range(0.1..=1.0).suffix(" mm"))
-                                .on_hover_text("Gap between the moving parts: 0.3–0.4 mm prints in place on most printers");
-                            ui.end_row();
-                        }
-                        Primitive::SnapClip(c) => {
-                            mm(ui, "Beam length", &mut c.length);
-                            mm(ui, "Width", &mut c.width);
-                            mm(ui, "Beam thickness", &mut c.thickness);
-                            mm(ui, "Hook", &mut c.hook);
-                            ui.label("Base");
-                            ui.add(num(&mut c.base, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"))
-                                .on_hover_text("Block under the beam; 0 to attach the clip to your own part (Union)");
-                            ui.end_row();
-                            ui.label("");
-                            ui.weak("Tip: duplicate it, make the copy a Hole and scale it up a little to cut the matching slot.");
-                            ui.end_row();
-                        }
-                        Primitive::Enclosure(e) => {
-                            use s3d_core::organizers::LidKind;
-                            mm(ui, "Width (X)", &mut e.size.x);
-                            mm(ui, "Depth (Y)", &mut e.size.y);
-                            mm(ui, "Height (Z)", &mut e.size.z);
-                            mm(ui, "Wall", &mut e.wall);
-                            mm(ui, "Floor", &mut e.floor);
-                            mm(ui, "Corner radius", &mut e.radius);
-                            ui.label("Lid");
-                            ui.horizontal(|ui| {
-                                for (k, n, tip) in [
-                                    (LidKind::Snap, "Snap", "A lid with a lip that clicks into a groove inside the walls"),
-                                    (LidKind::Slide, "Slide", "A plate that slides in along grooves from the +X end"),
-                                    (LidKind::Hinged, "Hinged", "Pin hinge along the back; the pin is included (or use 1.75 mm filament)"),
-                                    (LidKind::None, "None", "Just the box"),
-                                ] {
-                                    ui.selectable_value(&mut e.lid, k, n).on_hover_text(tip);
-                                }
-                            });
-                            ui.end_row();
-                            if e.lid != LidKind::None {
-                                mm(ui, "Lid thickness", &mut e.lid_thickness);
-                                ui.label("Clearance");
-                                ui.add(num(&mut e.clearance, Kind::Length).speed(0.01).range(0.05..=1.0).suffix(" mm"))
-                                    .on_hover_text("Gap between lid and box: 0.2 mm is snug on most printers");
-                                ui.end_row();
-                            }
-                            ui.label("Dividers");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut e.dividers_x).range(0..=20).prefix("across X: "));
-                                ui.add(egui::DragValue::new(&mut e.dividers_y).range(0..=20).prefix("across Y: "));
-                            });
-                            ui.end_row();
-                            ui.label("");
-                            ui.weak("The lid is laid out next to the box, ready to print. Edit → Separate splits them.");
-                            ui.end_row();
-                        }
-                        Primitive::GridBin(b) => {
-                            ui.label("Size (grid squares)");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut b.units_x).range(1..=8).suffix(" ×"));
-                                ui.add(egui::DragValue::new(&mut b.units_y).range(1..=8));
-                            });
-                            ui.end_row();
-                            ui.label("Height (7 mm units)");
-                            ui.add(egui::DragValue::new(&mut b.height_units).range(2..=20))
-                                .on_hover_text(format!("{} mm, plus the stacking lip", b.height_units * 7));
-                            ui.end_row();
-                            ui.label("Compartments");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut b.compartments_x).range(1..=12).suffix(" ×"));
-                                ui.add(egui::DragValue::new(&mut b.compartments_y).range(1..=12));
-                            });
-                            ui.end_row();
-                            mm(ui, "Wall", &mut b.wall);
-                            ui.label("Options");
-                            ui.horizontal(|ui| {
-                                ui.checkbox(&mut b.lip, "Stacking lip");
-                                ui.checkbox(&mut b.magnets, "Magnet pockets (6×2 mm)");
-                            });
-                            ui.end_row();
-                            ui.label("");
-                            ui.weak(format!(
-                                "{:.1} × {:.1} mm, fits the standard 42 mm Gridfinity grid",
-                                b.units_x as f32 * 42.0 - 0.5,
-                                b.units_y as f32 * 42.0 - 0.5
-                            ));
-                            ui.end_row();
-                        }
-                        Primitive::Brick(b) => {
-                            use s3d_core::bricks::BrickSystem;
-                            ui.label("System");
-                            ui.horizontal(|ui| {
-                                let before = b.system;
-                                ui.selectable_value(&mut b.system, BrickSystem::Lego, "LEGO® size (8 mm)");
-                                ui.selectable_value(&mut b.system, BrickSystem::Duplo, "DUPLO® size (16 mm)");
-                                if b.system != before {
-                                    b.height = b.system.dims().brick_units;
-                                    b.hollow_studs = b.system == BrickSystem::Duplo;
-                                }
-                            });
-                            ui.end_row();
-                            ui.label("Studs");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut b.studs_x).range(1..=48).suffix(" ×"));
-                                ui.add(egui::DragValue::new(&mut b.studs_y).range(1..=48));
-                            });
-                            ui.end_row();
-                            let d = b.system.dims();
-                            ui.label("Height");
-                            ui.horizontal(|ui| {
-                                let unit = if b.system == BrickSystem::Lego { "plate" } else { "half brick" };
-                                ui.add(egui::DragValue::new(&mut b.height).range(1..=36).suffix(format!(" × {unit}")));
-                                ui.weak(format!("{:.1} mm", b.height as f32 * d.unit));
-                                if ui.small_button("Plate").on_hover_text("One plate (LEGO) / half brick (DUPLO)").clicked() {
-                                    b.height = 1;
-                                }
-                                if ui.small_button("Brick").clicked() {
-                                    b.height = d.brick_units;
-                                }
-                            });
-                            ui.end_row();
-                            ui.label("Top");
-                            ui.horizontal(|ui| {
-                                ui.selectable_value(&mut b.studs, true, "Studs");
-                                ui.selectable_value(&mut b.studs, false, "Smooth (tile)");
-                                if b.studs {
-                                    ui.checkbox(&mut b.hollow_studs, "Hollow studs");
-                                }
-                            });
-                            ui.end_row();
-                            ui.label("Fit: studs");
-                            ui.add(num(&mut b.stud_fit, Kind::Length).speed(0.01).range(-0.5..=0.5).suffix(" mm")).on_hover_text(
-                                "Added to the stud diameter. If your printed studs are too tight in real bricks, go negative (−0.05 to −0.15)",
-                            );
-                            ui.end_row();
-                            ui.label("Fit: underneath");
-                            ui.add(num(&mut b.tube_fit, Kind::Length).speed(0.01).range(-0.5..=0.5).suffix(" mm")).on_hover_text(
-                                "Added to the tubes, pins and ribs that grip the studs below: + grips harder, − looser",
-                            );
-                            ui.end_row();
-                            ui.label("");
-                            ui.weak(format!(
-                                "{:.1} × {:.1} mm. Print a 2×2 test first and tune the fit; 3 walls, 0.16 mm layers help. LEGO® and DUPLO® are trademarks of the LEGO Group.",
-                                b.studs_x as f32 * d.pitch - 2.0 * d.gap,
-                                b.studs_y as f32 * d.pitch - 2.0 * d.gap
-                            ));
-                            ui.end_row();
-                        }
-                        Primitive::GridPlate(p) => {
-                            ui.label("Size (grid squares)");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut p.units_x).range(1..=12).suffix(" ×"));
-                                ui.add(egui::DragValue::new(&mut p.units_y).range(1..=12));
-                            });
-                            ui.end_row();
-                            ui.label("");
-                            ui.weak(format!(
-                                "{:.1} × {:.1} mm (check it fits your plate; big ones can be printed in parts with Cut)",
-                                p.units_x as f32 * 42.0 + 0.5,
-                                p.units_y as f32 * 42.0 + 0.5
-                            ));
-                            ui.end_row();
-                        }
-                    }
-                });
+                primitive_fields(ui, &mut p, "prim");
                 ui.add_space(6.0);
                 if ui.button(RichText::new("Add to scene").strong()).on_hover_text("Enter").clicked()
                     || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
@@ -2012,11 +1669,10 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Plate presets");
-                for (n, x, y) in
-                    [("Bambu X1/P1", 256.0, 256.0), ("Prusa MK4", 250.0, 210.0), ("Ender 3", 220.0, 220.0), ("A1 mini", 180.0, 180.0)]
-                {
+                for (n, x, y, z) in PRINTERS {
                     if ui.small_button(n).clicked() {
                         app.settings.plate = glam::Vec2::new(x, y);
+                        app.settings.plate_height = z;
                     }
                 }
             });
@@ -2070,6 +1726,87 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
         app.show_shortcuts = open;
     }
 
+    if app.split_dialog {
+        let mut open = true;
+        egui::Window::new("Split to fit the printer")
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 90.0])
+            .show(ctx, |ui| {
+            use s3d_core::connectors::ConnectorKind;
+            egui::Grid::new("split_fit").num_columns(2).show(ui, |ui| {
+                ui.label("Printer");
+                ui.horizontal(|ui| {
+                    let s = &mut app.settings;
+                    ui.add(num(&mut s.plate.x, Kind::Length).speed(1.0).range(50.0..=2000.0).suffix(" mm"));
+                    ui.label("×");
+                    ui.add(num(&mut s.plate.y, Kind::Length).speed(1.0).range(50.0..=2000.0).suffix(" mm"));
+                    ui.label("× height");
+                    ui.add(num(&mut s.plate_height, Kind::Length).speed(1.0).range(20.0..=2000.0).suffix(" mm"));
+                });
+                ui.end_row();
+                ui.label("");
+                egui::ComboBox::from_id_salt("split_printer").selected_text("Printer presets").show_ui(ui, |ui| {
+                    for (n, x, y, z) in PRINTERS {
+                        if ui.selectable_label(false, format!("{n}  ({x:.0} × {y:.0} × {z:.0})")).clicked() {
+                            app.settings.plate = glam::Vec2::new(x, y);
+                            app.settings.plate_height = z;
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label("Margin");
+                ui.add(num(&mut app.split_opts.margin, Kind::Length).speed(0.5).range(0.0..=50.0).suffix(" mm"))
+                    .on_hover_text("Kept free around each piece on the plate (brim, skirt)");
+                ui.end_row();
+                let c = &mut app.split_opts.connectors;
+                ui.label("Joints");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut c.kind, ConnectorKind::Pegs, "Pegs").on_hover_text("Pegs on one piece, holes in the next");
+                    ui.selectable_value(&mut c.kind, ConnectorKind::Dowels, "Dowels").on_hover_text("Holes in both pieces and separate pins");
+                    ui.selectable_value(&mut c.kind, ConnectorKind::None, "None").on_hover_text("Flat cuts, to glue");
+                });
+                ui.end_row();
+                if c.kind != ConnectorKind::None {
+                    ui.label("Peg size");
+                    ui.horizontal(|ui| {
+                        ui.add(num(&mut c.diameter, Kind::Length).speed(0.1).range(1.0..=50.0).prefix("Ø ").suffix(" mm"));
+                        ui.add(num(&mut c.depth, Kind::Length).speed(0.1).range(1.0..=50.0).prefix("depth ").suffix(" mm"));
+                        ui.add(num(&mut c.clearance, Kind::Length).speed(0.01).range(0.0..=1.0).prefix("play ").suffix(" mm"));
+                    });
+                    ui.end_row();
+                }
+            });
+            ui.separator();
+            let over = app.oversize_selected();
+            let mut o = app.split_opts;
+            o.volume = app.build_volume();
+            if app.selection.is_empty() {
+                ui.weak("Select the model to split.");
+            } else if over.is_empty() {
+                ui.label("The selection already fits this printer.");
+            } else {
+                for (_, name, _, m) in &over {
+                    let size = m.bounds().size();
+                    let room = o.volume - glam::Vec3::new(o.margin * 2.0, o.margin * 2.0, 0.0);
+                    let a = s3d_core::split::pieces_needed(size, room);
+                    let b = s3d_core::split::pieces_needed(glam::Vec3::new(size.y, size.x, size.z), room);
+                    let g = if b[0] * b[1] * b[2] < a[0] * a[1] * a[2] { b } else { a };
+                    ui.label(format!("{name}: {:.0} × {:.0} × {:.0} mm, {} pieces ({} × {} × {})", size.x, size.y, size.z, g[0] * g[1] * g[2], g[0], g[1], g[2]));
+                }
+            }
+            ui.add_space(4.0);
+            if ui.add_enabled(!over.is_empty(), egui::Button::new(RichText::new("Split").strong())).clicked() {
+                app.split_to_fit_selected(ctx);
+                app.split_dialog = false;
+            }
+        });
+        if !open {
+            app.split_dialog = false;
+        }
+    }
+
     if app.show_about {
         let mut open = true;
         egui::Window::new("About Simply3D").open(&mut open).resizable(false).show(ctx, |ui| {
@@ -2083,4 +1820,458 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
         });
         app.show_about = open;
     }
+}
+
+/// The settings of a generated shape (add dialog and the side panel). Returns whether
+/// anything changed.
+pub fn primitive_fields(ui: &mut egui::Ui, p: &mut Primitive, id: &str) -> bool {
+    let before = *p;
+    ui.push_id(id, |ui| {
+    egui::Grid::new(id).num_columns(2).show(ui, |ui| {
+        let mm = |ui: &mut egui::Ui, label: &str, v: &mut f32| {
+            ui.label(label);
+            ui.add(num(v, Kind::Length).speed(0.2).range(0.01..=10000.0).suffix(" mm")).on_hover_text(NUM_TIP);
+            ui.end_row();
+        };
+        let segs = |ui: &mut egui::Ui, label: &str, v: &mut u32| {
+            ui.label(label);
+            ui.add(egui::DragValue::new(v).range(3..=512));
+            ui.end_row();
+        };
+        match p {
+            Primitive::Box { size, edge } => {
+                mm(ui, "Width (X)", &mut size.x);
+                mm(ui, "Depth (Y)", &mut size.y);
+                mm(ui, "Height (Z)", &mut size.z);
+                edge_controls(ui, edge);
+            }
+            Primitive::Wedge { size } => {
+                mm(ui, "Width (X)", &mut size.x);
+                mm(ui, "Depth (Y)", &mut size.y);
+                mm(ui, "Height (Z)", &mut size.z);
+            }
+            Primitive::Cylinder { radius, height, segments, edge } => {
+                mm(ui, "Radius", radius);
+                mm(ui, "Height", height);
+                segs(ui, "Segments", segments);
+                edge_controls(ui, edge);
+            }
+            Primitive::Cone { bottom_radius, top_radius, height, segments } => {
+                mm(ui, "Bottom radius", bottom_radius);
+                ui.label("Top radius");
+                ui.add(num(top_radius, Kind::Length).speed(0.2).range(0.0..=10000.0).suffix(" mm"));
+                ui.end_row();
+                mm(ui, "Height", height);
+                segs(ui, "Segments", segments);
+            }
+            Primitive::Sphere { radius, segments, rings } => {
+                mm(ui, "Radius", radius);
+                segs(ui, "Segments", segments);
+                segs(ui, "Rings", rings);
+            }
+            Primitive::Torus { major_radius, minor_radius, major_segments, minor_segments } => {
+                mm(ui, "Ring radius", major_radius);
+                mm(ui, "Tube radius", minor_radius);
+                segs(ui, "Ring segments", major_segments);
+                segs(ui, "Tube segments", minor_segments);
+            }
+            Primitive::Tube { outer_radius, inner_radius, height, segments } => {
+                mm(ui, "Outer radius", outer_radius);
+                mm(ui, "Inner radius", inner_radius);
+                mm(ui, "Height", height);
+                segs(ui, "Segments", segments);
+            }
+            Primitive::Pyramid { base, height } => {
+                mm(ui, "Base", base);
+                mm(ui, "Height", height);
+            }
+            Primitive::Fastener(f) => {
+                use s3d_core::threads::{standards, FastenerKind, Head, NutShape, ThreadProfile, SIZES};
+                ui.label("Type");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut f.kind, FastenerKind::Bolt, "Bolt");
+                    ui.selectable_value(&mut f.kind, FastenerKind::Nut, "Nut");
+                    ui.selectable_value(&mut f.kind, FastenerKind::Rod, "Rod");
+                    ui.selectable_value(&mut f.kind, FastenerKind::ThreadedHole, "Hole").on_hover_text(
+                        "A threaded hole: added as a hole object that cuts the thread into whatever it overlaps",
+                    );
+                });
+                ui.end_row();
+                ui.label("Size");
+                let current = f.standard_index();
+                egui::ComboBox::from_id_salt("thread_size")
+                    .selected_text(if current.is_some() { f.thread_name() } else { "Custom".to_string() })
+                    .height(420.0)
+                    .show_ui(ui, |ui| {
+                        ui.label(RichText::new("Metric coarse").weak().small());
+                        for (i, s) in standards().enumerate() {
+                            if i == SIZES.len() {
+                                ui.label(RichText::new("Inch (UNC)").weak().small());
+                            }
+                            let pitch = format!("{:.3}", s.pitch);
+                            let text = format!("{}  (pitch {} mm)", s.name, pitch.trim_end_matches('0').trim_end_matches('.'));
+                            if ui.selectable_label(current == Some(i), text).clicked() {
+                                f.apply_standard(i);
+                            }
+                        }
+                    });
+                ui.end_row();
+
+                // the thread itself
+                ui.label("Diameter");
+                ui.horizontal(|ui| {
+                    ui.add(num(&mut f.thread.diameter, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm")).on_hover_text(NUM_TIP);
+                    ui.label("Pitch");
+                    ui.add(num(&mut f.thread.pitch, Kind::Length).speed(0.01).range(0.1..=50.0).suffix(" mm"))
+                        .on_hover_text("Distance between neighbouring crests. For inch threads type 25.4/TPI, e.g. 25.4/20");
+                    hint(ui, format!("{:.1} TPI", 25.4 / f.thread.pitch.max(0.01)));
+                });
+                ui.end_row();
+                ui.label("Profile");
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("thread_profile")
+                        .selected_text(ThreadProfile::ALL.iter().find(|p| p.0 == f.thread.profile).map(|p| p.1).unwrap_or(""))
+                        .show_ui(ui, |ui| {
+                            for (p, name) in ThreadProfile::ALL {
+                                ui.selectable_value(&mut f.thread.profile, p, name);
+                            }
+                        });
+                });
+                ui.end_row();
+                ui.label("Thread depth");
+                ui.horizontal(|ui| {
+                    let auto = f.thread.depth <= 0.0;
+                    let mut custom = !auto;
+                    if ui.checkbox(&mut custom, "Custom").on_hover_text("Off: the standard depth for the profile").changed() {
+                        f.thread.depth = if custom { f.thread.profile.depth(f.thread.pitch) } else { 0.0 };
+                    }
+                    if custom {
+                        ui.add(num(&mut f.thread.depth, Kind::Length).speed(0.01).range(0.05..=50.0).suffix(" mm"));
+                    } else {
+                        hint(ui, format!("{:.2} mm", f.thread.depth()));
+                    }
+                    hint(ui, format!("minor Ø {:.2} mm", f.thread.minor()));
+                });
+                ui.end_row();
+                ui.label("Starts");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut f.thread.starts).range(1..=12)).on_hover_text(
+                        "Threads wound side by side. More starts turn faster: jar lids and quick-release screws use 2–4",
+                    );
+                    hint(ui, format!("lead {:.2} mm per turn", f.thread.lead()));
+                    ui.separator();
+                    ui.selectable_value(&mut f.thread.left_hand, false, "Right hand");
+                    ui.selectable_value(&mut f.thread.left_hand, true, "Left hand");
+                });
+                ui.end_row();
+
+                if f.kind != FastenerKind::Nut {
+                    ui.label(if f.kind == FastenerKind::ThreadedHole { "Depth of hole" } else { "Thread length" });
+                    ui.add(num(&mut f.length, Kind::Length).speed(0.5).range(1.0..=1000.0).suffix(" mm")).on_hover_text(NUM_TIP);
+                    ui.end_row();
+                }
+                if matches!(f.kind, FastenerKind::Bolt | FastenerKind::Rod) {
+                    ui.label("Bore");
+                    ui.add(num(&mut f.bore, Kind::Length).speed(0.1).range(0.0..=1000.0).suffix(" mm")).on_hover_text(
+                        "A hole along the middle (0 = solid): threaded tubes and jar necks, or hollow bolts for cables",
+                    );
+                    ui.end_row();
+                }
+                if f.kind == FastenerKind::Bolt {
+                    ui.label("Plain shank");
+                    ui.add(num(&mut f.shank, Kind::Length).speed(0.5).range(0.0..=1000.0).suffix(" mm"))
+                        .on_hover_text("Unthreaded part between the head and the thread");
+                    ui.end_row();
+                    ui.label("Head");
+                    ui.horizontal_wrapped(|ui| {
+                        for (h, name) in Head::ALL {
+                            if ui.selectable_value(&mut f.head, h, name).changed() {
+                                f.reset_head();
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    if f.head != Head::None {
+                        ui.label(if f.head == Head::Hex { "Head across flats" } else { "Head diameter" });
+                        ui.horizontal(|ui| {
+                            ui.add(num(&mut f.head_size, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm"));
+                            ui.label("Height");
+                            ui.add(num(&mut f.head_height, Kind::Length).speed(0.1).range(0.4..=1000.0).suffix(" mm"));
+                            if f.head.has_key() {
+                                ui.label("Key");
+                                ui.add(num(&mut f.key, Kind::Length).speed(0.05).range(0.0..=100.0).suffix(" mm"))
+                                    .on_hover_text("Hex key socket, across flats (0 = none)");
+                            }
+                        });
+                        ui.end_row();
+                    }
+                }
+                if f.kind == FastenerKind::Nut {
+                    ui.label("Shape");
+                    ui.horizontal(|ui| {
+                        for (s, name) in NutShape::ALL {
+                            if ui.selectable_value(&mut f.nut_shape, s, name).changed() {
+                                f.reset_nut();
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(if matches!(f.nut_shape, NutShape::Hex | NutShape::Square) { "Across flats" } else { "Diameter" });
+                    ui.horizontal(|ui| {
+                        ui.add(num(&mut f.nut_size, Kind::Length).speed(0.1).range(1.0..=1000.0).suffix(" mm"));
+                        ui.label("Height");
+                        ui.add(num(&mut f.nut_height, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm"));
+                    });
+                    ui.end_row();
+                    ui.label("Closed top");
+                    ui.add(num(&mut f.cap, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"))
+                        .on_hover_text("Thickness of a closed end, for caps and jar lids (0 = open nut). It prints on the closed face");
+                    ui.end_row();
+                }
+                if matches!(f.kind, FastenerKind::Nut | FastenerKind::ThreadedHole) {
+                    ui.label("Clearance");
+                    ui.add(num(&mut f.clearance, Kind::Length).speed(0.01).range(0.0..=2.0).suffix(" mm"))
+                        .on_hover_text("Extra room on the internal thread so printed parts fit (0.15–0.3 mm is typical)");
+                    ui.end_row();
+                }
+                if matches!(f.kind, FastenerKind::Bolt | FastenerKind::Rod) {
+                    ui.label("");
+                    ui.checkbox(&mut f.chamfer, "Chamfer the end").on_hover_text("A 45° lead-in so it starts easily in the nut");
+                    ui.end_row();
+                }
+                ui.label("");
+                ui.horizontal(|ui| {
+                    if ui.small_button("Reset head / nut sizes").on_hover_text("Sizes to suit the thread").clicked() {
+                        f.reset_head();
+                        f.reset_nut();
+                    }
+                    hint(ui, "Print a test pair and tune the clearance for your printer.");
+                });
+                ui.end_row();
+            }
+            Primitive::Gear(g) => {
+                ui.label("Teeth");
+                ui.add(egui::DragValue::new(&mut g.teeth).range(6..=300));
+                ui.end_row();
+                ui.label("Module");
+                ui.add(num(&mut g.module, Kind::Length).speed(0.05).range(0.2..=20.0).suffix(" mm"))
+                    .on_hover_text("Tooth size. Gears that mesh need the same module. Pitch diameter = module × teeth");
+                ui.end_row();
+                mm(ui, "Thickness", &mut g.thickness);
+                mm(ui, "Bore (hole)", &mut g.bore);
+                ui.label("Pressure angle");
+                ui.add(num(&mut g.pressure_deg, Kind::Angle).range(14.5..=30.0).suffix("°"));
+                ui.end_row();
+                ui.label("Backlash");
+                ui.add(num(&mut g.backlash, Kind::Length).speed(0.01).range(0.0..=1.0).suffix(" mm"))
+                    .on_hover_text("Play between meshing teeth so printed gears turn freely");
+                ui.end_row();
+                ui.label("");
+                hint(ui, format!(
+                    "Pitch Ø {:.2} mm. Two gears mesh when their centres are (Ø1 + Ø2) / 2 apart",
+                    g.module * g.teeth as f32
+                ));
+                ui.end_row();
+            }
+            Primitive::Spring(s) => {
+                mm(ui, "Outside diameter", &mut s.diameter);
+                mm(ui, "Wire thickness", &mut s.wire);
+                mm(ui, "Free length", &mut s.length);
+                ui.label("Coils");
+                ui.add(egui::DragValue::new(&mut s.coils).speed(0.1).range(1.0..=100.0));
+                ui.end_row();
+                ui.label("Ends");
+                ui.checkbox(&mut s.flat_ends, "Closed and flat (stands up)");
+                ui.end_row();
+            }
+            Primitive::Hinge(h) => {
+                mm(ui, "Length (along the pin)", &mut h.length);
+                mm(ui, "Leaf width", &mut h.leaf);
+                mm(ui, "Thickness", &mut h.thickness);
+                ui.label("Knuckles");
+                ui.add(egui::DragValue::new(&mut h.knuckles).range(3..=15))
+                    .on_hover_text("Odd number, so the pin is held at both ends");
+                ui.end_row();
+                mm(ui, "Pin diameter", &mut h.pin);
+                ui.label("Clearance");
+                ui.add(num(&mut h.clearance, Kind::Length).speed(0.01).range(0.1..=1.0).suffix(" mm"))
+                    .on_hover_text("Gap between the moving parts: 0.3–0.4 mm prints in place on most printers");
+                ui.end_row();
+            }
+            Primitive::SnapClip(c) => {
+                mm(ui, "Beam length", &mut c.length);
+                mm(ui, "Width", &mut c.width);
+                mm(ui, "Beam thickness", &mut c.thickness);
+                mm(ui, "Hook", &mut c.hook);
+                ui.label("Base");
+                ui.add(num(&mut c.base, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"))
+                    .on_hover_text("Block under the beam; 0 to attach the clip to your own part (Union)");
+                ui.end_row();
+                ui.label("");
+                hint(ui, "Tip: duplicate it, make the copy a Hole and scale it up a little to cut the matching slot.");
+                ui.end_row();
+            }
+            Primitive::Enclosure(e) => {
+                use s3d_core::organizers::LidKind;
+                mm(ui, "Width (X)", &mut e.size.x);
+                mm(ui, "Depth (Y)", &mut e.size.y);
+                mm(ui, "Height (Z)", &mut e.size.z);
+                mm(ui, "Wall", &mut e.wall);
+                mm(ui, "Floor", &mut e.floor);
+                mm(ui, "Corner radius", &mut e.radius);
+                ui.label("Lid");
+                ui.horizontal(|ui| {
+                    for (k, n, tip) in [
+                        (LidKind::Snap, "Snap", "A lid with a lip that clicks into a groove inside the walls"),
+                        (LidKind::Slide, "Slide", "A plate that slides in along grooves from the +X end"),
+                        (LidKind::Hinged, "Hinged", "Pin hinge along the back; the pin is included (or use 1.75 mm filament)"),
+                        (LidKind::None, "None", "Just the box"),
+                    ] {
+                        ui.selectable_value(&mut e.lid, k, n).on_hover_text(tip);
+                    }
+                });
+                ui.end_row();
+                if e.lid != LidKind::None {
+                    mm(ui, "Lid thickness", &mut e.lid_thickness);
+                    ui.label("Clearance");
+                    ui.add(num(&mut e.clearance, Kind::Length).speed(0.01).range(0.05..=1.0).suffix(" mm"))
+                        .on_hover_text("Gap between lid and box: 0.2 mm is snug on most printers");
+                    ui.end_row();
+                }
+                ui.label("Dividers");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut e.dividers_x).range(0..=20).prefix("across X: "));
+                    ui.add(egui::DragValue::new(&mut e.dividers_y).range(0..=20).prefix("across Y: "));
+                });
+                ui.end_row();
+                ui.label("");
+                hint(ui, "The lid is laid out next to the box, ready to print. Edit → Separate splits them.");
+                ui.end_row();
+            }
+            Primitive::GridBin(b) => {
+                ui.label("Size (grid squares)");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut b.units_x).range(1..=8).suffix(" ×"));
+                    ui.add(egui::DragValue::new(&mut b.units_y).range(1..=8));
+                });
+                ui.end_row();
+                ui.label("Height (7 mm units)");
+                ui.add(egui::DragValue::new(&mut b.height_units).range(2..=20))
+                    .on_hover_text(format!("{} mm, plus the stacking lip", b.height_units * 7));
+                ui.end_row();
+                ui.label("Compartments");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut b.compartments_x).range(1..=12).suffix(" ×"));
+                    ui.add(egui::DragValue::new(&mut b.compartments_y).range(1..=12));
+                });
+                ui.end_row();
+                mm(ui, "Wall", &mut b.wall);
+                ui.label("Options");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut b.lip, "Stacking lip");
+                    ui.checkbox(&mut b.magnets, "Magnet pockets (6×2 mm)");
+                });
+                ui.end_row();
+                ui.label("");
+                hint(ui, format!(
+                    "{:.1} × {:.1} mm, fits the standard 42 mm Gridfinity grid",
+                    b.units_x as f32 * 42.0 - 0.5,
+                    b.units_y as f32 * 42.0 - 0.5
+                ));
+                ui.end_row();
+            }
+            Primitive::Brick(b) => {
+                use s3d_core::bricks::BrickSystem;
+                ui.label("System");
+                ui.horizontal(|ui| {
+                    let before = b.system;
+                    ui.selectable_value(&mut b.system, BrickSystem::Lego, "LEGO® size (8 mm)");
+                    ui.selectable_value(&mut b.system, BrickSystem::Duplo, "DUPLO® size (16 mm)");
+                    if b.system != before {
+                        b.height = b.system.dims().brick_units;
+                        b.hollow_studs = b.system == BrickSystem::Duplo;
+                    }
+                });
+                ui.end_row();
+                ui.label("Studs");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut b.studs_x).range(1..=48).suffix(" ×"));
+                    ui.add(egui::DragValue::new(&mut b.studs_y).range(1..=48));
+                });
+                ui.end_row();
+                let d = b.system.dims();
+                ui.label("Height");
+                ui.horizontal(|ui| {
+                    let unit = if b.system == BrickSystem::Lego { "plate" } else { "half brick" };
+                    ui.add(egui::DragValue::new(&mut b.height).range(1..=36).suffix(format!(" × {unit}")));
+                    hint(ui, format!("{:.1} mm", b.height as f32 * d.unit));
+                    if ui.small_button("Plate").on_hover_text("One plate (LEGO) / half brick (DUPLO)").clicked() {
+                        b.height = 1;
+                    }
+                    if ui.small_button("Brick").clicked() {
+                        b.height = d.brick_units;
+                    }
+                });
+                ui.end_row();
+                ui.label("Top");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut b.studs, true, "Studs");
+                    ui.selectable_value(&mut b.studs, false, "Smooth (tile)");
+                    if b.studs {
+                        ui.checkbox(&mut b.hollow_studs, "Hollow studs");
+                    }
+                });
+                ui.end_row();
+                ui.label("Fit: studs");
+                ui.add(num(&mut b.stud_fit, Kind::Length).speed(0.01).range(-0.5..=0.5).suffix(" mm")).on_hover_text(
+                    "Added to the stud diameter. If your printed studs are too tight in real bricks, go negative (−0.05 to −0.15)",
+                );
+                ui.end_row();
+                ui.label("Fit: underneath");
+                ui.add(num(&mut b.tube_fit, Kind::Length).speed(0.01).range(-0.5..=0.5).suffix(" mm")).on_hover_text(
+                    "Added to the tubes, pins and ribs that grip the studs below: + grips harder, − looser",
+                );
+                ui.end_row();
+                ui.label("");
+                hint(ui, format!(
+                    "{:.1} × {:.1} mm. Print a 2×2 test first and tune the fit; 3 walls, 0.16 mm layers help. LEGO® and DUPLO® are trademarks of the LEGO Group.",
+                    b.studs_x as f32 * d.pitch - 2.0 * d.gap,
+                    b.studs_y as f32 * d.pitch - 2.0 * d.gap
+                ));
+                ui.end_row();
+            }
+            Primitive::GridPlate(p) => {
+                ui.label("Size (grid squares)");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut p.units_x).range(1..=12).suffix(" ×"));
+                    ui.add(egui::DragValue::new(&mut p.units_y).range(1..=12));
+                });
+                ui.end_row();
+                ui.label("");
+                hint(ui, format!(
+                    "{:.1} × {:.1} mm (check it fits your plate; big ones can be printed in parts with Cut)",
+                    p.units_x as f32 * 42.0 + 0.5,
+                    p.units_y as f32 * 42.0 + 0.5
+                ));
+                ui.end_row();
+            }
+        }
+    });
+    });
+    *p != before
+}
+
+/// Common printers: name, plate X, plate Y, build height (mm).
+pub const PRINTERS: [(&str, f32, f32, f32); 6] = [
+    ("Bambu X1/P1", 256.0, 256.0, 256.0),
+    ("Bambu A1", 256.0, 256.0, 256.0),
+    ("A1 mini", 180.0, 180.0, 180.0),
+    ("Prusa MK4", 250.0, 210.0, 220.0),
+    ("Prusa MINI", 180.0, 180.0, 180.0),
+    ("Ender 3", 220.0, 220.0, 250.0),
+];
+
+/// A greyed note that wraps instead of widening its column.
+fn hint(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
+    ui.add(egui::Label::new(RichText::new(text.into()).weak()).wrap())
 }

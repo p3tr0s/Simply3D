@@ -448,7 +448,8 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     // ---------- GPU frame ----------
     let view = View { rect, aspect: app.viewport_aspect, cam: app.settings.camera };
     if app.viewport_ok {
-        let frame = build_frame(app, &view);
+        let checked = update_print_checks(app, ui.ctx());
+        let frame = build_frame(app, &view, &checked);
         painter.set(slot, egui_wgpu::Callback::new_paint_callback(rect, frame));
     } else {
         painter.text(
@@ -628,7 +629,7 @@ fn gizmo_interact(
     result
 }
 
-fn build_frame(app: &App, view: &View) -> ViewportFrame {
+fn build_frame(app: &App, view: &View, checked: &std::collections::HashMap<s3d_core::ObjectId, s3d_core::scene::MeshHandle>) -> ViewportFrame {
     let cam = &view.cam;
     let (r, u) = cam.right_up();
     let light = (-cam.forward() + u * 0.8 + r * 0.35).normalize();
@@ -647,6 +648,7 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
     let mut ghosts = vec![];
     let original_ghost =
         |o: &s3d_core::Object| DrawItem { mesh: o.mesh.clone(), model: o.matrix(), color: [0.85, 0.88, 0.95, 0.22], params: [0.0; 4] };
+    let print_check = app.settings.print_check;
     let mut items: Vec<DrawItem> = app
         .scene
         .objects
@@ -673,6 +675,10 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
                 return None;
             }
             let mut mesh = mesh_override.flatten().unwrap_or_else(|| o.mesh.clone());
+            let check = checked.get(&o.id).cloned();
+            if let Some(h) = &check {
+                mesh = h.clone();
+            }
             if let Some(h) = app.face_display(o.id) {
                 mesh = h;
             }
@@ -695,6 +701,9 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
                     if app.issues.0.contains(&o.id) || app.issues.1.contains(&o.id) {
                         // off / below the plate: push toward warning red
                         [c[0] * 0.35 + 0.65 * 0.9, c[1] * 0.35 + 0.65 * 0.08, c[2] * 0.35 + 0.65 * 0.05, c[3]]
+                    } else if print_check {
+                        // neutral, so the check colours stand out
+                        lin([178, 182, 190, 255])
                     } else {
                         c
                     }
@@ -770,6 +779,39 @@ fn build_frame(app: &App, view: &View) -> ViewportFrame {
     let mut tris = vec![];
     let mut lines = vec![];
     let mut overlay = vec![];
+    // circular array: the circle the copies will sit on, and where each one goes
+    if app.tab == crate::app::PanelTab::Arrange && app.array.circular && !app.selection.is_empty() && app.tool == Tool::Select {
+        let a = &app.array;
+        let c = app.circular_centre();
+        let p0 = app.selection_bounds().center();
+        let r = p0 - c;
+        let n = a.circ_count.max(2);
+        let sweep = a.circ_angle.clamp(-360.0, 360.0);
+        let full = (sweep.abs() - 360.0).abs() < 1e-3;
+        let step = if full { sweep / n as f32 } else { sweep / (n - 1) as f32 };
+        let col = lin_rgba(0.35, 0.75, 1.0, 1.0);
+        let rot = |deg: f32| glam::Quat::from_rotation_z(deg.to_radians());
+        let segs = 96;
+        let arc = if full { 360.0 } else { sweep };
+        for k in 0..segs {
+            let (t0, t1) = (arc * k as f32 / segs as f32, arc * (k + 1) as f32 / segs as f32);
+            overlay.push(LineVertex::new(c + rot(t0) * r, col));
+            overlay.push(LineVertex::new(c + rot(t1) * r, col));
+        }
+        let mark = r.length().max(1.0) * 0.06;
+        for k in 0..n {
+            let p = c + rot(step * k as f32) * r;
+            for d in [Vec3::X, Vec3::Y] {
+                overlay.push(LineVertex::new(p - d * mark, col));
+                overlay.push(LineVertex::new(p + d * mark, col));
+            }
+        }
+        // the centre
+        for d in [Vec3::X, Vec3::Y] {
+            overlay.push(LineVertex::new(c - d * mark * 1.5, col));
+            overlay.push(LineVertex::new(c + d * mark * 1.5, col));
+        }
+    }
     // paint / face-select brush cursor
     let brush = match app.tool {
         Tool::Paint => app.paint_rt.hover.map(|h| {
@@ -1080,6 +1122,7 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
     }
     axis_triad(app, ui, p, view);
     plate_warnings(app, ui, view);
+    print_check_legend(app, ui, view);
     bottom_bars(app, ui, view);
     if !app.section.enabled && app.preview.is_none() {
         crate::ribbon::object_box(app, ui, rect);
@@ -1533,4 +1576,96 @@ fn preview_bar(app: &mut App, ui: &mut egui::Ui) {
         }
         app.cancel_preview();
     }
+}
+
+/// Print check: coloured copies of the solids (computed in the background).
+fn update_print_checks(app: &mut App, ctx: &egui::Context) -> std::collections::HashMap<s3d_core::ObjectId, s3d_core::scene::MeshHandle> {
+    let mut checked: std::collections::HashMap<s3d_core::ObjectId, s3d_core::scene::MeshHandle> = Default::default();
+    if app.settings.print_check {
+        let todo: Vec<(s3d_core::ObjectId, s3d_core::scene::MeshHandle, glam::Mat4)> = app
+            .scene
+            .objects
+            .iter()
+            .filter(|o| o.visible && !o.hole)
+            .filter_map(|o| match app.display_mesh(o.id) {
+                Some(None) => None,
+                Some(Some(h)) => Some((o.id, h, o.matrix())),
+                None => Some((o.id, o.mesh.clone(), o.matrix())),
+            })
+            .collect();
+        for (id, h, m) in todo {
+            if let Some(c) = app.check_display(id, &h, &m) {
+                checked.insert(id, c);
+            }
+        }
+        let live: std::collections::HashSet<_> = app.scene.objects.iter().map(|o| o.id).collect();
+        app.check_cache.retain(|id, _| live.contains(id));
+        if app.checks_pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+    checked
+}
+
+/// What the print check found, with its settings (top left of the view).
+fn print_check_legend(app: &mut App, ui: &mut egui::Ui, view: &View) {
+    if !app.settings.print_check {
+        return;
+    }
+    let mut total = s3d_core::printcheck::CheckStats::default();
+    for o in app.scene.objects.iter().filter(|o| o.visible && !o.hole) {
+        if let Some((_, s)) = app.check_cache.get(&o.id).and_then(|e| e.result.as_ref()) {
+            total.overhang_area += s.overhang_area;
+            total.thin_area += s.thin_area;
+            total.islands += s.islands;
+        }
+    }
+    let pending = app.checks_pending();
+    let ctx = ui.ctx().clone();
+    egui::Area::new(egui::Id::new("print_check_legend"))
+        .fixed_pos(view.rect.left_top() + egui::vec2(12.0, 12.0))
+        .order(egui::Order::Middle)
+        .show(&ctx, |ui| {
+            egui::Frame::popup(ui.style()).corner_radius(8.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Print check").strong());
+                    if pending {
+                        ui.spinner();
+                    }
+                    if ui.add(egui::Button::image(crate::icons::image("x", 12.0, ui.visuals().text_color())).frame(false)).on_hover_text("Turn off").clicked() {
+                        app.settings.print_check = false;
+                    }
+                });
+                let row = |ui: &mut egui::Ui, c: [u8; 3], label: &str, value: String| {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
+                        ui.painter().rect_filled(r, 2.0, Color32::from_rgb(c[0], c[1], c[2]));
+                        ui.label(label);
+                        ui.weak(value);
+                    });
+                };
+                let area = |a: f32| if a < 1.0 { "none".to_string() } else if a < 100.0 { format!("{a:.0} mm²") } else { format!("{:.1} cm²", a / 100.0) };
+                for (flag, c, name) in crate::app::CHECK_COLORS {
+                    let v = match flag {
+                        s3d_core::printcheck::OVERHANG => area(total.overhang_area),
+                        s3d_core::printcheck::THIN => area(total.thin_area),
+                        _ if total.islands == 0 => "none".to_string(),
+                        _ => format!("{}", total.islands),
+                    };
+                    row(ui, c, name, v);
+                }
+                ui.separator();
+                let s = &mut app.settings.check;
+                ui.horizontal(|ui| {
+                    ui.label("Overhang over");
+                    ui.add(egui::DragValue::new(&mut s.overhang_deg).range(10.0..=80.0).speed(0.5).suffix("°"))
+                        .on_hover_text("Surfaces leaning more than this from vertical need support (45° is typical)");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Walls under");
+                    ui.add(egui::DragValue::new(&mut s.min_wall).range(0.0..=10.0).speed(0.02).suffix(" mm"))
+                        .on_hover_text("About two nozzle widths: 0.8 mm for a 0.4 mm nozzle (0 = don't check)");
+                });
+            });
+        });
 }

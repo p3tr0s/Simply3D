@@ -170,6 +170,9 @@ pub fn all() -> Vec<Command> {
         cmd!("View", "Frame all", "Home", always, |a, _| a.frame_all()),
         cmd!("View", "Toggle see-through for overlapping objects", "", always, |a, _| a.settings.see_through = !a.settings.see_through),
         cmd!("View", "Toggle build plate", "", always, |a, _| a.settings.show_plate = !a.settings.show_plate),
+        cmd!("Mesh", "Split to fit the printer (cut into pieces with pegs)…", "", has_sel, |a, _| a.split_dialog = true),
+        cmd!("View", "Toggle print check (overhangs, thin walls, islands)", "", always, |a, _| a.settings.print_check =
+            !a.settings.print_check),
         cmd!("View", "Toggle dimensions", "", always, |a, _| a.settings.show_dimensions = !a.settings.show_dimensions),
         cmd!("View", "Toggle dark theme", "", always, |a, c| {
             a.settings.dark = !a.settings.dark;

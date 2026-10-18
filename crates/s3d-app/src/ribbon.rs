@@ -485,6 +485,12 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         if big(ui, "split", "Separate", has, false, false).on_hover_text("Split into its loose parts").clicked() {
             app.split_selected(ctx);
         }
+        if big(ui, "maximize", "Fit plate", has, app.split_dialog, false)
+            .on_hover_text("Cut a model that's too big for your printer into pieces that fit, with pegs")
+            .clicked()
+        {
+            app.split_dialog = !app.split_dialog;
+        }
     });
     group(ui, "Shape", |ui| {
         for (icon, label, kind, tip) in [
@@ -626,6 +632,15 @@ fn view_tab(app: &mut App, ui: &mut Ui) {
             if big(ui, icon, label, true, *on, false).on_hover_text(tip).clicked() {
                 *on = !*on;
             }
+        }
+    });
+    group(ui, "Print", |ui| {
+        let on = app.settings.print_check;
+        if big(ui, "shield-check", "Print check", !app.scene.objects.is_empty(), on, false)
+            .on_hover_text("Colour overhangs, thin walls and islands that may print badly")
+            .clicked()
+        {
+            app.settings.print_check = !on;
         }
     });
     group(ui, "Section", |ui| {

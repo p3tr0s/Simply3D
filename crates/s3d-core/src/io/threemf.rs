@@ -413,6 +413,7 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
                         hidden: cmeta("hidden").is_some_and(|v| v == "1"),
                         locked: cmeta("locked").is_some_and(|v| v == "1"),
                         hole: cmeta("hole").is_some_and(|v| v == "1"),
+                        params: cmeta("params").filter(|_| ours),
                         keep_position: ours,
                         ..Default::default()
                     };
@@ -457,6 +458,7 @@ pub fn read(bytes: &[u8]) -> Result<Vec<IoObject>> {
             hidden: meta("hidden").is_some_and(|v| v == "1"),
             locked: meta("locked").is_some_and(|v| v == "1"),
             hole: meta("hole").is_some_and(|v| v == "1"),
+            params: meta("params").filter(|_| ours),
             keep_position: ours,
             ..Default::default()
         };
@@ -622,8 +624,11 @@ fn model_xml(objects: &[IoObject], negative: bool) -> (String, String) {
     model.push_str("</basematerials>\n");
     for (i, o) in objects.iter().enumerate() {
         let _ = writeln!(model, r#"<object id="{}" type="model" name="{}" pid="1" pindex="{}">"#, i + 2, esc(&o.name), i);
-        if o.hidden || o.locked || o.hole {
+        if o.hidden || o.locked || o.hole || o.params.is_some() {
             model.push_str("<metadatagroup>");
+            if let Some(p) = &o.params {
+                let _ = write!(model, r#"<metadata name="b3d:params">{}</metadata>"#, esc(p));
+            }
             if o.hidden {
                 model.push_str(r#"<metadata name="b3d:hidden">1</metadata>"#);
             }
@@ -766,6 +771,29 @@ fn model_xml(objects: &[IoObject], negative: bool) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generator_settings_roundtrip() {
+        use crate::primitives::Primitive;
+        let mut f = crate::threads::Fastener::jar_lid();
+        f.thread.left_hand = true;
+        let prims = [Primitive::Fastener(f), Primitive::default_for("Gear"), Primitive::default_for("Brick (DUPLO-compatible)"), Primitive::default_for("Cube")];
+        let objs: Vec<IoObject> = prims
+            .iter()
+            .enumerate()
+            .map(|(i, p)| IoObject {
+                params: p.to_json(),
+                transform: Some(Mat4::from_translation(Vec3::new(i as f32 * 50.0, 0.0, 0.0))),
+                keep_position: true,
+                ..IoObject::new(format!("o{i}"), crate::primitives::cuboid(Vec3::splat(5.0)), None)
+            })
+            .collect();
+        let back = read(&write(&objs).unwrap()).unwrap();
+        assert_eq!(back.len(), prims.len());
+        for (o, p) in back.iter().zip(&prims) {
+            assert_eq!(o.params.as_deref().and_then(Primitive::from_json), Some(*p), "{}", o.name);
+        }
+    }
 
     #[test]
     fn transforms_and_metadata_roundtrip() {

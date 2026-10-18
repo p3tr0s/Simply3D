@@ -6,7 +6,7 @@ use glam::Vec3;
 use std::f32::consts::TAU;
 
 /// Edge treatment for boxes and cylinders.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum EdgeKind {
     #[default]
     Sharp,
@@ -14,7 +14,7 @@ pub enum EdgeKind {
     Chamfer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Edge {
     pub kind: EdgeKind,
     /// Fillet radius / chamfer distance in mm.
@@ -29,7 +29,7 @@ impl Default for Edge {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Primitive {
     Box {
         size: Vec3,
@@ -96,6 +96,14 @@ impl Primitive {
         "Tile (DUPLO-compatible)",
     ];
     pub const STORAGE_NAMES: [&'static str; 3] = ["Box with lid", "Gridfinity bin", "Gridfinity baseplate"];
+
+    /// The settings as JSON (stored in 3MF projects).
+    pub fn to_json(&self) -> Option<String> {
+        serde_json::to_string(self).ok()
+    }
+    pub fn from_json(s: &str) -> Option<Primitive> {
+        serde_json::from_str(s).ok()
+    }
 
     pub fn default_for(name: &str) -> Primitive {
         match name {

@@ -32,6 +32,7 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Modular storage:** grid-based storage bins, with an optional stacking lip, compartments and magnet pockets, plus matching baseplates.
 - **Building bricks:** studded bricks, plates and smooth tiles in two sizes, with fit settings so printed parts click together.
 - **Click to place:** new shapes follow the pointer and stand on whatever face you click.
+- **Edit them later:** select a generated part (gear, bolt, box, bin, brick…) and change its settings in the side panel; it rebuilds in place. The settings are saved in your 3MF projects.
 
 ![Gears, a spring, a print-in-place hinge, a bolt, nut, threaded rod and snap-fit clip](docs/screenshots/parts.png)
 
@@ -41,7 +42,8 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - Move, rotate and scale with the mouse or the gizmo, with **snapping** to grid steps and to other objects (guides show what lines up).
 - **Exact values everywhere:** position, size in mm (with locked proportions), scale %, rotation. Number fields accept maths and units (`20+5`, `1in`, `*2`, `50%`).
 - **Type a distance while dragging** for an exact move, or nudge with the arrow keys.
-- Align, distribute, mirror, lay flat on a face, drop to plate, linear and grid arrays.
+- Align, distribute, mirror, lay flat on a face, drop to plate.
+- **Arrays:** grid copies, or **circular** copies around a centre (spokes, bolt circles, petals) with a live preview of where they go.
 - **Auto-arrange** packs parts on the plate; **auto-orient** turns parts for the least overhang.
 - Groups, hide, isolate and lock. Unlimited undo and redo.
 
@@ -49,6 +51,7 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Union, subtract and intersect** with a robust boolean engine that runs in the background.
 - **Holes:** turn any object into a hole that cuts live as you move it. Save it as a negative part for the slicer or as a finished cut.
 - **Cut with a plane**, with optional **pegs or dowels** so the halves fit back together.
+- **Split to fit the printer:** a model too big for your printer is cut into pieces that fit (turned if that saves pieces), with pegs or dowels, and laid out ready to print.
 - Merge, split into separate parts, and separate selected faces.
 
 ### Mesh tools
@@ -74,7 +77,8 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 ### View and measure
 - Perspective or orthographic view, view presets, and a clickable axis indicator.
 - **Smooth shading**, **wireframe**, **section view** and X-ray. Open or inside-out surfaces show in red.
-- Printer plate presets with warnings for parts off or below the plate.
+- **Print check:** colours **overhangs**, **thin walls** and **islands** (spots that start in mid-air) so you can fix or support them before slicing. Set the overhang angle and the thinnest wall for your nozzle.
+- Printer presets (plate size and height) with warnings for parts off or below the plate.
 - **Measure** distances, angles, the gap between faces, and hole or pin diameters. Scale a model to a measured size, or add a tube or channel between two points.
 - Stays responsive on multi-million-triangle models.
 

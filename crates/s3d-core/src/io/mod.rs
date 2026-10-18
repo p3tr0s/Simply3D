@@ -26,6 +26,8 @@ pub struct IoObject {
     pub keep_position: bool,
     /// A negative object: removes material from the solids it overlaps, never printed.
     pub hole: bool,
+    /// Generator settings (JSON) of a generated shape, so it can be edited again.
+    pub params: Option<String>,
 }
 
 /// How holes are written to 3MF files.

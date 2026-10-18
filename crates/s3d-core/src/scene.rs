@@ -284,6 +284,15 @@ pub struct Object {
     pub group: Option<GroupId>,
     /// Negative object: cuts the solids it overlaps, never printed.
     pub hole: bool,
+    /// The generator settings this mesh was made from (see [`Object::parametric`]).
+    pub params: Option<Params>,
+}
+
+/// Settings of a generated shape, valid while the object still has the mesh they built.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Params {
+    pub prim: crate::primitives::Primitive,
+    pub mesh_id: u64,
 }
 
 pub type GroupId = u64;
@@ -295,6 +304,14 @@ pub struct Group {
 }
 
 impl Object {
+    /// The generator settings, if the mesh hasn't been edited since it was generated.
+    pub fn parametric(&self) -> Option<crate::primitives::Primitive> {
+        self.params.filter(|p| p.mesh_id == self.mesh.id).map(|p| p.prim)
+    }
+    /// Remember that the current mesh was generated from `prim`.
+    pub fn set_params(&mut self, prim: crate::primitives::Primitive) {
+        self.params = Some(Params { prim, mesh_id: self.mesh.id });
+    }
     pub fn matrix(&self) -> Mat4 {
         self.transform.matrix()
     }
@@ -351,6 +368,7 @@ impl Scene {
             locked: false,
             group: None,
             hole: false,
+            params: None,
         });
         id
     }

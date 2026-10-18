@@ -8,7 +8,7 @@ use crate::text::extrude_contours;
 use glam::{Mat4, Vec2, Vec3};
 use std::f32::consts::{PI, TAU};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Gear {
     pub teeth: u32,
     /// Module (tooth size), mm: pitch diameter = module × teeth.
@@ -100,7 +100,7 @@ pub fn gear_mesh(g: &Gear) -> Mesh {
 
 // ---------- spring ----------
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Spring {
     /// Outside diameter of the coil.
     pub diameter: f32,
@@ -199,7 +199,7 @@ pub fn spring_mesh(s: &Spring) -> Mesh {
 
 // ---------- print-in-place hinge ----------
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Hinge {
     /// Along the pin.
     pub length: f32,
@@ -272,7 +272,7 @@ pub fn hinge_mesh(h: &Hinge) -> crate::Result<Mesh> {
 
 // ---------- snap-fit clip ----------
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SnapClip {
     /// Beam length (to the tip).
     pub length: f32,
