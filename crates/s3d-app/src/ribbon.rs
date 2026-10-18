@@ -284,16 +284,22 @@ fn insert_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     });
     group(ui, "Text & pictures", |ui| {
         if big(ui, "type", "Text", true, app.tool == Tool::Text, false)
-            .on_hover_text("3D text, or emboss / engrave it onto a face (T)")
+            .on_hover_text("3D text, or emboss / engrave it onto a face (T). Click again to close it")
             .clicked()
         {
-            app.start_text_tool();
+            if app.tool == Tool::Text {
+                app.tool = Tool::Select;
+            } else {
+                app.start_text_tool();
+            }
         }
         if big(ui, "image", "Picture", true, app.tool == Tool::Image, false)
             .on_hover_text("Turn a picture into 3D: contour, height map, edge, stamp, lithophane")
             .clicked()
         {
-            if app.img_rt.source.is_some() {
+            if app.tool == Tool::Image {
+                app.tool = Tool::Select;
+            } else if app.img_rt.source.is_some() {
                 app.tool = Tool::Image;
             } else {
                 app.image_dialog(ctx);

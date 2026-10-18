@@ -169,7 +169,11 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         app.tool = Tool::Measure;
     }
     if key(Key::T) {
-        app.start_text_tool();
+        if app.tool == Tool::Text {
+            app.tool = Tool::Select;
+        } else {
+            app.start_text_tool();
+        }
     }
     if key(Key::P) {
         app.start_paint_tool();

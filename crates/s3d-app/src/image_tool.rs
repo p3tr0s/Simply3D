@@ -415,8 +415,9 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         TextMode::Object => {
             if ui.add_enabled(app.img_rt.mesh.is_some(), egui::Button::new(RichText::new("Add to plate").strong())).clicked() {
                 app.add_image_object(ctx, None);
+                app.tool = crate::app::Tool::Select;
             }
-            ui.weak("…or click the plate or any face to stand it there.");
+            ui.weak("…or click the plate or any face to stand it there (Shift+click to place more).");
         }
         _ => {
             ui.label("Hover over a face to preview, click to apply.");

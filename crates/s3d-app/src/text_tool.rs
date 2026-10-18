@@ -293,7 +293,7 @@ impl App {
         let name = self.scene.unique_name(&format!("Text \"{}\"", name.trim()));
         let id = self.scene.add_world_mesh(name, base.mesh.transformed(&m), None);
         self.selection = vec![id];
-        self.info("Text added — drag it anywhere, or click the plate or a face to add another");
+        self.info("Text added — drag it anywhere. Shift+click places more while the text tool is open");
     }
 
     /// How the target's surface curves under a shape of half-size `half` placed at
@@ -595,8 +595,9 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
         TextMode::Object => {
             if ui.add_enabled(app.text_base().is_some(), egui::Button::new(RichText::new("Add to plate").strong())).clicked() {
                 app.add_text_object(None);
+                app.tool = crate::app::Tool::Select;
             }
-            ui.weak("…or click the plate or any face to stand it there.");
+            ui.weak("…or click the plate or any face to stand it there (Shift+click to place more).");
         }
         _ => {
             ui.label(if mode == TextMode::Emboss {

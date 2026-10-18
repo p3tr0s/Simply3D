@@ -354,9 +354,13 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                         (TextMode::Object, h) => {
                             if app.img_rt.mesh.is_some() {
                                 app.add_image_object(&ctx, h);
+                                placed_one(app, shift);
                             }
                         }
-                        (_, Some(h)) => app.apply_image_on_surface(&ctx, h),
+                        (_, Some(h)) => {
+                            app.apply_image_on_surface(&ctx, h);
+                            placed_one(app, shift);
+                        }
                         _ => {}
                     }
                 }
@@ -388,8 +392,14 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                 Tool::Text => {
                     let ctx = ui.ctx().clone();
                     match (app.settings.text.mode, app.text_rt.hover) {
-                        (TextMode::Object, h) => app.add_text_object(h),
-                        (_, Some(h)) => app.apply_text_on_surface(&ctx, h),
+                        (TextMode::Object, h) => {
+                            app.add_text_object(h);
+                            placed_one(app, shift);
+                        }
+                        (_, Some(h)) => {
+                            app.apply_text_on_surface(&ctx, h);
+                            placed_one(app, shift);
+                        }
                         _ => {}
                     }
                 }
@@ -1036,14 +1046,14 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
         Tool::LayFlat => Some("Lay flat: click the face that should touch the plate"),
         Tool::Cut => Some("Cut: set the plane in the right panel, Enter to cut"),
         Tool::Text => Some(match app.settings.text.mode {
-            TextMode::Object => "Text: click the plate or a face to place it",
-            TextMode::Emboss => "Emboss: click a face",
-            TextMode::Engrave => "Engrave: click a face",
+            TextMode::Object => "Text: click the plate or a face to place it · Shift+click to place more",
+            TextMode::Emboss => "Emboss: click a face · Shift+click to do more",
+            TextMode::Engrave => "Engrave: click a face · Shift+click to do more",
         }),
         Tool::Image => Some(match app.settings.image.place {
-            TextMode::Object => "Picture: click the plate or a face to place it",
-            TextMode::Emboss => "Emboss picture: click a face",
-            TextMode::Engrave => "Engrave picture: click a face",
+            TextMode::Object => "Picture: click the plate or a face to place it · Shift+click to place more",
+            TextMode::Emboss => "Emboss picture: click a face · Shift+click to do more",
+            TextMode::Engrave => "Engrave picture: click a face · Shift+click to do more",
         }),
         Tool::Paint => Some(match app.settings.paint.mode {
             crate::paint_tool::PaintMode::Brush => "Paint: drag on the model · drag off it to orbit · Ctrl+click picks a colour",
@@ -1179,6 +1189,14 @@ fn plate_warnings(app: &mut App, ui: &mut egui::Ui, view: &View) {
                 }
             });
         });
+}
+
+/// After placing text or a picture the tool closes (like adding a shape); Shift keeps it
+/// open for another one.
+fn placed_one(app: &mut App, shift: bool) {
+    if !shift {
+        app.tool = Tool::Select;
+    }
 }
 
 /// Decide what a left-drag does, based on what is under the press point and modifiers.
