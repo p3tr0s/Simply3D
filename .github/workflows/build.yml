@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item target/release/simply3d.exe, README.md, LICENSE dist/
+          Copy-Item target/release/simply3d.exe, LICENSE dist/
           Compress-Archive dist/* Simply3D-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -39,4 +39,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: Simply3D-windows-x64.zip
-          generate_release_notes: true
