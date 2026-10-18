@@ -2,6 +2,8 @@
 name = "s3d-app"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
 description = "Simply3D desktop app"
 
 [[bin]]
