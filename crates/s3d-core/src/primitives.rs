@@ -80,12 +80,15 @@ pub enum Primitive {
     Enclosure(crate::organizers::Enclosure),
     GridBin(crate::organizers::GridBin),
     GridPlate(crate::organizers::GridPlate),
+    Brick(crate::bricks::Brick),
 }
 
 impl Primitive {
     pub const ALL_NAMES: [&'static str; 8] = ["Box", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
     pub const FASTENER_NAMES: [&'static str; 4] = ["Bolt", "Nut", "Threaded rod", "Threaded hole"];
     pub const PART_NAMES: [&'static str; 4] = ["Gear", "Spring", "Hinge", "Snap-fit clip"];
+    pub const BRICK_NAMES: [&'static str; 4] =
+        ["Brick (LEGO-compatible)", "Plate (LEGO-compatible)", "Tile (LEGO-compatible)", "Brick (DUPLO-compatible)"];
     pub const STORAGE_NAMES: [&'static str; 3] = ["Box with lid", "Gridfinity bin", "Gridfinity baseplate"];
 
     pub fn default_for(name: &str) -> Primitive {
@@ -114,6 +117,10 @@ impl Primitive {
             "Box with lid" => Primitive::Enclosure(Default::default()),
             "Gridfinity bin" => Primitive::GridBin(Default::default()),
             "Gridfinity baseplate" => Primitive::GridPlate(Default::default()),
+            "Brick (LEGO-compatible)" => Primitive::Brick(crate::bricks::Brick::lego(4, 2, 3, true)),
+            "Plate (LEGO-compatible)" => Primitive::Brick(crate::bricks::Brick::lego(4, 2, 1, true)),
+            "Tile (LEGO-compatible)" => Primitive::Brick(crate::bricks::Brick::lego(2, 2, 1, false)),
+            "Brick (DUPLO-compatible)" => Primitive::Brick(crate::bricks::Brick::duplo(4, 2)),
             _ => Primitive::Box { size: Vec3::splat(20.0), edge: Edge::default() },
         }
     }
@@ -141,6 +148,12 @@ impl Primitive {
             Primitive::Enclosure(_) => "Box with lid",
             Primitive::GridBin(_) => "Gridfinity bin",
             Primitive::GridPlate(_) => "Gridfinity baseplate",
+            Primitive::Brick(b) => match (b.system, b.studs, b.height) {
+                (crate::bricks::BrickSystem::Duplo, _, _) => "Brick (DUPLO-compatible)",
+                (_, false, _) => "Tile (LEGO-compatible)",
+                (_, true, h) if h < 3 => "Plate (LEGO-compatible)",
+                _ => "Brick (LEGO-compatible)",
+            },
         }
     }
 
@@ -174,8 +187,10 @@ impl Primitive {
             | Primitive::SnapClip(_)
             | Primitive::Enclosure(_)
             | Primitive::GridBin(_)
-            | Primitive::GridPlate(_) => {
+            | Primitive::GridPlate(_)
+            | Primitive::Brick(_) => {
                 let mut m = match *self {
+                    Primitive::Brick(b) => crate::bricks::brick_mesh(&b).unwrap_or_default(),
                     Primitive::Enclosure(e) => crate::organizers::enclosure_mesh(&e).unwrap_or_default(),
                     Primitive::GridBin(b) => crate::organizers::gridfinity_bin(&b).unwrap_or_default(),
                     Primitive::GridPlate(p) => crate::organizers::gridfinity_baseplate(&p).unwrap_or_default(),

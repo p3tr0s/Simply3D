@@ -7,6 +7,7 @@
 
 pub mod analysis;
 pub mod arrange;
+pub mod bricks;
 pub mod bvh;
 pub mod connectors;
 pub mod csg;

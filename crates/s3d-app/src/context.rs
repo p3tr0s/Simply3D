@@ -219,6 +219,12 @@ fn scene_menu(app: &mut App, ui: &mut egui::Ui) {
                 app.add_dialog = Some(Primitive::default_for(name));
             }
         }
+        ui.separator();
+        for name in Primitive::BRICK_NAMES {
+            if item(ui, true, name, "") {
+                app.add_dialog = Some(Primitive::default_for(name));
+            }
+        }
     });
     if item(ui, true, "Add text…", "T") {
         app.settings.text.mode = TextMode::Object;

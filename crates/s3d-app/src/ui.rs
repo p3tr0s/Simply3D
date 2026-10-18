@@ -1725,6 +1725,66 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                             ));
                             ui.end_row();
                         }
+                        Primitive::Brick(b) => {
+                            use s3d_core::bricks::BrickSystem;
+                            ui.label("System");
+                            ui.horizontal(|ui| {
+                                let before = b.system;
+                                ui.selectable_value(&mut b.system, BrickSystem::Lego, "LEGO® size (8 mm)");
+                                ui.selectable_value(&mut b.system, BrickSystem::Duplo, "DUPLO® size (16 mm)");
+                                if b.system != before {
+                                    b.height = b.system.dims().brick_units;
+                                    b.hollow_studs = b.system == BrickSystem::Duplo;
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("Studs");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut b.studs_x).range(1..=48).suffix(" ×"));
+                                ui.add(egui::DragValue::new(&mut b.studs_y).range(1..=48));
+                            });
+                            ui.end_row();
+                            let d = b.system.dims();
+                            ui.label("Height");
+                            ui.horizontal(|ui| {
+                                let unit = if b.system == BrickSystem::Lego { "plate" } else { "half brick" };
+                                ui.add(egui::DragValue::new(&mut b.height).range(1..=36).suffix(format!(" × {unit}")));
+                                ui.weak(format!("{:.1} mm", b.height as f32 * d.unit));
+                                if ui.small_button("Plate").on_hover_text("One plate (LEGO) / half brick (DUPLO)").clicked() {
+                                    b.height = 1;
+                                }
+                                if ui.small_button("Brick").clicked() {
+                                    b.height = d.brick_units;
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("Top");
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(&mut b.studs, true, "Studs");
+                                ui.selectable_value(&mut b.studs, false, "Smooth (tile)");
+                                if b.studs {
+                                    ui.checkbox(&mut b.hollow_studs, "Hollow studs");
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("Fit: studs");
+                            ui.add(num(&mut b.stud_fit, Kind::Length).speed(0.01).range(-0.5..=0.5).suffix(" mm")).on_hover_text(
+                                "Added to the stud diameter. If your printed studs are too tight in real bricks, go negative (−0.05 to −0.15)",
+                            );
+                            ui.end_row();
+                            ui.label("Fit: underneath");
+                            ui.add(num(&mut b.tube_fit, Kind::Length).speed(0.01).range(-0.5..=0.5).suffix(" mm")).on_hover_text(
+                                "Added to the tubes, pins and ribs that grip the studs below: + grips harder, − looser",
+                            );
+                            ui.end_row();
+                            ui.label("");
+                            ui.weak(format!(
+                                "{:.1} × {:.1} mm. Print a 2×2 test first and tune the fit; 3 walls, 0.16 mm layers help. LEGO® and DUPLO® are trademarks of the LEGO Group.",
+                                b.studs_x as f32 * d.pitch - 2.0 * d.gap,
+                                b.studs_y as f32 * d.pitch - 2.0 * d.gap
+                            ));
+                            ui.end_row();
+                        }
                         Primitive::GridPlate(p) => {
                             ui.label("Size (grid squares)");
                             ui.horizontal(|ui| {

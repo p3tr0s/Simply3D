@@ -236,6 +236,15 @@ pub fn all() -> Vec<Command> {
         Some(Primitive::default_for("Box with lid"))));
     v.push(cmd!("Add", "Add Gridfinity bin", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Gridfinity bin"))));
     v.push(cmd!("Add", "Add Gridfinity baseplate", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Gridfinity baseplate"))));
+    v.push(cmd!("Add", "Add brick (LEGO-compatible)", "", always, |a, _| a.add_dialog =
+        Some(Primitive::default_for("Brick (LEGO-compatible)"))));
+    v.push(cmd!("Add", "Add plate (LEGO-compatible)", "", always, |a, _| a.add_dialog =
+        Some(Primitive::default_for("Plate (LEGO-compatible)"))));
+    v.push(
+        cmd!("Add", "Add tile (LEGO-compatible)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Tile (LEGO-compatible)")))
+    );
+    v.push(cmd!("Add", "Add brick (DUPLO-compatible)", "", always, |a, _| a.add_dialog =
+        Some(Primitive::default_for("Brick (DUPLO-compatible)"))));
     v.push(cmd!("Add", "Add spring (compression)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Spring"))));
     v.push(cmd!("Add", "Add hinge (print-in-place)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Hinge"))));
     v.push(cmd!("Add", "Add snap-fit clip", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Snap-fit clip"))));

@@ -278,6 +278,10 @@ fn insert_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         let r = big(ui, "boxes", "Gridfinity", true, false, true).on_hover_text("Gridfinity bins and baseplates (42 mm grid)");
         egui::Popup::menu(&r).show(|ui| add_menu(ui, app, &Primitive::STORAGE_NAMES[1..]));
     });
+    group(ui, "Toys", |ui| {
+        let r = big(ui, "blocks", "Bricks", true, false, true).on_hover_text("Bricks, plates and tiles that fit LEGO® and DUPLO® bricks");
+        egui::Popup::menu(&r).show(|ui| add_menu(ui, app, &Primitive::BRICK_NAMES));
+    });
     group(ui, "Text & pictures", |ui| {
         if big(ui, "type", "Text", true, app.tool == Tool::Text, false)
             .on_hover_text("3D text, or emboss / engrave it onto a face (T)")

@@ -1047,6 +1047,15 @@ impl App {
             Primitive::Enclosure(e) => format!("Box {:.0}×{:.0}×{:.0}", e.size.x, e.size.y, e.size.z),
             Primitive::GridBin(b) => format!("Gridfinity bin {}×{}×{}", b.units_x, b.units_y, b.height_units),
             Primitive::GridPlate(p) => format!("Gridfinity baseplate {}×{}", p.units_x, p.units_y),
+            Primitive::Brick(b) => {
+                let kind = match (b.system, b.studs, b.height) {
+                    (s3d_core::bricks::BrickSystem::Duplo, _, _) => "Duplo brick",
+                    (_, false, _) => "Tile",
+                    (_, true, 1) => "Plate",
+                    _ => "Brick",
+                };
+                format!("{kind} {}×{}", b.studs_x, b.studs_y)
+            }
             _ => p.name().to_string(),
         };
         let hole = matches!(p, Primitive::Fastener(f) if f.kind == s3d_core::threads::FastenerKind::ThreadedHole);

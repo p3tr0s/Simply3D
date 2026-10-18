@@ -10,6 +10,7 @@ pub fn source(name: &str) -> ImageSource<'static> {
         "arrow-down-to-dot" => egui::include_image!("../icons/arrow-down-to-dot.svg"),
         "arrow-down-to-line" => egui::include_image!("../icons/arrow-down-to-line.svg"),
         "axis-3d" => egui::include_image!("../icons/axis-3d.svg"),
+        "blocks" => egui::include_image!("../icons/blocks.svg"),
         "bolt" => egui::include_image!("../icons/bolt.svg"),
         "box" => egui::include_image!("../icons/box.svg"),
         "boxes" => egui::include_image!("../icons/boxes.svg"),
