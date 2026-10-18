@@ -245,6 +245,10 @@ pub fn all() -> Vec<Command> {
     );
     v.push(cmd!("Add", "Add brick (DUPLO-compatible)", "", always, |a, _| a.add_dialog =
         Some(Primitive::default_for("Brick (DUPLO-compatible)"))));
+    v.push(cmd!("Add", "Add plate (DUPLO-compatible)", "", always, |a, _| a.add_dialog =
+        Some(Primitive::default_for("Plate (DUPLO-compatible)"))));
+    v.push(cmd!("Add", "Add tile (DUPLO-compatible)", "", always, |a, _| a.add_dialog =
+        Some(Primitive::default_for("Tile (DUPLO-compatible)"))));
     v.push(cmd!("Add", "Add spring (compression)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Spring"))));
     v.push(cmd!("Add", "Add hinge (print-in-place)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Hinge"))));
     v.push(cmd!("Add", "Add snap-fit clip", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Snap-fit clip"))));

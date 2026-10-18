@@ -1048,11 +1048,14 @@ impl App {
             Primitive::GridBin(b) => format!("Gridfinity bin {}×{}×{}", b.units_x, b.units_y, b.height_units),
             Primitive::GridPlate(p) => format!("Gridfinity baseplate {}×{}", p.units_x, p.units_y),
             Primitive::Brick(b) => {
-                let kind = match (b.system, b.studs, b.height) {
-                    (s3d_core::bricks::BrickSystem::Duplo, _, _) => "Duplo brick",
-                    (_, false, _) => "Tile",
-                    (_, true, 1) => "Plate",
-                    _ => "Brick",
+                let plate = b.height < b.system.dims().brick_units;
+                let kind = match (b.system, b.studs, plate) {
+                    (s3d_core::bricks::BrickSystem::Lego, false, _) => "Tile",
+                    (s3d_core::bricks::BrickSystem::Lego, true, true) => "Plate",
+                    (s3d_core::bricks::BrickSystem::Lego, true, false) => "Brick",
+                    (_, false, _) => "Duplo tile",
+                    (_, true, true) => "Duplo plate",
+                    (_, true, false) => "Duplo brick",
                 };
                 format!("{kind} {}×{}", b.studs_x, b.studs_y)
             }

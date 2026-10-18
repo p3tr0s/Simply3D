@@ -87,8 +87,14 @@ impl Primitive {
     pub const ALL_NAMES: [&'static str; 8] = ["Cube", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
     pub const FASTENER_NAMES: [&'static str; 4] = ["Bolt", "Nut", "Threaded rod", "Threaded hole"];
     pub const PART_NAMES: [&'static str; 4] = ["Gear", "Spring", "Hinge", "Snap-fit clip"];
-    pub const BRICK_NAMES: [&'static str; 4] =
-        ["Brick (LEGO-compatible)", "Plate (LEGO-compatible)", "Tile (LEGO-compatible)", "Brick (DUPLO-compatible)"];
+    pub const BRICK_NAMES: [&'static str; 6] = [
+        "Brick (LEGO-compatible)",
+        "Plate (LEGO-compatible)",
+        "Tile (LEGO-compatible)",
+        "Brick (DUPLO-compatible)",
+        "Plate (DUPLO-compatible)",
+        "Tile (DUPLO-compatible)",
+    ];
     pub const STORAGE_NAMES: [&'static str; 3] = ["Box with lid", "Gridfinity bin", "Gridfinity baseplate"];
 
     pub fn default_for(name: &str) -> Primitive {
@@ -121,6 +127,10 @@ impl Primitive {
             "Plate (LEGO-compatible)" => Primitive::Brick(crate::bricks::Brick::lego(4, 2, 1, true)),
             "Tile (LEGO-compatible)" => Primitive::Brick(crate::bricks::Brick::lego(2, 2, 1, false)),
             "Brick (DUPLO-compatible)" => Primitive::Brick(crate::bricks::Brick::duplo(4, 2)),
+            "Plate (DUPLO-compatible)" => Primitive::Brick(crate::bricks::Brick { height: 1, ..crate::bricks::Brick::duplo(4, 2) }),
+            "Tile (DUPLO-compatible)" => {
+                Primitive::Brick(crate::bricks::Brick { height: 1, studs: false, ..crate::bricks::Brick::duplo(2, 2) })
+            }
             _ => Primitive::Box { size: Vec3::splat(20.0), edge: Edge::default() },
         }
     }
@@ -148,12 +158,18 @@ impl Primitive {
             Primitive::Enclosure(_) => "Box with lid",
             Primitive::GridBin(_) => "Gridfinity bin",
             Primitive::GridPlate(_) => "Gridfinity baseplate",
-            Primitive::Brick(b) => match (b.system, b.studs, b.height) {
-                (crate::bricks::BrickSystem::Duplo, _, _) => "Brick (DUPLO-compatible)",
-                (_, false, _) => "Tile (LEGO-compatible)",
-                (_, true, h) if h < 3 => "Plate (LEGO-compatible)",
-                _ => "Brick (LEGO-compatible)",
-            },
+            Primitive::Brick(b) => {
+                use crate::bricks::BrickSystem::{Duplo, Lego};
+                let plate = b.height < b.system.dims().brick_units;
+                match (b.system, b.studs, plate) {
+                    (Lego, false, _) => "Tile (LEGO-compatible)",
+                    (Lego, true, true) => "Plate (LEGO-compatible)",
+                    (Lego, true, false) => "Brick (LEGO-compatible)",
+                    (Duplo, false, _) => "Tile (DUPLO-compatible)",
+                    (Duplo, true, true) => "Plate (DUPLO-compatible)",
+                    (Duplo, true, false) => "Brick (DUPLO-compatible)",
+                }
+            }
         }
     }
 

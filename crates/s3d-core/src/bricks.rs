@@ -205,6 +205,9 @@ mod tests {
             (Brick::lego(2, 2, 1, false), Vec3::new(15.8, 15.8, 3.2)),
             (Brick::lego(1, 1, 3, true), Vec3::new(7.8, 7.8, 9.6 + 1.7)),
             (Brick::duplo(2, 4), Vec3::new(31.7, 63.7, 19.2 + 4.5)),
+            (Brick { height: 1, ..Brick::duplo(4, 2) }, Vec3::new(63.7, 31.7, 9.6 + 4.5)),
+            (Brick { height: 1, studs: false, ..Brick::duplo(2, 2) }, Vec3::new(31.7, 31.7, 9.6)),
+            (Brick { height: 1, ..Brick::duplo(1, 2) }, Vec3::new(15.7, 31.7, 9.6 + 4.5)),
         ] {
             let m = brick_mesh(&b).unwrap();
             assert!(analyze(&m).is_watertight(), "{b:?}");
