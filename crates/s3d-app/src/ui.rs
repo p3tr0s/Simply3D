@@ -1494,7 +1494,8 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
     if let Some(mut p) = app.add_dialog {
         let mut open = true;
         let mut add = false;
-        egui::Window::new(format!("Add {}", p.name()))
+        egui::Window::new(format!("Add {}", p.display_name()))
+            .id(egui::Id::new("add_shape_dialog"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)

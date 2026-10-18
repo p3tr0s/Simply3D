@@ -1056,7 +1056,7 @@ impl App {
                 };
                 format!("{kind} {}×{}", b.studs_x, b.studs_y)
             }
-            _ => p.name().to_string(),
+            _ => p.display_name().to_string(),
         };
         let hole = matches!(p, Primitive::Fastener(f) if f.kind == s3d_core::threads::FastenerKind::ThreadedHole);
         let note = hole.then(|| "Threaded hole added as a hole: it cuts the thread into whatever it overlaps".to_string());

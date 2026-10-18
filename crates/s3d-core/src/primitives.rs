@@ -157,6 +157,14 @@ impl Primitive {
         }
     }
 
+    /// The name shown to people: a box with three equal sides is a cube.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Primitive::Box { size, .. } if (size.x - size.y).abs() < 1e-4 && (size.y - size.z).abs() < 1e-4 => "Cube",
+            _ => self.name(),
+        }
+    }
+
     pub fn build(&self) -> Mesh {
         match *self {
             Primitive::Box { size, edge } => match edge.kind {
