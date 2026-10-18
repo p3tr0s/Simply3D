@@ -1560,7 +1560,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                             mm(ui, "Height", height);
                         }
                         Primitive::Fastener(f) => {
-                            use s3d_core::threads::{FastenerKind, Head, SIZES};
+                            use s3d_core::threads::{standards, FastenerKind, Head, NutShape, ThreadProfile, SIZES};
                             ui.label("Type");
                             ui.horizontal(|ui| {
                                 ui.selectable_value(&mut f.kind, FastenerKind::Bolt, "Bolt");
@@ -1572,32 +1572,156 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                             });
                             ui.end_row();
                             ui.label("Size");
-                            egui::ComboBox::from_id_salt("thread_size").selected_text(f.spec().name).show_ui(ui, |ui| {
-                                for (i, s) in SIZES.iter().enumerate() {
-                                    ui.selectable_value(&mut f.size, i, format!("{}  (pitch {} mm)", s.name, s.pitch));
-                                }
+                            let current = f.standard_index();
+                            egui::ComboBox::from_id_salt("thread_size")
+                                .selected_text(if current.is_some() { f.thread_name() } else { "Custom".to_string() })
+                                .height(420.0)
+                                .show_ui(ui, |ui| {
+                                    ui.label(RichText::new("Metric coarse").weak().small());
+                                    for (i, s) in standards().enumerate() {
+                                        if i == SIZES.len() {
+                                            ui.label(RichText::new("Inch (UNC)").weak().small());
+                                        }
+                                        let pitch = format!("{:.3}", s.pitch);
+                                        let text = format!("{}  (pitch {} mm)", s.name, pitch.trim_end_matches('0').trim_end_matches('.'));
+                                        if ui.selectable_label(current == Some(i), text).clicked() {
+                                            f.apply_standard(i);
+                                        }
+                                    }
+                                });
+                            ui.end_row();
+
+                            // the thread itself
+                            ui.label("Diameter");
+                            ui.horizontal(|ui| {
+                                ui.add(num(&mut f.thread.diameter, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm")).on_hover_text(NUM_TIP);
+                                ui.label("Pitch");
+                                ui.add(num(&mut f.thread.pitch, Kind::Length).speed(0.01).range(0.1..=50.0).suffix(" mm"))
+                                    .on_hover_text("Distance between neighbouring crests. For inch threads type 25.4/TPI, e.g. 25.4/20");
+                                ui.weak(format!("{:.1} TPI", 25.4 / f.thread.pitch.max(0.01)));
                             });
                             ui.end_row();
+                            ui.label("Profile");
+                            ui.horizontal(|ui| {
+                                egui::ComboBox::from_id_salt("thread_profile")
+                                    .selected_text(ThreadProfile::ALL.iter().find(|p| p.0 == f.thread.profile).map(|p| p.1).unwrap_or(""))
+                                    .show_ui(ui, |ui| {
+                                        for (p, name) in ThreadProfile::ALL {
+                                            ui.selectable_value(&mut f.thread.profile, p, name);
+                                        }
+                                    });
+                            });
+                            ui.end_row();
+                            ui.label("Thread depth");
+                            ui.horizontal(|ui| {
+                                let auto = f.thread.depth <= 0.0;
+                                let mut custom = !auto;
+                                if ui.checkbox(&mut custom, "Custom").on_hover_text("Off: the standard depth for the profile").changed() {
+                                    f.thread.depth = if custom { f.thread.profile.depth(f.thread.pitch) } else { 0.0 };
+                                }
+                                if custom {
+                                    ui.add(num(&mut f.thread.depth, Kind::Length).speed(0.01).range(0.05..=50.0).suffix(" mm"));
+                                } else {
+                                    ui.weak(format!("{:.2} mm", f.thread.depth()));
+                                }
+                                ui.weak(format!("minor Ø {:.2} mm", f.thread.minor()));
+                            });
+                            ui.end_row();
+                            ui.label("Starts");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut f.thread.starts).range(1..=12)).on_hover_text(
+                                    "Threads wound side by side. More starts turn faster: jar lids and quick-release screws use 2–4",
+                                );
+                                ui.weak(format!("lead {:.2} mm per turn", f.thread.lead()));
+                                ui.separator();
+                                ui.selectable_value(&mut f.thread.left_hand, false, "Right hand");
+                                ui.selectable_value(&mut f.thread.left_hand, true, "Left hand");
+                            });
+                            ui.end_row();
+
                             if f.kind != FastenerKind::Nut {
-                                ui.label(if f.kind == FastenerKind::ThreadedHole { "Depth" } else { "Thread length" });
-                                ui.add(num(&mut f.length, Kind::Length).speed(0.5).range(1.0..=500.0).suffix(" mm")).on_hover_text(NUM_TIP);
+                                ui.label(if f.kind == FastenerKind::ThreadedHole { "Depth of hole" } else { "Thread length" });
+                                ui.add(num(&mut f.length, Kind::Length).speed(0.5).range(1.0..=1000.0).suffix(" mm")).on_hover_text(NUM_TIP);
+                                ui.end_row();
+                            }
+                            if matches!(f.kind, FastenerKind::Bolt | FastenerKind::Rod) {
+                                ui.label("Bore");
+                                ui.add(num(&mut f.bore, Kind::Length).speed(0.1).range(0.0..=1000.0).suffix(" mm")).on_hover_text(
+                                    "A hole along the middle (0 = solid): threaded tubes and jar necks, or hollow bolts for cables",
+                                );
                                 ui.end_row();
                             }
                             if f.kind == FastenerKind::Bolt {
+                                ui.label("Plain shank");
+                                ui.add(num(&mut f.shank, Kind::Length).speed(0.5).range(0.0..=1000.0).suffix(" mm"))
+                                    .on_hover_text("Unthreaded part between the head and the thread");
+                                ui.end_row();
                                 ui.label("Head");
-                                ui.horizontal(|ui| {
-                                    ui.selectable_value(&mut f.head, Head::Hex, "Hex");
-                                    ui.selectable_value(&mut f.head, Head::Socket, "Socket");
-                                    ui.selectable_value(&mut f.head, Head::None, "None");
+                                ui.horizontal_wrapped(|ui| {
+                                    for (h, name) in Head::ALL {
+                                        if ui.selectable_value(&mut f.head, h, name).changed() {
+                                            f.reset_head();
+                                        }
+                                    }
                                 });
+                                ui.end_row();
+                                if f.head != Head::None {
+                                    ui.label(if f.head == Head::Hex { "Head across flats" } else { "Head diameter" });
+                                    ui.horizontal(|ui| {
+                                        ui.add(num(&mut f.head_size, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm"));
+                                        ui.label("Height");
+                                        ui.add(num(&mut f.head_height, Kind::Length).speed(0.1).range(0.4..=1000.0).suffix(" mm"));
+                                        if f.head.has_key() {
+                                            ui.label("Key");
+                                            ui.add(num(&mut f.key, Kind::Length).speed(0.05).range(0.0..=100.0).suffix(" mm"))
+                                                .on_hover_text("Hex key socket, across flats (0 = none)");
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            }
+                            if f.kind == FastenerKind::Nut {
+                                ui.label("Shape");
+                                ui.horizontal(|ui| {
+                                    for (s, name) in NutShape::ALL {
+                                        if ui.selectable_value(&mut f.nut_shape, s, name).changed() {
+                                            f.reset_nut();
+                                        }
+                                    }
+                                });
+                                ui.end_row();
+                                ui.label(if matches!(f.nut_shape, NutShape::Hex | NutShape::Square) { "Across flats" } else { "Diameter" });
+                                ui.horizontal(|ui| {
+                                    ui.add(num(&mut f.nut_size, Kind::Length).speed(0.1).range(1.0..=1000.0).suffix(" mm"));
+                                    ui.label("Height");
+                                    ui.add(num(&mut f.nut_height, Kind::Length).speed(0.1).range(0.5..=1000.0).suffix(" mm"));
+                                });
+                                ui.end_row();
+                                ui.label("Closed top");
+                                ui.add(num(&mut f.cap, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"))
+                                    .on_hover_text("Thickness of a closed end, for caps and jar lids (0 = open nut). It prints on the closed face");
                                 ui.end_row();
                             }
                             if matches!(f.kind, FastenerKind::Nut | FastenerKind::ThreadedHole) {
                                 ui.label("Clearance");
-                                ui.add(num(&mut f.clearance, Kind::Length).speed(0.01).range(0.0..=1.0).suffix(" mm"))
+                                ui.add(num(&mut f.clearance, Kind::Length).speed(0.01).range(0.0..=2.0).suffix(" mm"))
                                     .on_hover_text("Extra room on the internal thread so printed parts fit (0.15–0.3 mm is typical)");
                                 ui.end_row();
                             }
+                            if matches!(f.kind, FastenerKind::Bolt | FastenerKind::Rod) {
+                                ui.label("");
+                                ui.checkbox(&mut f.chamfer, "Chamfer the end").on_hover_text("A 45° lead-in so it starts easily in the nut");
+                                ui.end_row();
+                            }
+                            ui.label("");
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Reset head / nut sizes").on_hover_text("Sizes to suit the thread").clicked() {
+                                    f.reset_head();
+                                    f.reset_nut();
+                                }
+                                ui.weak("Print a test pair and tune the clearance for your printer.");
+                            });
+                            ui.end_row();
                         }
                         Primitive::Gear(g) => {
                             ui.label("Teeth");

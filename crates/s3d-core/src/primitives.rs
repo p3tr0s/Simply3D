@@ -85,7 +85,7 @@ pub enum Primitive {
 
 impl Primitive {
     pub const ALL_NAMES: [&'static str; 8] = ["Cube", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
-    pub const FASTENER_NAMES: [&'static str; 4] = ["Bolt", "Nut", "Threaded rod", "Threaded hole"];
+    pub const FASTENER_NAMES: [&'static str; 6] = ["Bolt", "Nut", "Threaded rod", "Threaded hole", "Cap / jar lid", "Threaded tube (jar neck)"];
     pub const PART_NAMES: [&'static str; 4] = ["Gear", "Spring", "Hinge", "Snap-fit clip"];
     pub const BRICK_NAMES: [&'static str; 6] = [
         "Brick (LEGO-compatible)",
@@ -106,6 +106,8 @@ impl Primitive {
             "Tube" => Primitive::Tube { outer_radius: 10.0, inner_radius: 7.0, height: 20.0, segments: 64 },
             "Pyramid" => Primitive::Pyramid { base: 20.0, height: 20.0 },
             "Wedge" => Primitive::Wedge { size: Vec3::new(20.0, 20.0, 20.0) },
+            "Cap / jar lid" => Primitive::Fastener(crate::threads::Fastener::jar_lid()),
+            "Threaded tube (jar neck)" => Primitive::Fastener(crate::threads::Fastener::jar_neck()),
             "Bolt" | "Nut" | "Threaded rod" | "Threaded hole" => {
                 use crate::threads::{Fastener, FastenerKind};
                 let kind = match name {
@@ -147,7 +149,9 @@ impl Primitive {
             Primitive::Wedge { .. } => "Wedge",
             Primitive::Fastener(f) => match f.kind {
                 crate::threads::FastenerKind::Bolt => "Bolt",
+                crate::threads::FastenerKind::Nut if f.cap > 0.0 => "Cap / jar lid",
                 crate::threads::FastenerKind::Nut => "Nut",
+                crate::threads::FastenerKind::Rod if f.bore > 0.0 => "Threaded tube (jar neck)",
                 crate::threads::FastenerKind::Rod => "Threaded rod",
                 crate::threads::FastenerKind::ThreadedHole => "Threaded hole",
             },

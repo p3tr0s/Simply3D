@@ -25,7 +25,8 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Basic shapes:** cube, cylinder, cone, sphere, torus, tube, pyramid and wedge. Cubes and cylinders take exact rounded or chamfered edges.
 - **Text:** any installed font, several lines, with height, depth, spacing and alignment. Place it on the plate, or **emboss or engrave** it onto any face, wrapping around curved surfaces.
 - **Pictures to 3D:** outline, height map, edge, stamp or **lithophane**. Place a picture on the plate, or emboss or engrave it onto a face.
-- **Threads:** ISO metric bolts, nuts, threaded rods and threaded holes (M2–M24) with real thread profiles and print clearances.
+- **Threads:** bolts, nuts, threaded rods, tubes and tapped holes. Pick a standard size (metric M2–M24 or UNC #4–1/2") or make your own: any diameter and pitch; V, trapezoidal, square, buttress or rounded profile; custom depth; multi-start; left- or right-hand. Bolts get hex, socket, countersunk, round or knurled heads and an optional plain shank; nuts can be hex, square, round or knurled, with a closed top for caps. A clearance setting makes printed parts screw together.
+- **Screw-on lids:** a jar lid and matching threaded neck, ready to customise.
 - **Mechanical parts:** involute gears, compression springs, print-in-place hinges and snap-fit clips.
 - **Boxes with lids:** snap, slide or hinged lids, with dividers and a fit clearance.
 - **Modular storage:** grid-based storage bins, with an optional stacking lip, compartments and magnet pockets, plus matching baseplates.

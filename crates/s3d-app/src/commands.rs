@@ -230,7 +230,7 @@ pub fn all() -> Vec<Command> {
     ] {
         v.push(Command { group: "Add", name: label, keys: "", enabled: always, run: add_fn(name) });
     }
-    v.push(cmd!("Add", "Add bolt (metric thread)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Bolt"))));
+    v.push(cmd!("Add", "Add bolt (metric, inch or custom thread)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Bolt"))));
     v.push(cmd!("Add", "Add gear (involute spur gear)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Gear"))));
     v.push(cmd!("Add", "Add box with lid (enclosure, dividers)", "", always, |a, _| a.add_dialog =
         Some(Primitive::default_for("Box with lid"))));
@@ -255,6 +255,9 @@ pub fn all() -> Vec<Command> {
     v.push(cmd!("Add", "Add nut", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Nut"))));
     v.push(cmd!("Add", "Add threaded rod", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Threaded rod"))));
     v.push(cmd!("Add", "Add threaded hole (tapped hole)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Threaded hole"))));
+    v.push(cmd!("Add", "Add cap / jar lid (screw-on)", "", always, |a, _| a.add_dialog = Some(Primitive::default_for("Cap / jar lid"))));
+    v.push(cmd!("Add", "Add threaded tube (jar neck)", "", always, |a, _| a.add_dialog =
+        Some(Primitive::default_for("Threaded tube (jar neck)"))));
     v.push(cmd!("Add", "Add rounded box", "", always, |a, _| {
         a.add_dialog = Some(Primitive::Box { size: glam::Vec3::splat(20.0), edge: Edge { kind: EdgeKind::Fillet, ..Default::default() } })
     }));
