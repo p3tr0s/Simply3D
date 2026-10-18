@@ -166,7 +166,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         app.gizmo_kind = GizmoKind::Off;
     }
     if key(Key::M) {
-        app.tool = Tool::Measure;
+        app.tool = if app.tool == Tool::Measure { Tool::Select } else { Tool::Measure };
     }
     if key(Key::T) {
         if app.tool == Tool::Text {
@@ -198,7 +198,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         app.toggle_section();
     }
     if key(Key::L) {
-        app.tool = Tool::LayFlat;
+        app.tool = if app.tool == Tool::LayFlat { Tool::Select } else { Tool::LayFlat };
     }
     if key(Key::D) {
         app.drop_selected();

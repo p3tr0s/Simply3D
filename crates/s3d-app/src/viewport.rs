@@ -421,6 +421,10 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                 Tool::LayFlat => {
                     if let Some(hit) = pick(app, o, d, false) {
                         app.lay_flat(hit.id, hit.normal);
+                        // done after one, like 3D Builder; Shift+click keeps it on for more
+                        if !response.ctx.input(|i| i.modifiers.shift) {
+                            app.tool = Tool::Select;
+                        }
                     }
                 }
             }
@@ -1085,7 +1089,7 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             crate::app::MeasureMode::Faces => "Faces: click two flat faces",
             crate::app::MeasureMode::Circle => "Hole / pin: click a round surface",
         }),
-        Tool::LayFlat => Some("Lay flat: click the face that should touch the plate"),
+        Tool::LayFlat => Some("Lay flat: click the face that should touch the plate (Shift+click to lay more) · L or Esc to stop"),
         Tool::Cut => Some("Cut: set the plane in the right panel, Enter to cut"),
         Tool::Text => Some(match app.settings.text.mode {
             TextMode::Object => "Text: click the plate or a face to place it · Shift+click to place more",

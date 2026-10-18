@@ -342,10 +342,10 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     });
     group(ui, "Place", |ui| {
         if big(ui, "arrow-down-to-line", "Lay flat", true, app.tool == Tool::LayFlat, false)
-            .on_hover_text("Click a face to put it down on the plate (L)")
+            .on_hover_text("Click a face to put it down on the plate (L). Shift+click to lay several")
             .clicked()
         {
-            app.tool = Tool::LayFlat;
+            app.tool = if app.tool == Tool::LayFlat { Tool::Select } else { Tool::LayFlat };
         }
         if big(ui, "arrow-down-to-dot", "Settle", has, false, false).on_hover_text("Drop onto the plate (D)").clicked() {
             app.drop_selected();
@@ -706,8 +706,8 @@ pub fn object_box(app: &mut App, ui: &mut Ui, view: Rect) {
                         }
                     }
                     ui.separator();
-                    if icon_button(ui, "arrow-down-to-line", "Lay flat: click a face (L)", true, false).clicked() {
-                        app.tool = Tool::LayFlat;
+                    if icon_button(ui, "arrow-down-to-line", "Lay flat: click a face (L)", true, app.tool == Tool::LayFlat).clicked() {
+                        app.tool = if app.tool == Tool::LayFlat { Tool::Select } else { Tool::LayFlat };
                     }
                     if icon_button(ui, "arrow-down-to-dot", "Settle onto the plate (D)", true, false).clicked() {
                         app.drop_selected();
