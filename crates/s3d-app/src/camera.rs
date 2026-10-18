@@ -185,7 +185,7 @@ mod pick_sweep {
     #[test]
     fn no_holes_in_picking() {
         let mut s = Scene::default();
-        for (i, p) in ["Box", "Sphere", "Cylinder", "Torus"].iter().enumerate() {
+        for (i, p) in ["Cube", "Sphere", "Cylinder", "Torus"].iter().enumerate() {
             let m = Primitive::default_for(p).build();
             let rotation = glam::Quat::from_euler(glam::EulerRot::XYZ, 0.5 * i as f32, 0.3, 0.7 * i as f32);
             let scale = Vec3::new(1.0 + 0.3 * i as f32, 0.8, 1.2);

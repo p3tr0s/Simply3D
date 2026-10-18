@@ -254,7 +254,7 @@ fn app_menu(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
 
 fn insert_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     group(ui, "Shapes", |ui| {
-        for (icon, name, label) in [("box", "Box", "Cube"), ("cylinder", "Cylinder", "Cylinder"), ("globe", "Sphere", "Sphere")] {
+        for (icon, name, label) in [("box", "Cube", "Cube"), ("cylinder", "Cylinder", "Cylinder"), ("globe", "Sphere", "Sphere")] {
             if big(ui, icon, label, true, false, false).on_hover_text(format!("Add a {}", label.to_lowercase())).clicked() {
                 app.add_dialog = Some(Primitive::default_for(name));
             }
@@ -774,7 +774,7 @@ pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
                     };
                     if tile(ui, "box", "Add a shape").clicked() {
                         app.ribbon = RibbonTab::Insert;
-                        app.add_dialog = Some(Primitive::default_for("Box"));
+                        app.add_dialog = Some(Primitive::default_for("Cube"));
                     }
                     if tile(ui, "folder-open", "Open a model").clicked() {
                         app.open_dialog(&ctx);

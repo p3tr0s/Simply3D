@@ -84,7 +84,7 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    pub const ALL_NAMES: [&'static str; 8] = ["Box", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
+    pub const ALL_NAMES: [&'static str; 8] = ["Cube", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Wedge"];
     pub const FASTENER_NAMES: [&'static str; 4] = ["Bolt", "Nut", "Threaded rod", "Threaded hole"];
     pub const PART_NAMES: [&'static str; 4] = ["Gear", "Spring", "Hinge", "Snap-fit clip"];
     pub const BRICK_NAMES: [&'static str; 4] =
@@ -127,7 +127,7 @@ impl Primitive {
 
     pub fn name(&self) -> &'static str {
         match self {
-            Primitive::Box { .. } => "Box",
+            Primitive::Box { .. } => "Cube",
             Primitive::Cylinder { .. } => "Cylinder",
             Primitive::Cone { .. } => "Cone",
             Primitive::Sphere { .. } => "Sphere",
@@ -157,12 +157,9 @@ impl Primitive {
         }
     }
 
-    /// The name shown to people: a box with three equal sides is a cube.
+    /// The name shown to people (same as [`name`](Self::name)).
     pub fn display_name(&self) -> &'static str {
-        match self {
-            Primitive::Box { size, .. } if (size.x - size.y).abs() < 1e-4 && (size.y - size.z).abs() < 1e-4 => "Cube",
-            _ => self.name(),
-        }
+        self.name()
     }
 
     pub fn build(&self) -> Mesh {

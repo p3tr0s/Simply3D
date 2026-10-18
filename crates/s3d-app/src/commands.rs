@@ -219,7 +219,7 @@ pub fn all() -> Vec<Command> {
     ];
     // add-shape entries
     for (name, label) in [
-        ("Box", "Add box"),
+        ("Cube", "Add cube (box)"),
         ("Cylinder", "Add cylinder"),
         ("Cone", "Add cone"),
         ("Sphere", "Add sphere"),
