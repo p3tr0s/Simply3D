@@ -114,15 +114,19 @@ pub enum ThreadProfile {
     Buttress,
     /// Rounded: bottles, jars and lids; prints and turns easily.
     Round,
+    /// 90° V with flanks a little steeper than 45°: prints standing up, either way up,
+    /// with no overhangs and no supports, outside and inside.
+    Printable,
 }
 
 impl ThreadProfile {
-    pub const ALL: [(ThreadProfile, &'static str); 5] = [
+    pub const ALL: [(ThreadProfile, &'static str); 6] = [
         (ThreadProfile::Metric, "60° V (metric / UNC)"),
         (ThreadProfile::Trapezoid, "Trapezoidal 30°"),
         (ThreadProfile::Square, "Square"),
         (ThreadProfile::Buttress, "Buttress"),
         (ThreadProfile::Round, "Round (bottles, jars)"),
+        (ThreadProfile::Printable, "Printable 45° (no supports)"),
     ];
     /// Standard thread depth for a pitch.
     pub fn depth(self, pitch: f32) -> f32 {
@@ -131,6 +135,7 @@ impl ThreadProfile {
             ThreadProfile::Trapezoid | ThreadProfile::Square => 0.5 * pitch,
             ThreadProfile::Buttress => 0.6 * pitch,
             ThreadProfile::Round => 0.35 * pitch,
+            ThreadProfile::Printable => 0.38 * pitch,
         }
     }
     /// Crest flat, and the widths of the flank before and after it, as fractions of the
@@ -142,6 +147,8 @@ impl ThreadProfile {
             ThreadProfile::Square => (0.48, 0.02, 0.02),
             ThreadProfile::Buttress => (0.16, 0.074, 0.6),
             ThreadProfile::Round => (0.0, 0.5, 0.5),
+            // flanks 0.42 P long and 0.38 P deep: 42° from vertical
+            ThreadProfile::Printable => (0.08, 0.42, 0.42),
         }
     }
 }
@@ -703,6 +710,31 @@ mod tests {
             assert!(r.is_watertight(), "{f:?}: {:?}", r.problems());
             assert_eq!(m.connected_components().len(), 1, "{f:?}");
             assert!(m.volume() > 0.0);
+        }
+    }
+
+    #[test]
+    fn printable_profile_has_no_overhangs() {
+        use crate::printcheck::{check, CheckOptions};
+        use glam::Mat4;
+        for kind in [FastenerKind::Bolt, FastenerKind::Nut, FastenerKind::Rod] {
+            for idx in [3usize, 9] {
+                let mut f = Fastener::standard(kind, idx);
+                f.thread.profile = ThreadProfile::Printable;
+                f.length = 16.0;
+                let m = fastener_mesh(&f).unwrap();
+                // nuts and rods either way up; bolts stand on their heads
+                let flips: &[bool] = if kind == FastenerKind::Bolt { &[false] } else { &[false, true] };
+                for &flip in flips {
+                    let xf = if flip { Mat4::from_rotation_x(std::f32::consts::PI) } else { Mat4::IDENTITY };
+                    let (_, s) = check(&m, &xf, &CheckOptions::default(), None);
+                    assert!(s.overhang_area < 0.5 && s.islands == 0, "{kind:?} {idx} flip {flip}: {s:?}");
+                }
+                // the same part with a metric thread does overhang
+                f.thread.profile = ThreadProfile::Metric;
+                let (_, s) = check(&fastener_mesh(&f).unwrap(), &Mat4::IDENTITY, &CheckOptions::default(), None);
+                assert!(s.overhang_area > 10.0, "{kind:?}: {s:?}");
+            }
         }
     }
 
