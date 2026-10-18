@@ -4,6 +4,8 @@
 
 Simply3D is a free remake of Microsoft 3D Builder, written in Rust. It keeps 3D Builder's simple tab-and-ribbon way of working and adds the precision, repair, painting and sculpting tools 3D Builder never had. It's one portable Windows program: nothing to install, and it handles models with millions of triangles.
 
+![Simply3D with a mix of parts, text, textures and painted models](docs/screenshots/overview.png)
+
 ## Download
 
 Get `Simply3D-windows-x64.zip` from the [Releases](https://github.com/p3tr0s/Simply3D/releases) page, unzip it and run `simply3d.exe`. It works on 64-bit Windows 10 and 11 with DirectX 12 or Vulkan.
@@ -29,6 +31,10 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Modular storage:** grid-based storage bins, with an optional stacking lip, compartments and magnet pockets, plus matching baseplates.
 - **Building bricks:** studded bricks, plates and smooth tiles in two sizes, with fit settings so printed parts click together.
 - **Click to place:** new shapes follow the pointer and stand on whatever face you click.
+
+![Gears, a spring, a print-in-place hinge, a bolt, nut, threaded rod and snap-fit clip](docs/screenshots/parts.png)
+
+![A box with a hinged lid, storage bins on a baseplate, and building bricks](docs/screenshots/storage.png)
 
 ### Arrange and edit
 - Move, rotate and scale with the mouse or the gizmo, with **snapping** to grid steps and to other objects (guides show what lines up).
@@ -56,9 +62,13 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Patterns:** Voronoi cells, wireframe struts and gyroid lattices.
 - **Textures:** knurl, ribs, bumps, grid, bricks, carbon fibre, wood grain, leather, waves, sand, or your own picture, pressed into the surface as real geometry.
 
+![Knurl and brick textures, a carbon-fibre plate, a Voronoi ball and a gyroid lattice](docs/screenshots/mesh.png)
+
 ### Paint and sculpt
 - **Paint** colours onto models for multi-material printing, with a brush, fill or single triangles and an eraser. Paint survives booleans, repairs and mesh tools, and is saved in Bambu, Orca and Prusa formats.
 - **Sculpt** with draw, inflate, smooth, flatten and grab brushes, with mirroring and automatic detail under the brush.
+
+![Painting colours for multi-material printing](docs/screenshots/paint.png)
 
 ### View and measure
 - Perspective or orthographic view, view presets, and a clickable axis indicator.
