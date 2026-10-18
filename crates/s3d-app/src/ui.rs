@@ -128,7 +128,10 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         app.delete_selected();
     }
     if app.placing.is_some() && key(Key::Enter) {
-        app.commit_placing(None);
+        app.commit_placing(crate::app::PlaceAt::Beside);
+    }
+    if app.placing.is_some() && key(Key::C) {
+        app.commit_placing(crate::app::PlaceAt::Centre);
     }
     if app.preview.is_some() && key(Key::Enter) {
         app.apply_preview();
@@ -1580,6 +1583,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
     if let Some(mut p) = app.add_dialog {
         let mut open = true;
         let mut add = false;
+        let mut add_centre = false;
         egui::Window::new(format!("Add {}", p.display_name()))
             .id(egui::Id::new("add_shape_dialog"))
             .open(&mut open)
@@ -1589,13 +1593,24 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
             .show(ctx, |ui| {
                 primitive_fields(ui, &mut p, "prim");
                 ui.add_space(6.0);
-                if ui.button(RichText::new("Add to scene").strong()).on_hover_text("Enter").clicked()
-                    || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-                {
-                    add = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Add to scene").strong()).on_hover_text("Enter").clicked()
+                        || ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                    {
+                        add = true;
+                    }
+                    if ui.button("Add at plate centre").clicked() {
+                        add_centre = true;
+                    }
+                });
             });
-        if add {
+        if add_centre {
+            let keep = app.settings.new_shapes;
+            app.settings.new_shapes = crate::app::NewShapes::Centre;
+            app.add_primitive(p);
+            app.settings.new_shapes = keep;
+            app.add_dialog = None;
+        } else if add {
             app.add_primitive(p);
             app.add_dialog = None;
         } else if open {
@@ -1620,8 +1635,13 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                 ui.add(num(&mut s.grid_step, Kind::Length).range(0.5..=100.0).suffix(" mm"));
                 ui.end_row();
                 ui.label("New shapes");
-                ui.checkbox(&mut s.place_by_click, "Click to place them (on the plate or on a face)")
-                    .on_hover_text("Off: new shapes go straight onto the plate beside the others");
+                ui.horizontal(|ui| {
+                    use crate::app::NewShapes;
+                    ui.selectable_value(&mut s.new_shapes, NewShapes::Click, "Click to place")
+                        .on_hover_text("They follow the pointer: click the plate or a face (C: plate centre, Enter: beside the others)");
+                    ui.selectable_value(&mut s.new_shapes, NewShapes::Centre, "Plate centre");
+                    ui.selectable_value(&mut s.new_shapes, NewShapes::Beside, "Beside the others");
+                });
                 ui.end_row();
                 ui.label("Snap: move");
                 ui.add(num(&mut s.snap_move, Kind::Length).range(0.01..=100.0).suffix(" mm"));

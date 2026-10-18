@@ -56,7 +56,8 @@ pub struct Settings {
     /// Align to the first selected object instead of the whole selection.
     pub align_to_first: bool,
     /// New shapes follow the pointer and are placed with a click (on the plate or a face).
-    pub place_by_click: bool,
+    /// Where new shapes go.
+    pub new_shapes: NewShapes,
     /// Gap between parts when arranging, mm.
     pub arrange_gap: f32,
     /// Objects that overlap the selection are drawn see-through.
@@ -107,7 +108,7 @@ impl Default for Settings {
             texture: Default::default(),
             sculpt: Default::default(),
             align_to_first: false,
-            place_by_click: true,
+            new_shapes: NewShapes::Click,
             arrange_gap: 6.0,
             see_through: true,
             holes_cut: false,
@@ -120,6 +121,26 @@ impl Default for Settings {
             check: Default::default(),
         }
     }
+}
+
+/// Where new shapes go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum NewShapes {
+    /// Follow the pointer; click the plate or a face (C: plate centre, Enter: beside).
+    Click,
+    /// Straight to the middle of the plate.
+    Centre,
+    /// Straight onto the plate beside what's already there.
+    Beside,
+}
+
+/// Where a new shape is dropped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlaceAt {
+    /// Standing on a surface: point and normal.
+    Surface(Vec3, Vec3),
+    Centre,
+    Beside,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

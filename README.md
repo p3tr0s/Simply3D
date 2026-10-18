@@ -31,7 +31,7 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Boxes with lids:** snap, slide or hinged lids, with dividers and a fit clearance.
 - **Modular storage:** grid-based storage bins, with an optional stacking lip, compartments and magnet pockets, plus matching baseplates.
 - **Building bricks:** studded bricks, plates and smooth tiles in two sizes, with fit settings so printed parts click together.
-- **Click to place:** new shapes follow the pointer and stand on whatever face you click.
+- **Click to place:** new shapes follow the pointer and stand on whatever face you click, or press C (or **Plate centre**) to drop them in the middle of the plate. Settings can make every new shape go straight to the centre or beside the others.
 - **Edit them later:** select a generated part (gear, bolt, box, bin, brick…) and change its settings in the side panel; it rebuilds in place. The settings are saved in your 3MF projects.
 
 ![Gears, a spring, a print-in-place hinge, a bolt, nut, threaded rod and snap-fit clip](docs/screenshots/parts.png)

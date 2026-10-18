@@ -20,8 +20,13 @@ pub struct Placing {
 impl App {
     /// Start placing a new shape (its mesh centred on its bounding box).
     pub fn begin_placing(&mut self, mesh: Mesh, name: String, hole: bool, note: Option<String>, params: Option<s3d_core::primitives::Primitive>) {
-        if !self.settings.place_by_click {
-            let t = self.placement(None, &mesh);
+        let direct = match self.settings.new_shapes {
+            crate::app::NewShapes::Click => None,
+            crate::app::NewShapes::Centre => Some(crate::app::PlaceAt::Centre),
+            crate::app::NewShapes::Beside => Some(crate::app::PlaceAt::Beside),
+        };
+        if let Some(at) = direct {
+            let t = self.placement(at, &mesh);
             self.add_placed(mesh, name, hole, note, t, params);
             return;
         }
@@ -29,17 +34,23 @@ impl App {
         self.place_hover = None;
     }
 
-    /// Where the shape goes: standing on the hovered face / plate spot, or beside the others.
-    pub fn placement(&self, at: Option<(Vec3, Vec3)>, mesh: &Mesh) -> Transform {
+    /// Where the shape goes: standing on the hovered face / plate spot, in the middle of
+    /// the plate, or beside the others.
+    pub fn placement(&self, at: crate::app::PlaceAt, mesh: &Mesh) -> Transform {
+        use crate::app::PlaceAt;
         let b = mesh.bounds();
         match at {
-            Some((p, n)) => {
+            PlaceAt::Surface(p, n) => {
                 let n = n.normalize_or(Vec3::Z);
                 let rotation = Quat::from_rotation_arc(Vec3::Z, n);
                 // the shape's bottom sits on the surface
                 Transform { translation: p - n * b.min.z, rotation, scale: Vec3::ONE }
             }
-            None => {
+            PlaceAt::Centre => {
+                let c = b.center();
+                Transform { translation: Vec3::new(-c.x, -c.y, -b.min.z), ..Default::default() }
+            }
+            PlaceAt::Beside => {
                 let existing = self.scene.bounds();
                 let size = b.size();
                 let mut pos = Vec3::new(0.0, 0.0, -b.min.z);
@@ -69,7 +80,7 @@ impl App {
     }
 
     /// Drop the shape at `at` (None = beside the others).
-    pub fn commit_placing(&mut self, at: Option<(Vec3, Vec3)>) {
+    pub fn commit_placing(&mut self, at: crate::app::PlaceAt) {
         let Some(p) = self.placing.take() else { return };
         let mesh = (*p.ghost.mesh).clone();
         let t = self.placement(at, &mesh);

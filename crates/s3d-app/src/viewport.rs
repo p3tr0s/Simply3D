@@ -339,7 +339,10 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     let cmd = ui.input(|i| i.modifiers.shift || i.modifiers.command);
     if response.clicked() && !app.gizmo_used && app.placing.is_some() {
         let at = app.place_hover;
-        app.commit_placing(at);
+        app.commit_placing(match at {
+            Some((p, n)) => crate::app::PlaceAt::Surface(p, n),
+            None => crate::app::PlaceAt::Beside,
+        });
     } else if response.clicked() && !app.gizmo_used {
         if let Some((o, d)) = ray {
             match app.tool {
@@ -733,7 +736,13 @@ fn build_frame(app: &App, view: &View, checked: &std::collections::HashMap<s3d_c
     }
     // the shape being placed
     if let Some(pl) = &app.placing {
-        let t = app.placement(app.place_hover, &pl.ghost.mesh);
+        let t = app.placement(
+            match app.place_hover {
+                Some((p, n)) => crate::app::PlaceAt::Surface(p, n),
+                None => crate::app::PlaceAt::Beside,
+            },
+            &pl.ghost.mesh,
+        );
         ghosts.push(DrawItem { mesh: pl.ghost.clone(), model: t.matrix(), color: [0.3, 0.75, 1.0, 0.6], params: [0.45, 0.0, 0.0, 0.0] });
     }
     // picture tool ghost
@@ -1119,8 +1128,27 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
         Tool::Select => None,
     };
     if let Some(pl) = &app.placing {
-        let t = format!("Click the plate or a face to place {} · Enter: beside the others · Esc: cancel", pl.name);
+        let t = format!("Click the plate or a face to place {} · C: plate centre · Enter: beside the others · Esc: cancel", pl.name);
         label(p, rect.center_top() + egui::vec2(0.0, 18.0), t, Color32::WHITE);
+        // the same as buttons, for touch and mouse-only use
+        let ctx = ui.ctx().clone();
+        egui::Area::new(egui::Id::new("placing_buttons"))
+            .fixed_pos(rect.center_top() + egui::vec2(0.0, 40.0))
+            .pivot(egui::Align2::CENTER_TOP)
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Plate centre").clicked() {
+                        app.commit_placing(crate::app::PlaceAt::Centre);
+                    }
+                    if ui.button("Beside the others").clicked() {
+                        app.commit_placing(crate::app::PlaceAt::Beside);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        app.cancel_placing();
+                    }
+                });
+            });
     } else if let Some(h) = hint {
         label(p, rect.center_top() + egui::vec2(0.0, 18.0), h.to_string(), Color32::WHITE);
     }
