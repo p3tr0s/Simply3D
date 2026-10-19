@@ -1099,7 +1099,7 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             crate::app::MeasureMode::Circle => "Hole / pin: click a round surface",
         }),
         Tool::LayFlat => Some("Lay flat: click the face that should touch the plate (Shift+click to lay more) · L or Esc to stop"),
-        Tool::Cut => Some("Cut: set the plane in the right panel, Enter to cut"),
+        Tool::Cut => Some("Cut: set the plane in the bar below, Enter to cut"),
         Tool::Text => Some(match app.settings.text.mode {
             TextMode::Object => "Text: click the plate or a face to place it · Shift+click to place more",
             TextMode::Emboss => "Emboss: click a face · Shift+click to do more",
@@ -1505,7 +1505,10 @@ fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
                 ui.add_space(6.0);
             }
             if app.preview.is_some() {
-                egui::Frame::popup(ui.style()).show(ui, |ui| preview_bar(app, ui));
+                // fixed width: the bar is centred, so a bar that changed width as values
+                // change would slide a dragged slider away under the pointer
+                let w = (room.width() - 40.0).clamp(380.0, 760.0);
+                egui::Frame::popup(ui.style()).show(ui, |ui| preview_bar(app, ui, w));
             }
         });
 }
@@ -1533,72 +1536,54 @@ fn section_bar(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-fn preview_bar(app: &mut App, ui: &mut egui::Ui) {
-    let Some(p) = &app.preview else { return };
-    let kind = p.kind;
-    let fresh = p.result.as_ref().is_some_and(|r| r.key == p.key);
+fn preview_bar(app: &mut App, ui: &mut egui::Ui, width: f32) {
+    let Some(kind) = app.preview.as_ref().map(|p| p.kind) else { return };
     let mut apply = false;
     let mut cancel = false;
-    let mut new_height = None;
-    // status in a fixed-width box: the bar is centred, so if its width changed while a
-    // slider is being dragged, the slider would slide away under the pointer
-    let status = |ui: &mut egui::Ui, w: f32| {
-        ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.set_min_width(w);
-            ui.set_max_width(w);
-            if let Some(e) = &p.error {
-                ui.add(egui::Label::new(egui::RichText::new(format!("⚠ {e}")).color(Color32::from_rgb(255, 130, 110))).truncate())
-                    .on_hover_text(e);
-            } else if let Some(t) = &p.task {
-                let f = t.progress.fraction();
-                let bar = egui::ProgressBar::new(f).desired_width(140.0).show_percentage();
-                ui.add(if f <= 0.0 { bar.animate(true) } else { bar });
-                if p.apply_when_ready {
-                    ui.weak("applies when done");
-                }
-            } else if !fresh {
-                ui.spinner();
-            } else if let Some(r) = &p.result {
-                ui.add(egui::Label::new(&r.message).truncate()).on_hover_text(&r.message);
-            }
-        });
-    };
-    let extrude = kind == PreviewKind::ExtrudeDown;
+    ui.set_width(width);
     ui.vertical(|ui| {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{} preview", kind.name())).strong());
-            if extrude {
-                // the height plane right here, so the side panel isn't needed
-                let b = app.scene.bounds_of(&app.selection);
-                if !b.is_empty() {
-                    ui.spacing_mut().slider_width = 180.0;
-                    let mut h = app.mesh_tools.extrude_height;
-                    let mut changed = ui.add(egui::Slider::new(&mut h, b.min.z..=b.max.z).show_value(false)).changed();
-                    // fixed-width number box, so the bar doesn't change width as the value changes
-                    let field = egui::DragValue::new(&mut h).range(b.min.z..=b.max.z).speed(0.1).suffix(" mm").max_decimals(1);
-                    changed |= ui.add_sized([78.0, ui.spacing().interact_size.y], field).changed();
-                    if changed {
-                        new_height = Some(h);
-                    }
-                }
-            } else {
-                status(ui, 340.0);
-            }
-            let label = if kind == PreviewKind::Cut { "✂ Cut" } else { "✔ Apply" };
-            if ui.add_enabled(p.error.is_none(), egui::Button::new(egui::RichText::new(label).strong())).on_hover_text("Enter").clicked() {
-                apply = true;
-            }
-            if ui.button("Cancel").on_hover_text("Esc").clicked() {
-                cancel = true;
-            }
+        // the operation's settings, so the side panel isn't needed
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(kind.name()).strong());
+            ui.add_space(6.0);
+            crate::ui::op_settings(app, ui, kind);
         });
-        if extrude {
-            status(ui, 420.0);
-        }
+        ui.add_space(2.0);
+        let Some(p) = &app.preview else { return };
+        let fresh = p.result.as_ref().is_some_and(|r| r.key == p.key);
+        ui.horizontal(|ui| {
+            let buttons = 150.0;
+            let w = (width - buttons).max(120.0);
+            ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_min_width(w);
+                ui.set_max_width(w);
+                if let Some(e) = &p.error {
+                    ui.add(egui::Label::new(egui::RichText::new(format!("⚠ {e}")).color(Color32::from_rgb(255, 130, 110))).truncate())
+                        .on_hover_text(e);
+                } else if let Some(t) = &p.task {
+                    let f = t.progress.fraction();
+                    let bar = egui::ProgressBar::new(f).desired_width(140.0).show_percentage();
+                    ui.add(if f <= 0.0 { bar.animate(true) } else { bar });
+                    if p.apply_when_ready {
+                        ui.weak("applies when done");
+                    }
+                } else if !fresh {
+                    ui.spinner();
+                } else if let Some(r) = &p.result {
+                    ui.add(egui::Label::new(egui::RichText::new(&r.message).weak()).truncate()).on_hover_text(&r.message);
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                    cancel = true;
+                }
+                let label = if kind == PreviewKind::Cut { "✂ Cut" } else { "✔ Apply" };
+                if ui.add_enabled(p.error.is_none(), egui::Button::new(egui::RichText::new(label).strong())).on_hover_text("Enter").clicked() {
+                    apply = true;
+                }
+            });
+        });
     });
-    if let Some(h) = new_height {
-        app.mesh_tools.extrude_height = h;
-    }
     if apply {
         app.apply_preview();
     }

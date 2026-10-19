@@ -448,8 +448,8 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
 
 fn mesh_op(app: &mut App, kind: PreviewKind) {
     app.tool = Tool::Select;
+    // settings are in the preview bar; the side panel shows them too if it's open
     app.tab = PanelTab::Mesh;
-    app.settings.sidebar = true;
     if kind == PreviewKind::ExtrudeDown {
         app.start_extrude_down();
     } else {

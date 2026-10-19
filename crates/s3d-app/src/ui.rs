@@ -1059,213 +1059,300 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(2.0);
 }
 
-fn mesh_tools(app: &mut App, ui: &mut egui::Ui) {
-    use crate::app::SmoothMode;
-    use s3d_core::sdf::RoundMode;
-    let tris: usize = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| o.mesh.mesh.triangles.len()).sum();
-    let active = app.preview.as_ref().map(|p| p.kind);
-    let t = &mut app.mesh_tools;
-
-    ui.label(RichText::new("Simplify").strong());
-    ui.horizontal(|ui| {
-        ui.label("Keep");
-        ui.add(egui::Slider::new(&mut t.simplify_pct, 1.0..=99.0).suffix(" %").max_decimals(0));
-        ui.weak(format!("≈ {} tris", (tris as f32 * t.simplify_pct / 100.0) as usize));
-    });
-    ui.horizontal(|ui| {
-        ui.label("Max deviation");
-        ui.add(num(&mut t.simplify_err, Kind::Length).speed(0.005).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
-            .on_hover_text("Stop before the surface moves more than this. 0 = no limit");
-    });
-    let simplify =
-        preview_buttons(ui, active, PreviewKind::Simplify, "Quadric edge-collapse decimation; keeps the mesh closed and sharp edges crisp");
-
-    ui.add_space(6.0);
-    ui.label(RichText::new("Smooth").strong());
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut t.smooth_mode, SmoothMode::Subdivide, "Subdivide")
-            .on_hover_text("Loop subdivision: rounder surface, 4× triangles per level");
-        ui.selectable_value(&mut t.smooth_mode, SmoothMode::Relax, "Relax")
-            .on_hover_text("Taubin smoothing: removes facets/noise, same triangle count, no shrinking");
-        ui.selectable_value(&mut t.smooth_mode, SmoothMode::SubdivideFlat, "Refine")
-            .on_hover_text("Split triangles without changing the shape");
-    });
-    ui.horizontal(|ui| match t.smooth_mode {
-        SmoothMode::Relax => {
-            ui.label("Iterations");
-            ui.add(egui::DragValue::new(&mut t.relax_iters).range(1..=200));
-        }
-        _ => {
-            ui.label("Levels");
-            ui.add(egui::DragValue::new(&mut t.smooth_levels).range(1..=4));
-            ui.weak(format!("gives {} tris", tris << (2 * t.smooth_levels)));
-        }
-    });
-    if t.smooth_mode != SmoothMode::SubdivideFlat {
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut t.keep_sharp, "Keep edges sharper than");
-            ui.add_enabled(t.keep_sharp, num(&mut t.crease_deg, Kind::Angle).range(1.0..=179.0).suffix("°"));
-        });
+/// A group of controls kept together on one line. In a wrapping layout (the preview
+/// bar) the group moves to the next line as a whole when it doesn't fit, using its
+/// width from the previous frame.
+fn row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    if !ui.layout().main_wrap {
+        ui.horizontal(add);
+        return;
     }
-    let smooth = preview_buttons(ui, active, PreviewKind::Smooth, "Preview the smoothed mesh, then Apply");
+    let id = ui.next_auto_id().with("row_w");
+    let w: Option<f32> = ui.data(|d| d.get_temp(id));
+    let at_start = ui.cursor().min.x <= ui.max_rect().min.x + 1.0;
+    if let Some(w) = w {
+        if !at_start && w > ui.available_size_before_wrap().x {
+            ui.end_row();
+        }
+    }
+    let r = ui.horizontal(add).response;
+    ui.data_mut(|d| d.insert_temp(id, r.rect.width()));
+}
 
-    ui.add_space(6.0);
-    ui.label(RichText::new("Round edges (bevel)").strong());
-    ui.horizontal(|ui| {
-        ui.label("Radius");
-        ui.add(num(&mut t.round_radius, Kind::Length).speed(0.05).range(0.05..=100.0).max_decimals(2).suffix(" mm")).on_hover_text(NUM_TIP);
-    });
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut t.round_mode, RoundMode::Convex, "Outside").on_hover_text("Round convex edges and corners");
-        ui.selectable_value(&mut t.round_mode, RoundMode::Concave, "Inside").on_hover_text("Fill concave edges with a fillet");
-        ui.selectable_value(&mut t.round_mode, RoundMode::Both, "Both");
-    });
-    ui.horizontal(|ui| {
-        ui.label("Detail");
-        ui.add(num(&mut t.round_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
-            .on_hover_text("Voxel size. Smaller = more accurate and slower. 0 = automatic");
-        if t.round_voxel == 0.0 {
-            let b = app.scene.bounds_of(&app.selection);
-            if !b.is_empty() {
-                ui.weak(format!("auto ≈ {:.2} mm", s3d_core::sdf::auto_voxel(t.round_radius, &b)));
+/// The settings of a mesh operation, as small groups of controls. The side panel stacks
+/// the groups; the bottom bar of a running preview lays them out side by side.
+pub fn op_settings(app: &mut App, ui: &mut egui::Ui, kind: PreviewKind) {
+    use crate::app::SmoothMode;
+    use s3d_core::sdf::{Pattern, RoundMode};
+    let tris: usize = app.selection.iter().filter_map(|id| app.scene.get(*id)).map(|o| o.mesh.mesh.triangles.len()).sum();
+    let sel_b = app.scene.bounds_of(&app.selection);
+    let t = &mut app.mesh_tools;
+    match kind {
+        PreviewKind::Simplify => {
+            row(ui, |ui| {
+                ui.label("Keep");
+                ui.add(egui::Slider::new(&mut t.simplify_pct, 1.0..=99.0).suffix(" %").max_decimals(0));
+                ui.weak(format!("≈ {} tris", (tris as f32 * t.simplify_pct / 100.0) as usize));
+            });
+            row(ui, |ui| {
+                ui.label("Max deviation");
+                ui.add(num(&mut t.simplify_err, Kind::Length).speed(0.005).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+                    .on_hover_text("Stop before the surface moves more than this. 0 = no limit");
+            });
+        }
+        PreviewKind::Smooth => {
+            row(ui, |ui| {
+                ui.selectable_value(&mut t.smooth_mode, SmoothMode::Subdivide, "Subdivide")
+                    .on_hover_text("Loop subdivision: rounder surface, 4× triangles per level");
+                ui.selectable_value(&mut t.smooth_mode, SmoothMode::Relax, "Relax")
+                    .on_hover_text("Taubin smoothing: removes facets/noise, same triangle count, no shrinking");
+                ui.selectable_value(&mut t.smooth_mode, SmoothMode::SubdivideFlat, "Refine")
+                    .on_hover_text("Split triangles without changing the shape");
+            });
+            row(ui, |ui| match t.smooth_mode {
+                SmoothMode::Relax => {
+                    ui.label("Iterations");
+                    ui.add(egui::DragValue::new(&mut t.relax_iters).range(1..=200));
+                }
+                _ => {
+                    ui.label("Levels");
+                    ui.add(egui::DragValue::new(&mut t.smooth_levels).range(1..=4));
+                    ui.weak(format!("gives {} tris", tris << (2 * t.smooth_levels)));
+                }
+            });
+            if t.smooth_mode != SmoothMode::SubdivideFlat {
+                row(ui, |ui| {
+                    ui.checkbox(&mut t.keep_sharp, "Keep edges sharper than");
+                    ui.add_enabled(t.keep_sharp, num(&mut t.crease_deg, Kind::Angle).range(1.0..=179.0).suffix("°"));
+                });
             }
         }
-    });
-    ui.checkbox(&mut t.round_simplify, "Reduce triangles afterwards");
-    let round = preview_buttons(
-        ui,
-        active,
-        PreviewKind::Round,
-        "Works on any closed mesh: every edge sharper than the radius becomes a fillet. The surface is rebuilt, so tiny details below the detail size are lost.",
-    );
-
-    ui.add_space(6.0);
-    ui.label(RichText::new("Extrude down").strong());
-    let sel_b = app.scene.bounds_of(&app.selection);
-    ui.horizontal(|ui| {
-        ui.label("From height");
-        let (lo, hi) = if sel_b.is_empty() { (0.0, 100.0) } else { (sel_b.min.z, sel_b.max.z) };
-        ui.add(egui::Slider::new(&mut app.mesh_tools.extrude_height, lo..=hi).suffix(" mm").max_decimals(2))
-            .on_hover_text("Every underside below this height is extended straight down to the plate");
-    });
-    let extrude = preview_buttons(
-        ui,
-        active,
-        PreviewKind::ExtrudeDown,
-        "Extends the underside of the model straight down to the plate, from the chosen height: a flat base, simple supports under overhangs, floating parts tied to the plate (like 3D Builder).",
-    );
-
-    ui.add_space(6.0);
-    ui.label(RichText::new("Hollow").strong());
-    let t = &mut app.mesh_tools;
-    ui.horizontal(|ui| {
-        ui.label("Wall");
-        ui.add(num(&mut t.hollow_wall, Kind::Length).speed(0.05).range(0.2..=100.0).max_decimals(2).suffix(" mm")).on_hover_text(NUM_TIP);
-        ui.label("Detail");
-        ui.add(num(&mut t.hollow_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
-            .on_hover_text("Voxel size for the inside surface. 0 = automatic");
-    });
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut t.hollow_drain, "Drain hole")
-            .on_hover_text("A hole through the bottom wall (for resin, or to let air out), added as a hole object you can move");
-        ui.add_enabled(t.hollow_drain, num(&mut t.hollow_drain_d, Kind::Length).speed(0.05).range(0.5..=50.0).suffix(" mm"));
-    });
-    let hollow = preview_buttons(
-        ui,
-        active,
-        PreviewKind::Hollow,
-        "Keeps a shell of the given wall thickness and removes the inside, saving material and weight. The outside stays exactly as it is. Use Section view (X) to see the inside.",
-    );
-
-    ui.add_space(6.0);
-    ui.label(RichText::new("Make solid / remesh").strong());
-    let t = &mut app.mesh_tools;
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut t.solid_shell, false, "Solid")
-            .on_hover_text("Fill the inside: closes holes, merges overlapping parts, removes inner walls");
-        ui.selectable_value(&mut t.solid_shell, true, "Shell")
-            .on_hover_text("Thicken the surface itself — for open sheets and scans of thin things");
-        if t.solid_shell {
-            ui.add(num(&mut t.solid_thickness, Kind::Length).speed(0.05).range(0.1..=50.0).suffix(" mm"));
+        PreviewKind::Round => {
+            row(ui, |ui| {
+                ui.label("Radius");
+                ui.add(num(&mut t.round_radius, Kind::Length).speed(0.05).range(0.05..=100.0).max_decimals(2).suffix(" mm"))
+                    .on_hover_text(NUM_TIP);
+            });
+            row(ui, |ui| {
+                ui.selectable_value(&mut t.round_mode, RoundMode::Convex, "Outside").on_hover_text("Round convex edges and corners");
+                ui.selectable_value(&mut t.round_mode, RoundMode::Concave, "Inside").on_hover_text("Fill concave edges with a fillet");
+                ui.selectable_value(&mut t.round_mode, RoundMode::Both, "Both");
+            });
+            row(ui, |ui| {
+                ui.label("Detail");
+                ui.add(num(&mut t.round_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+                    .on_hover_text("Voxel size. Smaller = more accurate and slower. 0 = automatic");
+                if t.round_voxel == 0.0 && !sel_b.is_empty() {
+                    ui.weak(format!("auto ≈ {:.2} mm", s3d_core::sdf::auto_voxel(t.round_radius, &sel_b)));
+                }
+            });
+            ui.checkbox(&mut t.round_simplify, "Reduce triangles afterwards");
         }
-    });
-    ui.horizontal(|ui| {
-        ui.label("Detail");
-        ui.add(num(&mut t.solid_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
-            .on_hover_text("Size of the rebuilt triangles. 0 = automatic (1/200 of the size)");
-        ui.checkbox(&mut t.solid_adaptive, "Fewer triangles on flat areas").on_hover_text("Off = an even remesh");
-    });
-    let solid = preview_buttons(
-        ui,
-        active,
-        PreviewKind::MakeSolid,
-        "Rebuilds any mesh — holes, overlaps, flipped or loose parts — as one clean closed solid (Meshmixer's Make Solid). Details smaller than the detail size are lost.",
-    );
-
-    ui.add_space(6.0);
-    ui.label(RichText::new("Pattern / lattice").strong());
-    let t = &mut app.mesh_tools;
-    {
-        use s3d_core::sdf::Pattern;
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut t.pattern, Pattern::Voronoi, "Voronoi").on_hover_text("The skin cut into organic cells");
-            ui.selectable_value(&mut t.pattern, Pattern::Wireframe, "Wireframe")
-                .on_hover_text("Struts along the edges of a low-poly version");
-            ui.selectable_value(&mut t.pattern, Pattern::Gyroid, "Gyroid").on_hover_text("Filled with a gyroid lattice");
-        });
-        egui::Grid::new("pattern").num_columns(2).show(ui, |ui| {
-            ui.label("Cell size");
-            ui.add(num(&mut t.pattern_cell, Kind::Length).speed(0.1).range(1.0..=200.0).suffix(" mm"));
-            ui.end_row();
-            ui.label("Strut / wall");
-            ui.add(num(&mut t.pattern_thickness, Kind::Length).speed(0.05).range(0.2..=50.0).suffix(" mm"));
-            ui.end_row();
+        PreviewKind::ExtrudeDown => {
+            row(ui, |ui| {
+                ui.label("From height");
+                let (lo, hi) = if sel_b.is_empty() { (0.0, 100.0) } else { (sel_b.min.z, sel_b.max.z) };
+                ui.spacing_mut().slider_width = 180.0;
+                ui.add(egui::Slider::new(&mut t.extrude_height, lo..=hi).show_value(false))
+                    .on_hover_text("Every underside below this height is extended straight down to the plate");
+                // fixed width, so the bar doesn't change size as the value changes
+                let field = egui::DragValue::new(&mut t.extrude_height).range(lo..=hi).speed(0.1).suffix(" mm").max_decimals(1);
+                ui.add_sized([78.0, ui.spacing().interact_size.y], field);
+            });
+        }
+        PreviewKind::Hollow => {
+            row(ui, |ui| {
+                ui.label("Wall");
+                ui.add(num(&mut t.hollow_wall, Kind::Length).speed(0.05).range(0.2..=100.0).max_decimals(2).suffix(" mm"))
+                    .on_hover_text(NUM_TIP);
+            });
+            row(ui, |ui| {
+                ui.label("Detail");
+                ui.add(num(&mut t.hollow_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+                    .on_hover_text("Voxel size for the inside surface. 0 = automatic");
+            });
+            row(ui, |ui| {
+                ui.checkbox(&mut t.hollow_drain, "Drain hole")
+                    .on_hover_text("A hole through the bottom wall (for resin, or to let air out), added as a hole object you can move");
+                ui.add_enabled(t.hollow_drain, num(&mut t.hollow_drain_d, Kind::Length).speed(0.05).range(0.5..=50.0).suffix(" mm"));
+            });
+        }
+        PreviewKind::MakeSolid => {
+            row(ui, |ui| {
+                ui.selectable_value(&mut t.solid_shell, false, "Solid")
+                    .on_hover_text("Fill the inside: closes holes, merges overlapping parts, removes inner walls");
+                ui.selectable_value(&mut t.solid_shell, true, "Shell")
+                    .on_hover_text("Thicken the surface itself — for open sheets and scans of thin things");
+                if t.solid_shell {
+                    ui.add(num(&mut t.solid_thickness, Kind::Length).speed(0.05).range(0.1..=50.0).suffix(" mm"));
+                }
+            });
+            row(ui, |ui| {
+                ui.label("Detail");
+                ui.add(num(&mut t.solid_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+                    .on_hover_text("Size of the rebuilt triangles. 0 = automatic (1/200 of the size)");
+            });
+            ui.checkbox(&mut t.solid_adaptive, "Fewer triangles on flat areas").on_hover_text("Off = an even remesh");
+        }
+        PreviewKind::Pattern => {
+            row(ui, |ui| {
+                ui.selectable_value(&mut t.pattern, Pattern::Voronoi, "Voronoi").on_hover_text("The skin cut into organic cells");
+                ui.selectable_value(&mut t.pattern, Pattern::Wireframe, "Wireframe")
+                    .on_hover_text("Struts along the edges of a low-poly version");
+                ui.selectable_value(&mut t.pattern, Pattern::Gyroid, "Gyroid").on_hover_text("Filled with a gyroid lattice");
+            });
+            row(ui, |ui| {
+                ui.label("Cell");
+                ui.add(num(&mut t.pattern_cell, Kind::Length).speed(0.1).range(1.0..=200.0).suffix(" mm"));
+            });
+            row(ui, |ui| {
+                ui.label("Strut / wall");
+                ui.add(num(&mut t.pattern_thickness, Kind::Length).speed(0.05).range(0.2..=50.0).suffix(" mm"));
+            });
             match t.pattern {
                 Pattern::Voronoi => {
-                    ui.label("Depth");
-                    ui.add(num(&mut t.pattern_skin, Kind::Length).speed(0.05).range(0.2..=50.0).suffix(" mm"))
-                        .on_hover_text("How deep the cell borders go into the part");
-                    ui.end_row();
-                    ui.label("Variation");
-                    ui.add(egui::DragValue::new(&mut t.pattern_seed).range(1..=9999)).on_hover_text("Try another random cell layout");
-                    ui.end_row();
+                    row(ui, |ui| {
+                        ui.label("Depth");
+                        ui.add(num(&mut t.pattern_skin, Kind::Length).speed(0.05).range(0.2..=50.0).suffix(" mm"))
+                            .on_hover_text("How deep the cell borders go into the part");
+                    });
+                    row(ui, |ui| {
+                        ui.label("Variation");
+                        ui.add(egui::DragValue::new(&mut t.pattern_seed).range(1..=9999)).on_hover_text("Try another random cell layout");
+                    });
                 }
                 Pattern::Gyroid => {
-                    ui.label("Outer skin");
-                    ui.add(num(&mut t.pattern_skin, Kind::Length).speed(0.05).range(0.0..=50.0).suffix(" mm"))
-                        .on_hover_text("0 = open lattice; more = closed part with lattice inside (light infill)");
-                    ui.end_row();
+                    row(ui, |ui| {
+                        ui.label("Outer skin");
+                        ui.add(num(&mut t.pattern_skin, Kind::Length).speed(0.05).range(0.0..=50.0).suffix(" mm"))
+                            .on_hover_text("0 = open lattice; more = closed part with lattice inside (light infill)");
+                    });
                 }
                 Pattern::Wireframe => {}
             }
-            ui.label("Detail");
-            ui.add(num(&mut t.pattern_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
-                .on_hover_text("0 = automatic");
-            ui.end_row();
+            row(ui, |ui| {
+                ui.label("Detail");
+                ui.add(num(&mut t.pattern_voxel, Kind::Length).speed(0.01).range(0.0..=10.0).max_decimals(3).suffix(" mm"))
+                    .on_hover_text("0 = automatic");
+            });
+        }
+        PreviewKind::Cut => cut_settings(app, ui),
+        PreviewKind::Texture => {}
+    }
+}
+
+/// Cut plane, what to keep, and connectors.
+fn cut_settings(app: &mut App, ui: &mut egui::Ui) {
+    use s3d_core::connectors::ConnectorKind;
+    let b = app.selection_bounds();
+    if b.is_empty() {
+        return;
+    }
+    row(ui, |ui| {
+        ui.label("Plane");
+        for a in 0..3 {
+            let t = if app.cut.axis == a {
+                RichText::new(AXIS_NAMES[a]).strong().color(Color32::WHITE)
+            } else {
+                RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a])
+            };
+            if ui.selectable_label(app.cut.axis == a, t).clicked() {
+                app.cut.axis = a;
+                app.cut.offset = b.center()[a];
+            }
+        }
+    });
+    let a = app.cut.axis;
+    row(ui, |ui| {
+        ui.label("Position");
+        ui.spacing_mut().slider_width = 160.0;
+        ui.add(egui::Slider::new(&mut app.cut.offset, b.min[a]..=b.max[a]).show_value(false));
+        let field = egui::DragValue::new(&mut app.cut.offset).range(b.min[a]..=b.max[a]).speed(0.1).suffix(" mm").max_decimals(2);
+        ui.add_sized([84.0, ui.spacing().interact_size.y], field);
+    });
+    row(ui, |ui| {
+        ui.label("Keep");
+        ui.selectable_value(&mut app.cut.keep, CutKeep::Both, "Both");
+        ui.selectable_value(&mut app.cut.keep, CutKeep::Above, "Upper");
+        ui.selectable_value(&mut app.cut.keep, CutKeep::Below, "Lower");
+    });
+    let c = &mut app.cut.conn;
+    row(ui, |ui| {
+        ui.label("Connectors");
+        ui.selectable_value(&mut c.kind, ConnectorKind::None, "None");
+        ui.selectable_value(&mut c.kind, ConnectorKind::Pegs, "Pegs").on_hover_text("Pegs on the lower part, matching holes in the upper part");
+        ui.selectable_value(&mut c.kind, ConnectorKind::Dowels, "Dowels").on_hover_text("Holes in both parts and separate dowel pins");
+    });
+    if c.kind != ConnectorKind::None {
+        row(ui, |ui| {
+            ui.label("Ø");
+            ui.add(num(&mut c.diameter, Kind::Length).speed(0.1).range(1.0..=50.0).suffix(" mm")).on_hover_text("Diameter");
+            ui.label("Depth");
+            ui.add(num(&mut c.depth, Kind::Length).speed(0.1).range(1.0..=100.0).suffix(" mm")).on_hover_text("How far into each part");
+        });
+        row(ui, |ui| {
+            ui.label("Clearance");
+            ui.add(num(&mut c.clearance, Kind::Length).speed(0.01).range(0.0..=1.0).suffix(" mm"))
+                .on_hover_text("Play in the holes so printed parts fit (0.15–0.3 mm)");
+        });
+        row(ui, |ui| {
+            ui.label("How many");
+            ui.selectable_value(&mut c.count, 0, "Auto");
+            for k in 1..=4u32 {
+                ui.selectable_value(&mut c.count, k, k.to_string());
+            }
         });
     }
-    let pattern = preview_buttons(
-        ui,
-        active,
-        PreviewKind::Pattern,
-        "Turns the part into a decorative or lightweight lattice. Works on closed meshes (use Make solid first if it isn't).",
-    );
+}
 
-    for (clicked, kind) in [
-        (solid, PreviewKind::MakeSolid),
-        (pattern, PreviewKind::Pattern),
-        (simplify, PreviewKind::Simplify),
-        (smooth, PreviewKind::Smooth),
-        (round, PreviewKind::Round),
-        (extrude, PreviewKind::ExtrudeDown),
-        (hollow, PreviewKind::Hollow),
-    ] {
+fn mesh_tools(app: &mut App, ui: &mut egui::Ui) {
+    let active = app.preview.as_ref().map(|p| p.kind);
+    let sections: [(PreviewKind, &str, &str); 7] = [
+        (PreviewKind::Simplify, "Simplify", "Quadric edge-collapse decimation; keeps the mesh closed and sharp edges crisp"),
+        (PreviewKind::Smooth, "Smooth", "Preview the smoothed mesh, then Apply"),
+        (
+            PreviewKind::Round,
+            "Round edges (bevel)",
+            "Works on any closed mesh: every edge sharper than the radius becomes a fillet. The surface is rebuilt, so tiny details below the detail size are lost.",
+        ),
+        (
+            PreviewKind::ExtrudeDown,
+            "Extrude down",
+            "Extends the underside of the model straight down to the plate, from the chosen height: a flat base, simple supports under overhangs, floating parts tied to the plate (like 3D Builder).",
+        ),
+        (
+            PreviewKind::Hollow,
+            "Hollow",
+            "Keeps a shell of the given wall thickness and removes the inside, saving material and weight. The outside stays exactly as it is. Use Section view (X) to see the inside.",
+        ),
+        (
+            PreviewKind::MakeSolid,
+            "Make solid / remesh",
+            "Rebuilds any mesh — holes, overlaps, flipped or loose parts — as one clean closed solid (Meshmixer's Make Solid). Details smaller than the detail size are lost.",
+        ),
+        (
+            PreviewKind::Pattern,
+            "Pattern / lattice",
+            "Turns the part into a decorative or lightweight lattice. Works on closed meshes (use Make solid first if it isn't).",
+        ),
+    ];
+    let mut clicks = vec![];
+    for (i, (kind, title, tip)) in sections.into_iter().enumerate() {
+        if i > 0 {
+            ui.add_space(6.0);
+        }
+        ui.label(RichText::new(title).strong());
+        op_settings(app, ui, kind);
+        if let Some(c) = preview_buttons(ui, active, kind, tip) {
+            clicks.push((c, kind));
+        }
+    }
+    for (clicked, kind) in clicks {
         match clicked {
-            Some(PreviewClick::Start) if kind == PreviewKind::ExtrudeDown => app.start_extrude_down(),
-            Some(PreviewClick::Start) => app.start_preview(kind),
-            Some(PreviewClick::Apply) => app.apply_preview(),
-            Some(PreviewClick::Cancel) => app.cancel_preview(),
-            None => {}
+            PreviewClick::Start if kind == PreviewKind::ExtrudeDown => app.start_extrude_down(),
+            PreviewClick::Start => app.start_preview(kind),
+            PreviewClick::Apply => app.apply_preview(),
+            PreviewClick::Cancel => app.cancel_preview(),
         }
     }
 }
@@ -1383,65 +1470,7 @@ fn cut_panel(app: &mut App, ui: &mut egui::Ui) {
         ui.separator();
         return;
     }
-    let b = app.selection_bounds();
-    ui.horizontal(|ui| {
-        ui.label("Plane normal");
-        for a in 0..3 {
-            let t = if app.cut.axis == a {
-                RichText::new(AXIS_NAMES[a]).strong().color(Color32::WHITE)
-            } else {
-                RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a])
-            };
-            if ui.selectable_label(app.cut.axis == a, t).clicked() {
-                app.cut.axis = a;
-                app.cut.offset = b.center()[a];
-            }
-        }
-    });
-    let a = app.cut.axis;
-    ui.horizontal(|ui| {
-        ui.label("Position");
-        ui.add(egui::Slider::new(&mut app.cut.offset, b.min[a]..=b.max[a]).suffix(" mm").max_decimals(2));
-    });
-    ui.horizontal(|ui| {
-        ui.label("Keep");
-        ui.selectable_value(&mut app.cut.keep, CutKeep::Both, "Both");
-        ui.selectable_value(&mut app.cut.keep, CutKeep::Above, "Upper");
-        ui.selectable_value(&mut app.cut.keep, CutKeep::Below, "Lower");
-    });
-    {
-        use s3d_core::connectors::ConnectorKind;
-        let c = &mut app.cut.conn;
-        ui.horizontal(|ui| {
-            ui.label("Connectors");
-            ui.selectable_value(&mut c.kind, ConnectorKind::None, "None");
-            ui.selectable_value(&mut c.kind, ConnectorKind::Pegs, "Pegs")
-                .on_hover_text("Pegs on the lower part, matching holes in the upper part");
-            ui.selectable_value(&mut c.kind, ConnectorKind::Dowels, "Dowels").on_hover_text("Holes in both parts and separate dowel pins");
-        });
-        if c.kind != ConnectorKind::None {
-            egui::Grid::new("conn").num_columns(2).show(ui, |ui| {
-                ui.label("Diameter");
-                ui.add(num(&mut c.diameter, Kind::Length).speed(0.1).range(1.0..=50.0).suffix(" mm"));
-                ui.end_row();
-                ui.label("Depth");
-                ui.add(num(&mut c.depth, Kind::Length).speed(0.1).range(1.0..=100.0).suffix(" mm")).on_hover_text("How far into each part");
-                ui.end_row();
-                ui.label("Clearance");
-                ui.add(num(&mut c.clearance, Kind::Length).speed(0.01).range(0.0..=1.0).suffix(" mm"))
-                    .on_hover_text("Play in the holes so printed parts fit (0.15–0.3 mm)");
-                ui.end_row();
-                ui.label("How many");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut c.count, 0, "Auto");
-                    for k in 1..=4u32 {
-                        ui.selectable_value(&mut c.count, k, k.to_string());
-                    }
-                });
-                ui.end_row();
-            });
-        }
-    }
+    cut_settings(app, ui);
     if app.preview.as_ref().is_none_or(|p| p.kind != PreviewKind::Cut) {
         app.start_preview(PreviewKind::Cut);
     }
