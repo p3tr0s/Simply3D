@@ -2,7 +2,7 @@
 
 **Simple, fast 3D modelling for 3D printing.**
 
-Simply3D is a free remake of Microsoft 3D Builder, written in Rust. It keeps 3D Builder's simple tab-and-ribbon way of working and adds the precision, repair, painting and sculpting tools 3D Builder never had. It's one portable Windows program: nothing to install, and it handles models with millions of triangles.
+Simply3D is a free remake of Microsoft 3D Builder, written in Rust. It keeps 3D Builder's simple tab-and-ribbon way of working and adds the precision, repair, painting and sculpting tools 3D Builder never had. It's one portable program for Windows (and builds on Linux): nothing to install, and it handles models with millions of triangles.
 
 ![Simply3D with a mix of parts, text, textures and painted models](docs/screenshots/overview.png)
 
@@ -11,6 +11,8 @@ Simply3D is a free remake of Microsoft 3D Builder, written in Rust. It keeps 3D 
 Get `Simply3D-windows-x64.zip` from the [Releases](https://github.com/p3tr0s/Simply3D/releases) page, unzip it and run `simply3d.exe`. It works on 64-bit Windows 10 and 11 with DirectX 12 or Vulkan.
 
 Open models from the ☰ menu, drag files onto the window, or pass them on the command line: `simply3d.exe part.stl project.3mf`.
+
+On Linux, build it from source (below); it takes a few minutes the first time.
 
 ## Features
 
@@ -120,6 +122,8 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 
 ## Build from source
 
+### Windows
+
 1. Install Rust from <https://rustup.rs>.
 2. Run `build.bat`, or:
 
@@ -127,6 +131,47 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 cargo build --release
 target\release\simply3d.exe
 ```
+
+### Linux
+
+1. Install Rust:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+```
+
+2. Install the build tools and window-system libraries:
+
+```bash
+# Debian / Ubuntu / Mint
+sudo apt install build-essential git libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev mesa-vulkan-drivers
+
+# Fedora
+sudo dnf install gcc git libxkbcommon-devel wayland-devel libX11-devel libXcursor-devel libXi-devel libXrandr-devel mesa-vulkan-drivers
+
+# Arch (pick the Vulkan driver for your GPU: vulkan-radeon, vulkan-intel or nvidia-utils)
+sudo pacman -S base-devel git libxkbcommon wayland libx11 libxcursor libxi libxrandr vulkan-icd-loader vulkan-radeon
+```
+
+3. Build and run:
+
+```bash
+git clone https://github.com/p3tr0s/Simply3D.git
+cd Simply3D
+cargo build --release
+./target/release/simply3d            # or: ./target/release/simply3d model.stl
+```
+
+To update later: `git pull`, then `cargo build --release` again.
+
+Notes for Linux:
+
+- Simply3D draws with **Vulkan**, so it needs a working Vulkan driver (`vulkaninfo` from `vulkan-tools` checks it). Without a GPU driver, Mesa's software Vulkan (lavapipe) works, but slowly.
+- It runs on both **Wayland** and **X11**.
+- Open and Save use your desktop's file picker through **xdg-desktop-portal**. GNOME, KDE and most desktops have it; on a bare window manager, install `xdg-desktop-portal` plus `xdg-desktop-portal-gtk` or `-kde`.
+
+### Tests and layout
 
 `cargo test --workspace` runs the tests. The code is split into `s3d-core` (geometry, file formats, booleans, repair; no UI) and `s3d-app` (the egui + wgpu desktop app).
 
