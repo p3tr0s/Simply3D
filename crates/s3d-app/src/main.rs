@@ -29,7 +29,8 @@ mod viewport;
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn,s3d_app=info")).init();
-    let mut vp = egui::ViewportBuilder::default().with_title("Simply3D");
+    // app id: Linux desktops match the window to its menu entry (simply3d.desktop) by it
+    let mut vp = egui::ViewportBuilder::default().with_title("Simply3D").with_app_id("simply3d");
     if let Some(icon) = icons::window_icon() {
         vp = vp.with_icon(icon);
     }

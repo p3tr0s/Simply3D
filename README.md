@@ -2,17 +2,28 @@
 
 **Simple, fast 3D modelling for 3D printing.**
 
-Simply3D is a free remake of Microsoft 3D Builder, written in Rust. It keeps 3D Builder's simple tab-and-ribbon way of working and adds the precision, repair, painting and sculpting tools 3D Builder never had. It's one portable program for Windows (and builds on Linux): nothing to install, and it handles models with millions of triangles.
+Simply3D is a free remake of Microsoft 3D Builder, written in Rust. It keeps 3D Builder's simple tab-and-ribbon way of working and adds the precision, repair, painting and sculpting tools 3D Builder never had. It's one portable program for Windows and Linux: nothing to install, and it handles models with millions of triangles.
 
 ![Simply3D with a mix of parts, text, textures and painted models](docs/screenshots/overview.png)
 
 ## Download
 
-Get `Simply3D-windows-x64.zip` from the [Releases](https://github.com/p3tr0s/Simply3D/releases) page, unzip it and run `simply3d.exe`. It works on 64-bit Windows 10 and 11 with DirectX 12 or Vulkan.
+Get it from the [Releases](https://github.com/p3tr0s/Simply3D/releases) page.
 
-Open models from the ☰ menu, drag files onto the window, or pass them on the command line: `simply3d.exe part.stl project.3mf`.
+**Windows:** download `Simply3D-windows-x64.zip`, unzip it and run `simply3d.exe`. It works on 64-bit Windows 10 and 11 with DirectX 12 or Vulkan.
 
-On Linux, build it from source (below); it takes a few minutes the first time.
+**Linux:** download `Simply3D-linux-x64.tar.gz`, then:
+
+```bash
+tar xzf Simply3D-linux-x64.tar.gz
+cd Simply3D
+./simply3d          # run it straight away, or
+./install.sh        # add it to your applications menu (no root needed; ./install.sh --uninstall removes it)
+```
+
+It runs on 64-bit distros from 2022 on (Ubuntu 22.04+, Debian 12+, Fedora 36+, Mint 21+, Arch and others), on Wayland or X11, and needs a Vulkan graphics driver (see the notes under [Build from source](#linux)).
+
+Open models from the ☰ menu, drag files onto the window, or pass them on the command line: `simply3d part.stl project.3mf`.
 
 ## Features
 
@@ -134,6 +145,8 @@ target\release\simply3d.exe
 
 ### Linux
 
+To build it yourself instead of using the download:
+
 1. Install Rust:
 
 ```bash
@@ -159,11 +172,11 @@ sudo pacman -S base-devel git libxkbcommon wayland libx11 libxcursor libxi libxr
 ```bash
 git clone https://github.com/p3tr0s/Simply3D.git
 cd Simply3D
-cargo build --release
-./target/release/simply3d            # or: ./target/release/simply3d model.stl
+./build.sh                           # builds, then runs it; or: cargo build --release
+./target/release/simply3d model.stl  # run it again later
 ```
 
-To update later: `git pull`, then `cargo build --release` again.
+To update later: `git pull`, then `./build.sh` again.
 
 Notes for Linux:
 

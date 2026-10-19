@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Simply3D
+GenericName=3D Modelling
+Comment=Simple, fast 3D modelling for 3D printing
+Exec=simply3d %F
+Icon=simply3d
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;
+Keywords=3D;printing;STL;3MF;OBJ;PLY;mesh;CAD;
+MimeType=model/stl;model/x.stl-ascii;model/x.stl-binary;application/sla;model/3mf;application/vnd.ms-package.3dmanufacturing-3dmodel+xml;model/obj;application/x-tgif;application/ply;
+StartupWMClass=simply3d

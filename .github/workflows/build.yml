@@ -39,3 +39,38 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: Simply3D-windows-x64.zip
+
+  linux:
+    # the oldest supported Ubuntu: the program then runs on any distro with glibc 2.35 or
+    # newer (Ubuntu 22.04+, Debian 12+, Fedora 36+, Mint 21+, Arch, ...)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace --release
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          mkdir -p dist/Simply3D
+          cp target/release/simply3d dist/Simply3D/
+          strip dist/Simply3D/simply3d
+          cp packaging/linux/install.sh packaging/linux/simply3d.desktop LICENSE dist/Simply3D/
+          cp crates/s3d-app/icons/logo.svg dist/Simply3D/simply3d.svg
+          chmod +x dist/Simply3D/simply3d dist/Simply3D/install.sh
+          tar -C dist -czf Simply3D-linux-x64.tar.gz Simply3D
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Simply3D-linux-x64
+          path: Simply3D-linux-x64.tar.gz
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Simply3D-linux-x64.tar.gz
