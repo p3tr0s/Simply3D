@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/s3d-core", "crates/s3d-app"]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/p3tr0s/Simply3D"
