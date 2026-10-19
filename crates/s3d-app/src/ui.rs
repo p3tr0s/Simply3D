@@ -753,7 +753,10 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                     if ui.button("Reset rot/scale").clicked() {
                         app.reset_transform_selected();
                     }
-                    if ui.button("Apply transform").on_hover_text("Bake rotation and scale into the mesh").clicked() {
+                    if ui.add_enabled(app.bakeable(), egui::Button::new("Apply transform"))
+                        .on_hover_text("Build the rotation and scale into the shape itself, so it reads 0° and 100% again. Nothing changes on screen")
+                        .on_disabled_hover_text("Nothing to apply: not rotated or scaled")
+                        .clicked() {
                         app.bake_selected();
                     }
                 });

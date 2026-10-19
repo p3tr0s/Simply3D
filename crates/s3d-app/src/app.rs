@@ -1375,15 +1375,28 @@ impl App {
         }
     }
 
+    /// Whether any selected object is rotated or scaled (something for Apply transform).
+    pub fn bakeable(&self) -> bool {
+        self.selection.iter().filter_map(|id| self.scene.get(*id)).any(|o| {
+            let t = &o.transform;
+            !t.rotation.abs_diff_eq(glam::Quat::IDENTITY, 1e-6) && !t.rotation.abs_diff_eq(-glam::Quat::IDENTITY, 1e-6)
+                || !t.scale.abs_diff_eq(Vec3::ONE, 1e-6)
+        })
+    }
+
     pub fn bake_selected(&mut self) {
         if self.selection.is_empty() {
+            return;
+        }
+        if !self.bakeable() {
+            self.info("Nothing to apply: the selection isn't rotated or scaled");
             return;
         }
         self.checkpoint("Apply transform");
         for id in self.selection.clone() {
             self.scene.bake_transform(id);
         }
-        self.info("Rotation and scale applied to the mesh");
+        self.info("Rotation and scale built into the shape: it now reads 0° and 100%, and looks the same");
     }
 
     /// Combine selected objects into one without a boolean (fast "group").

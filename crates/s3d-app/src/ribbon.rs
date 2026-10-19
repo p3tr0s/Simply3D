@@ -538,7 +538,11 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         {
             mesh_op(app, PreviewKind::MakeSolid);
         }
-        if big(ui, "check", "Apply", has, false, false).on_hover_text("Bake the move / rotation / scale into the mesh").clicked() {
+        if big(ui, "check", "Bake", app.bakeable(), false, false)
+            .on_hover_text("Build the rotation and scale into the shape itself, so it reads 0° and 100% again. Nothing changes on screen")
+            .on_disabled_hover_text("Nothing to bake: the selection isn't rotated or scaled")
+            .clicked()
+        {
             app.bake_selected();
         }
     });
