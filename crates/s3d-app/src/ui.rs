@@ -248,7 +248,30 @@ impl App {
     }
 }
 
+/// Tools whose settings live only in the side panel: it opens when one starts (if it was
+/// hidden) and closes again when the tool ends.
+fn needs_panel(t: Tool) -> bool {
+    matches!(t, Tool::Measure | Tool::Text | Tool::Paint | Tool::Faces | Tool::Texture | Tool::Sculpt)
+}
+
+fn panel_follows_tool(app: &mut App) {
+    let t = app.tool;
+    if t == app.last_tool {
+        return;
+    }
+    if app.panel_for_tool && !needs_panel(t) {
+        app.settings.sidebar = false;
+        app.panel_for_tool = false;
+    }
+    if needs_panel(t) && !app.settings.sidebar {
+        app.settings.sidebar = true;
+        app.panel_for_tool = true;
+    }
+    app.last_tool = t;
+}
+
 pub fn draw(app: &mut App, ui: &mut egui::Ui) {
+    panel_follows_tool(app);
     app.issues = app.plate_issues();
     crate::ribbon::top(app, ui);
     status_bar(app, ui);
@@ -1062,7 +1085,7 @@ fn section(ui: &mut egui::Ui, title: &str) {
 /// A group of controls kept together on one line. In a wrapping layout (the preview
 /// bar) the group moves to the next line as a whole when it doesn't fit, using its
 /// width from the previous frame.
-fn row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+pub fn row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     if !ui.layout().main_wrap {
         ui.horizontal(add);
         return;

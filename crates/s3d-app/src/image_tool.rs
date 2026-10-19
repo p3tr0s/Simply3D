@@ -299,32 +299,13 @@ fn thumbnail(g: &Gray, o: &ImageOptions) -> egui::ColorImage {
 }
 
 /// Right-hand panel for the picture tool.
-pub fn panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
-    ui.heading("Picture to 3D");
-    ui.horizontal(|ui| {
-        match &app.img_rt.source {
-            Some(s) => ui.label(RichText::new(&s.name).strong()),
-            None => ui.weak("No picture yet"),
-        };
-        if app.img_rt.loading.is_some() {
-            ui.spinner();
-        }
-        if ui.button("Open picture…").on_hover_text("PNG, JPG, BMP, TGA, GIF, WebP — or drop one on the window").clicked() {
-            app.image_dialog(ctx);
-        }
-    });
-    if let Some(t) = &app.img_rt.thumb {
-        let size = t.size_vec2();
-        let w = ui.available_width().min(280.0);
-        let h = (w * size.y / size.x.max(1.0)).min(200.0);
-        let w = h * size.x / size.y.max(1.0);
-        egui::Frame::new().fill(egui::Color32::from_rgb(120, 120, 128)).show(ui, |ui| {
-            ui.add(egui::Image::new((t.id(), egui::vec2(w, h))));
-        });
-    }
+/// The picture's settings as small groups (stacked in the side panel, side by side in the
+/// bottom bar).
+pub fn settings(app: &mut App, ui: &mut egui::Ui) {
+    use crate::ui::row;
+    let has_alpha = app.img_rt.source.as_ref().is_some_and(|x| x.gray.has_alpha());
     let s = &mut app.settings.image;
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
+    row(ui, |ui| {
         for (i, (mode, name, tip)) in MODES.iter().enumerate() {
             if ui.selectable_label(s.mode as usize == i, *name).on_hover_text(*tip).clicked() && s.mode as usize != i {
                 s.mode = i as u8;
@@ -340,29 +321,35 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
     });
     let mode = s.mode();
     let flat = matches!(mode, ImageMode::Contour | ImageMode::Stamp);
-    ui.horizontal(|ui| {
+    row(ui, |ui| {
         ui.label("Place");
         ui.selectable_value(&mut s.place, TextMode::Object, "New object");
         ui.selectable_value(&mut s.place, TextMode::Emboss, "Emboss").on_hover_text("Join it onto a face of an object");
         ui.selectable_value(&mut s.place, TextMode::Engrave, "Engrave").on_hover_text("Cut it into a face of an object");
     });
-    egui::Grid::new("image_params").num_columns(2).show(ui, |ui| {
+    if s.place != TextMode::Object {
+        ui.checkbox(&mut s.wrap, "Follow curved surfaces").on_hover_text("Bend the picture around cylinders and spheres");
+    }
+    ui.spacing_mut().slider_width = 110.0;
+    row(ui, |ui| {
         ui.label("Width");
         ui.add(num(&mut s.width, Kind::Length).speed(0.5).range(2.0..=1000.0).suffix(" mm")).on_hover_text("Width of the result");
-        ui.end_row();
+    });
+    row(ui, |ui| {
         if flat {
             ui.label("Threshold");
             ui.add(egui::Slider::new(&mut s.threshold, 0.02..=0.98).max_decimals(2))
                 .on_hover_text("Areas darker than this become solid (Invert to flip)");
-            ui.end_row();
         } else {
             ui.label("Levels");
             ui.add(egui::Slider::new(&mut s.levels, 2..=256)).on_hover_text("Number of height steps (256 = smooth)");
-            ui.end_row();
         }
+    });
+    row(ui, |ui| {
         ui.label("Smooth");
         ui.add(egui::Slider::new(&mut s.smooth, 0..=8)).on_hover_text("Blur the picture first (removes noise and jagged edges)");
-        ui.end_row();
+    });
+    row(ui, |ui| {
         ui.label(match mode {
             ImageMode::Lithophane => "Extra thickness",
             ImageMode::Stamp => "Raised by",
@@ -370,63 +357,129 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             _ => "Relief",
         });
         ui.add(num(&mut s.height, Kind::Length).speed(0.05).range(0.1..=200.0).suffix(" mm"));
-        ui.end_row();
+    });
+    row(ui, |ui| {
         ui.label(if mode == ImageMode::Lithophane { "Thinnest" } else { "Base" });
         ui.add(num(&mut s.base, Kind::Length).speed(0.05).range(0.0..=100.0).suffix(" mm"));
-        ui.end_row();
-        if mode == ImageMode::Lithophane {
+    });
+    if mode == ImageMode::Lithophane {
+        row(ui, |ui| {
             ui.label("Frame");
             ui.add(num(&mut s.frame, Kind::Length).speed(0.1).range(0.0..=50.0).suffix(" mm"));
-            ui.end_row();
-        }
+        });
+    }
+    row(ui, |ui| {
         ui.label("Detail");
         ui.add(egui::Slider::new(&mut s.resolution, 50..=1000).suffix(" px"))
             .on_hover_text("Pixels along the longest side. Higher = finer and slower.");
-        ui.end_row();
+    });
+    row(ui, |ui| {
         ui.label("Angle");
         ui.add(num(&mut s.angle, Kind::Angle).speed(1.0).range(-360.0..=360.0).suffix("°"));
-        ui.end_row();
     });
-    ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut s.invert, "Invert");
-        if app.img_rt.source.as_ref().is_some_and(|x| x.gray.has_alpha()) {
-            ui.checkbox(&mut s.use_alpha, "Use transparency as outline");
-        }
-        if !flat {
-            ui.checkbox(&mut s.reduce, "Reduce triangles").on_hover_text("Merge flat areas when adding (slower to build)");
-        }
-    });
-    let place = s.place;
-    // status
+    ui.checkbox(&mut s.invert, "Invert");
+    if has_alpha {
+        ui.checkbox(&mut s.use_alpha, "Use transparency as outline");
+    }
+    if !flat {
+        ui.checkbox(&mut s.reduce, "Reduce triangles").on_hover_text("Merge flat areas when adding (slower to build)");
+    }
+}
+
+/// One line on what the result will be, or what's happening.
+pub fn status(app: &App, ui: &mut egui::Ui) {
     if let Some(e) = &app.img_rt.error {
         ui.colored_label(egui::Color32::from_rgb(255, 120, 100), format!("⚠ {e}"));
     } else if let Some(m) = app.image_preview_mesh() {
         let b = m.mesh.bounds().size();
         let busy = if app.img_rt.task.is_some() { "  ·  updating…" } else { "" };
-        ui.weak(format!("{:.1} × {:.1} × {:.1} mm{busy}", b.x, b.y, b.z));
+        let how = if app.settings.image.place == TextMode::Object {
+            "click the plate or a face to stand it there"
+        } else {
+            "hover over a face to preview, click to apply"
+        };
+        ui.weak(format!("{:.1} × {:.1} × {:.1} mm{busy}  ·  {how}", b.x, b.y, b.z));
     } else if app.img_rt.source.is_some() {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.weak("converting…");
+        ui.spinner();
+        ui.weak("converting…");
+    } else {
+        ui.weak("Open a picture, or drop one on the window");
+    }
+}
+
+/// The picture's name, a small preview, and the button to pick another.
+pub fn source(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context, thumb_h: f32) {
+    if let Some(t) = &app.img_rt.thumb {
+        let size = t.size_vec2();
+        let h = thumb_h;
+        let w = (h * size.x / size.y.max(1.0)).min(thumb_h * 3.0);
+        egui::Frame::new().fill(egui::Color32::from_rgb(120, 120, 128)).show(ui, |ui| {
+            ui.add(egui::Image::new((t.id(), egui::vec2(w, h))));
         });
     }
+    match &app.img_rt.source {
+        Some(s) => ui.label(RichText::new(&s.name).strong()),
+        None => ui.weak("No picture yet"),
+    };
+    if app.img_rt.loading.is_some() {
+        ui.spinner();
+    }
+    let label = if app.img_rt.source.is_some() { "Change…" } else { "Open picture…" };
+    if ui.button(label).on_hover_text("PNG, JPG, BMP, TGA, GIF, WebP — or drop one on the window").clicked() {
+        app.image_dialog(ctx);
+    }
+}
+
+pub fn panel(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
+    ui.heading("Picture to 3D");
+    ui.horizontal(|ui| source(app, ui, ctx, 48.0));
     ui.add_space(4.0);
-    match place {
-        TextMode::Object => {
-            if ui.add_enabled(app.img_rt.mesh.is_some(), egui::Button::new(RichText::new("Add to plate").strong())).clicked() {
-                app.add_image_object(ctx, None);
-                app.tool = crate::app::Tool::Select;
-            }
-            ui.weak("…or click the plate or any face to stand it there (Shift+click to place more).");
+    settings(app, ui);
+    ui.horizontal_wrapped(|ui| status(app, ui));
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if app.settings.image.place == TextMode::Object
+            && ui.add_enabled(app.img_rt.mesh.is_some(), egui::Button::new(RichText::new("Add to plate").strong())).clicked()
+        {
+            app.add_image_object(ctx, None);
+            app.tool = Tool::Select;
         }
-        _ => {
-            ui.label("Hover over a face to preview, click to apply.");
-            ui.checkbox(&mut app.settings.image.wrap, "Follow curved surfaces")
-                .on_hover_text("Bend the picture around cylinders and spheres");
+        if ui.button("Done").clicked() {
+            app.tool = Tool::Select;
         }
-    }
-    if ui.button("Done").clicked() {
-        app.tool = Tool::Select;
-    }
+    });
     ui.separator();
+}
+
+/// The bottom bar while the picture tool is on: everything without the side panel.
+pub fn bar(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context, width: f32) {
+    ui.set_width(width);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Picture").strong());
+        ui.add_space(6.0);
+        source(app, ui, ctx, 28.0);
+    });
+    if app.img_rt.source.is_some() {
+        ui.horizontal_wrapped(|ui| settings(app, ui));
+    }
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        let w = (width - 190.0).max(120.0);
+        ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(w);
+            ui.set_max_width(w);
+            status(app, ui);
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Done").on_hover_text("Esc").clicked() {
+                app.tool = Tool::Select;
+            }
+            if app.settings.image.place == TextMode::Object
+                && ui.add_enabled(app.img_rt.mesh.is_some(), egui::Button::new(RichText::new("Add to plate").strong())).clicked()
+            {
+                app.add_image_object(ctx, None);
+                app.tool = Tool::Select;
+            }
+        });
+    });
 }

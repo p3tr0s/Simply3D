@@ -1487,7 +1487,8 @@ fn drag_overlays(app: &App, ui: &egui::Ui, p: &egui::Painter) {
 /// Floating bars at the bottom of the viewport: section-plane controls and the
 /// Apply / Cancel bar of a running preview.
 fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
-    if !app.section.enabled && app.preview.is_none() {
+    let picture = app.tool == Tool::Image && app.preview.is_none();
+    if !app.section.enabled && app.preview.is_none() && !picture {
         return;
     }
     let ctx = ui.ctx().clone();
@@ -1503,6 +1504,11 @@ fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
             if app.section.enabled {
                 egui::Frame::popup(ui.style()).show(ui, |ui| section_bar(app, ui));
                 ui.add_space(6.0);
+            }
+            if picture {
+                let w = (room.width() - 40.0).clamp(380.0, 760.0);
+                let ctx = ui.ctx().clone();
+                egui::Frame::popup(ui.style()).show(ui, |ui| crate::image_tool::bar(app, ui, &ctx, w));
             }
             if app.preview.is_some() {
                 // fixed width: the bar is centred, so a bar that changed width as values

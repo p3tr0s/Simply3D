@@ -465,6 +465,10 @@ pub struct App {
     /// The gizmo changed something during the current mouse press (so it isn't a click).
     pub gizmo_used: bool,
     pub tool: Tool,
+    /// The tool of the previous frame, and whether the side panel was opened for it
+    /// (it closes again when the tool ends).
+    pub last_tool: Tool,
+    pub panel_for_tool: bool,
     pub measure: MeasureState,
     pub cut: CutState,
     pub array: ArrayParams,
@@ -581,6 +585,8 @@ impl App {
             gizmo_dragging: false,
             gizmo_used: false,
             tool: Tool::Select,
+            last_tool: Tool::Select,
+            panel_for_tool: false,
             measure: MeasureState { snap_vertices: true, target: 10.0, tube_d: 3.0, ..Default::default() },
             cut: CutState { axis: 2, offset: 0.0, keep: CutKeep::Both, conn: Default::default() },
             mesh_tools: MeshTools::default(),

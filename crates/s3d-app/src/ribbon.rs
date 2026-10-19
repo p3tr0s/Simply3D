@@ -172,6 +172,8 @@ pub fn top(app: &mut App, ui: &mut Ui) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if icon_button(ui, "panel-right", "Show / hide the side panel", true, app.settings.sidebar).clicked() {
                     app.settings.sidebar = !app.settings.sidebar;
+                    // your choice now: don't close it by itself when the tool ends
+                    app.panel_for_tool = false;
                 }
                 if icon_button(ui, "save", "Save (Ctrl+S)", true, false).clicked() {
                     app.save(&ctx);
@@ -299,10 +301,12 @@ fn insert_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         {
             if app.tool == Tool::Image {
                 app.tool = Tool::Select;
-            } else if app.img_rt.source.is_some() {
-                app.tool = Tool::Image;
             } else {
-                app.image_dialog(ctx);
+                // the tool's bar shows "Open picture…" even if the file dialog is cancelled
+                app.tool = Tool::Image;
+                if app.img_rt.source.is_none() {
+                    app.image_dialog(ctx);
+                }
             }
         }
     });
@@ -530,6 +534,7 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         if big(ui, "wrench", "Repair", has, false, false).on_hover_text("Close holes, fix flipped and broken faces").clicked() {
             app.tab = PanelTab::Repair;
             app.settings.sidebar = true;
+            app.panel_for_tool = false;
             app.repair_selected(ctx);
         }
         if big(ui, "shield-check", "Make solid", has, active(app, PreviewKind::MakeSolid), false)
