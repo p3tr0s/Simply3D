@@ -5,6 +5,15 @@ use crate::mesh::Mesh;
 use glam::Vec3;
 use std::collections::HashMap;
 
+/// The mesh with corners at the same spot joined (triangles unchanged, so a selection
+/// still applies). Imported files often keep every triangle's corners separate, and then
+/// neighbouring triangles wouldn't count as connected.
+fn welded(m: &Mesh) -> Mesh {
+    let mut w = m.clone();
+    crate::repair::weld(&mut w, 0.0);
+    w
+}
+
 fn edge_key(a: u32, b: u32) -> (u32, u32) {
     (a.min(b), a.max(b))
 }
@@ -22,6 +31,7 @@ fn edges(m: &Mesh) -> HashMap<(u32, u32), Vec<usize>> {
 
 /// Add every triangle that shares a vertex with the selection.
 pub fn grow(m: &Mesh, sel: &mut [bool]) {
+    let m = &welded(m);
     let mut v = vec![false; m.positions.len()];
     for (i, t) in m.triangles.iter().enumerate() {
         if sel[i] {
@@ -37,6 +47,7 @@ pub fn grow(m: &Mesh, sel: &mut [bool]) {
 
 /// Drop every selected triangle that touches an unselected one.
 pub fn shrink(m: &Mesh, sel: &mut [bool]) {
+    let m = &welded(m);
     let mut v = vec![false; m.positions.len()];
     for (i, t) in m.triangles.iter().enumerate() {
         if !sel[i] {
@@ -79,6 +90,7 @@ fn region_normals(m: &Mesh, sel: &[bool]) -> Vec<Vec3> {
 /// it to the rest, so a closed mesh stays closed. `along_normals`: every point moves
 /// along its own normal (an offset); otherwise all move along the average normal.
 pub fn extrude(m: &Mesh, sel: &[bool], dist: f32, along_normals: bool) -> Mesh {
+    let m = &welded(m);
     let mut out = m.clone();
     let painted = m.is_painted();
     let Some(avg) = average_normal(m, sel) else { return out };
@@ -166,6 +178,7 @@ pub fn subset(m: &Mesh, tris: &[usize]) -> Mesh {
 
 /// The selected surface as a closed solid `thickness` thick (grown inwards).
 pub fn copy_as_solid(m: &Mesh, sel: &[bool], thickness: f32) -> Mesh {
+    let m = &welded(m);
     let tris: Vec<usize> = (0..m.triangles.len()).filter(|&i| sel[i]).collect();
     let s = subset(m, &tris);
     let all = vec![true; s.triangles.len()];
@@ -222,6 +235,7 @@ fn interior(m: &Mesh, sel: &[bool]) -> (Vec<bool>, Vec<Vec<u32>>) {
 /// Even out bumps inside the selected area; its edge stays put, so the area relaxes
 /// towards a smooth surface spanning that edge.
 pub fn smooth(m: &Mesh, sel: &[bool], iterations: u32) -> Mesh {
+    let m = &welded(m);
     let (free, nb) = interior(m, sel);
     let mut out = m.clone();
     // A selection with no fixed edge (a whole object) would just shrink; alternate an
@@ -301,6 +315,30 @@ mod tests {
         let o = extrude(&r, &sel, 2.0, true);
         assert!(analyze(&o).is_watertight());
         assert!((o.bounds().max.z - 7.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn unwelded_meshes_extrude_cleanly() {
+        // every triangle with its own corners, as many STL files come
+        let w = cuboid(Vec3::splat(10.0));
+        let soup: Vec<[Vec3; 3]> = (0..w.triangles.len()).map(|i| w.tri(i)).collect();
+        let m = Mesh {
+            positions: soup.iter().flatten().copied().collect(),
+            triangles: (0..soup.len() as u32).map(|i| [3 * i, 3 * i + 1, 3 * i + 2]).collect(),
+            paint: vec![],
+        };
+        let bottom: Vec<bool> = (0..m.triangles.len()).map(|i| m.face_normal(i).z < -0.9).collect();
+        let out = extrude(&m, &bottom, 5.0, false);
+        let r = analyze(&out);
+        assert!(r.is_watertight(), "{:?}", r.problems());
+        assert_eq!(out.triangles.len(), 12 + 8, "walls only around the outside");
+        assert!((out.volume() - 1500.0).abs() < 1e-3);
+        let (a, b) = crate::csg::cut_by_plane(&out, Vec3::new(0.0, 0.0, -2.0), Vec3::Z).unwrap();
+        assert!((a.volume() + b.volume() - 1500.0).abs() < 1e-2);
+        // grow spreads across the seams
+        let mut sel = bottom.clone();
+        grow(&m, &mut sel);
+        assert_eq!(sel.iter().filter(|&&x| x).count(), 10, "bottom and the four sides");
     }
 
     #[test]

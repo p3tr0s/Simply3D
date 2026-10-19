@@ -17,6 +17,28 @@ fn to_manifold(m: &Mesh) -> Result<Manifold> {
     if m.is_empty() {
         return Err(Error::Boolean("empty mesh".into()));
     }
+    // the kernel can panic on meshes with hidden inner walls or collapsed triangles:
+    // on any trouble, clean those up and try again
+    let first = std::panic::catch_unwind(|| to_manifold_raw(m));
+    if let Ok(Ok(r)) = first {
+        return Ok(r);
+    }
+    let mut c = m.clone();
+    crate::repair::weld(&mut c, 0.0);
+    crate::repair::remove_degenerate(&mut c);
+    crate::repair::remove_internal_walls(&mut c);
+    crate::repair::remove_duplicate_faces(&mut c);
+    c.compact();
+    match std::panic::catch_unwind(|| to_manifold_raw(&c)) {
+        Ok(r) => r,
+        Err(_) => Err(Error::Boolean("the model has overlapping or inside-out parts the boolean can't handle. Try Repair first".into())),
+    }
+}
+
+fn to_manifold_raw(m: &Mesh) -> Result<Manifold> {
+    if m.is_empty() {
+        return Err(Error::Boolean("empty mesh".into()));
+    }
     // an inside-out mesh (all faces pointing in) would count as "nothing": turn it around
     let flipped;
     let m = if m.volume() < 0.0 {
@@ -42,8 +64,8 @@ fn from_manifold(r: &Manifold) -> Mesh {
 
 /// Boolean between two world-space meshes.
 pub fn boolean(a: &Mesh, b: &Mesh, op: BoolOp) -> Result<Mesh> {
-    let ma = std::panic::catch_unwind(|| to_manifold(a)).map_err(|_| Error::Boolean("invalid mesh".into()))??;
-    let mb = std::panic::catch_unwind(|| to_manifold(b)).map_err(|_| Error::Boolean("invalid mesh".into()))??;
+    let ma = to_manifold(a)?;
+    let mb = to_manifold(b)?;
     let op = match op {
         BoolOp::Union => OpType::Add,
         BoolOp::Subtract => OpType::Subtract,
@@ -128,6 +150,19 @@ mod tests {
         let s = sphere(100.0, 32, 16);
         let r = boolean(&a, &s, BoolOp::Intersect).unwrap();
         assert!((r.volume() - 1000.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn inner_walls_are_cleaned_up() {
+        // a box with a zero-thickness double wall through its middle (the two
+        // sides split along different diagonals), as unwelded extrusions used to leave
+        let mut m = cuboid(Vec3::splat(10.0));
+        let n = m.positions.len() as u32;
+        m.positions.extend([Vec3::new(0.0, -5.0, -5.0), Vec3::new(0.0, 5.0, -5.0), Vec3::new(0.0, 5.0, 5.0), Vec3::new(0.0, -5.0, 5.0)]);
+        let (a, b, c, d) = (n, n + 1, n + 2, n + 3);
+        m.triangles.extend([[a, b, c], [a, c, d], [b, a, d], [b, d, c]]);
+        let (up, down) = cut_by_plane(&m, Vec3::new(0.0, 0.0, 2.0), Vec3::Z).unwrap();
+        assert!((up.volume() - 300.0).abs() < 1e-2 && (down.volume() - 700.0).abs() < 1e-2);
     }
 
     #[test]

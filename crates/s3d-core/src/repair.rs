@@ -10,6 +10,7 @@ pub struct RepairLog {
     pub welded_vertices: usize,
     pub removed_degenerate: usize,
     pub removed_duplicates: usize,
+    pub removed_inner_walls: usize,
     pub flipped_faces: usize,
     pub filled_holes: usize,
     pub added_triangles: usize,
@@ -29,6 +30,7 @@ impl RepairLog {
         add(self.welded_vertices, "vertices welded");
         add(self.removed_degenerate, "degenerate faces removed");
         add(self.removed_duplicates, "duplicate faces removed");
+        add(self.removed_inner_walls, "faces of hidden inner walls removed");
         add(self.flipped_faces, "faces re-oriented");
         add(self.filled_holes, "holes filled");
         add(self.inverted_components, "inside-out parts fixed");
@@ -58,6 +60,7 @@ pub fn repair(m: &mut Mesh, opts: RepairOptions) -> RepairLog {
     let mut log = RepairLog::default();
     log.welded_vertices = weld(m, opts.weld_tolerance);
     log.removed_degenerate = remove_degenerate(m);
+    log.removed_inner_walls = remove_internal_walls(m);
     log.removed_duplicates = remove_duplicate_faces(m);
     log.flipped_faces = orient_consistently(m);
     if opts.fill_holes {
@@ -127,6 +130,81 @@ pub fn remove_degenerate(m: &mut Mesh) -> usize {
         (b - a).cross(c - a).length_squared() > 1e-18
     });
     before - m.triangles.len()
+}
+
+/// Remove zero-thickness walls inside the model: faces lying flat against a face that
+/// points the opposite way (left by joining touching pieces, or by extruding faces whose
+/// corners weren't joined). They hide the outside surface from booleans and slicers.
+/// Returns the number of faces removed.
+pub fn remove_internal_walls(m: &mut Mesh) -> usize {
+    let nt = m.triangles.len();
+    if nt == 0 {
+        return 0;
+    }
+    let size = m.bounds().size().max_element().max(1e-3);
+    let tol = size * 1e-5;
+    // group faces by plane, ignoring which way they face
+    let mut planes: HashMap<(i64, i64, i64, i64), Vec<(usize, bool)>> = HashMap::new();
+    let mut normal = vec![Vec3::ZERO; nt];
+    for i in 0..nt {
+        let [a, b, c] = m.tri(i);
+        let n = (b - a).cross(c - a);
+        if n.length_squared() <= 1e-24 {
+            continue;
+        }
+        let n = n.normalize();
+        normal[i] = n;
+        // the same way round for both sides
+        let first = if n.x.abs() > 1e-6 { n.x } else if n.y.abs() > 1e-6 { n.y } else { n.z };
+        let (cn, side) = if first > 0.0 { (n, true) } else { (-n, false) };
+        let d = cn.dot(a);
+        let k = ((cn.x * 1e3).round() as i64, (cn.y * 1e3).round() as i64, (cn.z * 1e3).round() as i64, (d / (tol * 20.0)).round() as i64);
+        planes.entry(k).or_default().push((i, side));
+    }
+    let mut drop = vec![false; nt];
+    let inside = |p: Vec3, t: usize| -> bool {
+        let [a, b, c] = m.tri(t);
+        let n = normal[t];
+        if (p - a).dot(n).abs() > tol * 20.0 {
+            return false;
+        }
+        let e = |u: Vec3, v: Vec3| (v - u).cross(p - u).dot(n);
+        let lim = tol * size;
+        e(a, b) > lim && e(b, c) > lim && e(c, a) > lim
+    };
+    for faces in planes.values() {
+        let (pos, neg): (Vec<_>, Vec<_>) = faces.iter().partition(|f| f.1);
+        if pos.is_empty() || neg.is_empty() {
+            continue;
+        }
+        for (mine, theirs) in [(&pos, &neg), (&neg, &pos)] {
+            for &(i, _) in mine.iter() {
+                let [a, b, c] = m.tri(i);
+                // a few points inside it (the centre alone can sit right on the other
+                // side's diagonal)
+                let pts = [(a + b + c) / 3.0, a * 0.6 + b * 0.2 + c * 0.2, a * 0.2 + b * 0.6 + c * 0.2, a * 0.2 + b * 0.2 + c * 0.6];
+                if pts.iter().any(|&p| theirs.iter().any(|&(j, _)| inside(p, j))) {
+                    drop[i] = true;
+                }
+            }
+        }
+    }
+    let removed = drop.iter().filter(|&&d| d).count();
+    if removed > 0 {
+        if m.is_painted() {
+            let mut k = 0;
+            m.paint.retain(|_| {
+                k += 1;
+                !drop[k - 1]
+            });
+        }
+        let mut k = 0;
+        m.triangles.retain(|_| {
+            k += 1;
+            !drop[k - 1]
+        });
+    }
+    removed
 }
 
 pub fn remove_duplicate_faces(m: &mut Mesh) -> usize {
@@ -309,6 +387,22 @@ mod tests {
     use super::*;
     use crate::analysis::analyze;
     use crate::primitives::{cuboid, sphere};
+
+    #[test]
+    fn hidden_inner_walls_are_removed() {
+        // a box with a zero-thickness double wall through it, its two sides split along
+        // different diagonals
+        let mut m = cuboid(Vec3::splat(10.0));
+        let n = m.positions.len() as u32;
+        m.positions.extend([Vec3::new(0.0, -5.0, -5.0), Vec3::new(0.0, 5.0, -5.0), Vec3::new(0.0, 5.0, 5.0), Vec3::new(0.0, -5.0, 5.0)]);
+        let (a, b, c, d) = (n, n + 1, n + 2, n + 3);
+        m.triangles.extend([[a, b, c], [a, c, d], [b, a, d], [b, d, c]]);
+        let log = repair(&mut m, RepairOptions::default());
+        assert_eq!(log.removed_inner_walls, 4, "{log:?}");
+        assert!(analyze(&m).is_watertight());
+        assert_eq!(m.triangles.len(), 12);
+        assert!((m.volume() - 1000.0).abs() < 1e-3);
+    }
 
     #[test]
     fn repairs_open_flipped_soup() {
