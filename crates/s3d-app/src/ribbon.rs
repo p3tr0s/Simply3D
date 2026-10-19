@@ -769,8 +769,9 @@ pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
                 });
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
+                    let w = ((ui.available_width() - ui.spacing().item_spacing.x) * 0.5).floor();
                     let tile = |ui: &mut Ui, icon: &str, label: &str| {
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(136.0, 86.0), Sense::click());
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 86.0), Sense::click());
                         let p = ui.painter();
                         let fill = if resp.hovered() { ACCENT.gamma_multiply(0.18) } else { ui.visuals().faint_bg_color };
                         p.rect_filled(rect, 10.0, fill);
@@ -791,15 +792,15 @@ pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
                         );
                         resp
                     };
-                    if tile(ui, "box", "Add a shape").clicked() {
-                        app.ribbon = RibbonTab::Insert;
-                        app.add_dialog = Some(Primitive::default_for("Cube"));
-                    }
                     if tile(ui, "folder-open", "Open a model").clicked() {
                         app.open_dialog(&ctx);
                     }
-                    if tile(ui, "grid-3x3", "Empty plate").on_hover_text("Start with an empty plate").clicked() {
+                    if tile(ui, "grid-3x3", "Empty plate")
+                        .on_hover_text("Start with an empty plate: shapes, parts and storage are on the Insert tab")
+                        .clicked()
+                    {
                         app.start_closed = true;
+                        app.ribbon = RibbonTab::Insert;
                     }
                 });
                 let recent: Vec<_> = app.settings.recent.iter().filter(|p| p.exists()).take(5).cloned().collect();
