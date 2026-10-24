@@ -1,0 +1,22 @@
+A design pass: everything has one home, results tell you what happened (with Undo), and a new **Print** step takes your plate straight to your slicer.
+
+### What's new
+- **Print (Ctrl+P, top right):** pick your printer, then a checklist catches what would go wrong (parts off or below the plate, too big for the printer, open meshes, overhangs that need supports, thin walls), each with a one-click fix. Then **open the plate in your slicer**: Simply3D finds Bambu Studio, OrcaSlicer, ElegooSlicer, PrusaSlicer, UltiMaker Cura, Creality Print and others, or uses the app your computer opens 3MF files with. Or save 3MF, STL, OBJ or PLY.
+- **Printer presets:** Bambu Lab, Elegoo, Prusa, Creality, Anycubic and Voron, setting the plate size and build height.
+- **Settings in the bar under the view:** every tool you start from the ribbon (Simplify, Smooth, Round edges, Extrude down, Hollow, Make solid, Pattern, Cut, Picture, Array) shows its settings right there, with a live preview. No need for the side panel.
+- **Array** is a tool of its own (Object tab), with an outline of where each copy will go.
+- **Notices** in the corner of the view say what just happened, with **Undo** right there.
+- **Undo history:** the arrow next to Undo lists your last steps; jump back to before any of them.
+
+### Easier to use
+- The side panel shows what's selected: its settings, position and size, and its health.
+- Ribbon: **Edit** is Combine / Cut / Shape / Fix; **Surface** (was Paint) has Paint, Faces, Texture and Sculpt.
+- One name per action everywhere: Merge, Combine, Separate, Extrude down, Round edges, Bake, Drop to plate, Centre on plate.
+- Tooltips show each button's key; **?** or F1 lists every shortcut.
+- A blue frame around the view while a tool is active.
+- Clearer text, a lighter selection in the object list.
+- Tools that keep their options in the side panel open it while they run and close it after.
+
+### Download
+- **Windows:** `Simply3D-windows-x64.zip` — unzip and run `simply3d.exe` (64-bit Windows 10/11).
+- **Linux:** `Simply3D-linux-x64.tar.gz` — unpack and run `./simply3d`, or `./install.sh` to add it to your applications menu.

@@ -74,3 +74,44 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: Simply3D-linux-x64.tar.gz
+
+  # A new version number in Cargo.toml publishes itself: once both builds pass, the
+  # vX.Y.Z tag and release are created with both downloads and the notes from
+  # release-notes/vX.Y.Z.txt (or notes made from the commits if there's no file).
+  # Pushes that keep the version only build and test.
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    concurrency: release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Is this version new?
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "v$v is already released: nothing to publish"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "v$v is new: publishing it"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.v.outputs.new == 'true'
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        if: steps.v.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.v.outputs.tag }}"
+          notes="release-notes/$tag.txt"
+          if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
+          gh release create "$tag" dist/Simply3D-windows-x64.zip dist/Simply3D-linux-x64.tar.gz \
+            --target "$GITHUB_SHA" --title "Simply3D $tag" "$@"

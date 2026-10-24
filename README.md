@@ -187,6 +187,10 @@ Notes for Linux:
 - It runs on both **Wayland** and **X11**.
 - Open and Save use your desktop's file picker through **xdg-desktop-portal**. GNOME, KDE and most desktops have it; on a bare window manager, install `xdg-desktop-portal` plus `xdg-desktop-portal-gtk` or `-kde`.
 
+### Releases
+
+Releases publish themselves: change `version` in the top-level `Cargo.toml`, add the notes as `release-notes/vX.Y.Z.txt`, and push. Once the Windows and Linux builds pass, GitHub Actions creates the `vX.Y.Z` tag and the release with both downloads.
+
 ### Tests and layout
 
 `cargo test --workspace` runs the tests. The code is split into `s3d-core` (geometry, file formats, booleans, repair; no UI) and `s3d-app` (the egui + wgpu desktop app).
