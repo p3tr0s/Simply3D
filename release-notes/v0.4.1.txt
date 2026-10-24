@@ -1,0 +1,10 @@
+The ribbon now fits any window size, the way Microsoft Office does.
+
+### What's new
+- **Ribbon fits narrow windows:** as the window gets narrower, groups shrink one at a time from the right — first to small icons with labels (three to a column), then to icons only (the name shows when you hover). Past that, the ribbon scrolls. Group captions always stay on one line.
+- **Top row makes room too:** the search box turns into a search icon, then the app name, logo and save icon step aside, and Print shows just its icon.
+- Works down to about half a laptop screen without anything overlapping.
+
+### Download
+- **Windows:** `Simply3D-windows-x64.zip` — unzip and run `simply3d.exe` (64-bit Windows 10/11).
+- **Linux:** `Simply3D-linux-x64.tar.gz` — unpack and run `./simply3d`, or `./install.sh` to add it to your applications menu.
