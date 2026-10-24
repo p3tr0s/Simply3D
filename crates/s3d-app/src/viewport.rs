@@ -1122,6 +1122,13 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             }
         }
     }
+    // a tool is on: frame the view in the accent colour, so clicks behaving differently
+    // never come as a surprise
+    let busy = app.tool != Tool::Select || app.preview.is_some() || app.placing.is_some() || (app.array_open && !app.selection.is_empty());
+    if busy {
+        let r = rect.shrink(1.0);
+        p.rect_stroke(r, 0.0, egui::Stroke::new(2.0, crate::ui::ACCENT.gamma_multiply(0.85)), egui::StrokeKind::Inside);
+    }
     // tool hint
     let hint = match app.tool {
         Tool::Measure => Some(match app.measure.mode {

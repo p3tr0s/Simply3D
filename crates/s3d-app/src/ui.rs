@@ -43,6 +43,13 @@ pub fn apply_theme(ctx: &egui::Context, dark: bool) {
         v.selection.bg_fill = Color32::from_rgb(153, 201, 239);
         v.selection.stroke.color = Color32::from_rgb(0, 60, 116);
     }
+    // readable hints: grey 160 on the dark panels (5.4:1 or better), 100 on light (5.3:1)
+    if dark {
+        v.widgets.noninteractive.fg_stroke.color = Color32::from_gray(215);
+        v.weak_text_color = Some(Color32::from_gray(160));
+    } else {
+        v.weak_text_color = Some(Color32::from_gray(100));
+    }
     v.window_corner_radius = egui::CornerRadius::same(8);
     v.menu_corner_radius = egui::CornerRadius::same(6);
     ctx.set_visuals(v);
@@ -172,6 +179,10 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if key(Key::R) {
         app.gizmo_kind = GizmoKind::Scale;
         app.tool = Tool::Select;
+    }
+    // ? (Shift+/) or F1: every shortcut
+    if ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if t == "?"))) || sc(Modifiers::NONE, Key::F1) {
+        app.show_shortcuts = !app.show_shortcuts;
     }
     if key(Key::Q) {
         app.gizmo_kind = GizmoKind::Off;
@@ -411,6 +422,31 @@ fn list_rows(app: &App) -> Vec<Row> {
     rows
 }
 
+/// A row of the object list: a light tint and an accent bar when selected (so the colour
+/// swatches stay visible), a faint one when hovered.
+fn list_row(ui: &mut egui::Ui, selected: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let r = ui.horizontal(add).response;
+    let mut rect = r.rect.expand2(egui::vec2(3.0, 1.0));
+    rect.max.x = ui.max_rect().right();
+    let hovered = ui.rect_contains_pointer(rect);
+    let shape = if selected {
+        let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
+        egui::Shape::Vec(vec![egui::Shape::rect_filled(rect, 3.0, ACCENT.gamma_multiply(0.22)), egui::Shape::rect_filled(bar, 1.5, ACCENT)])
+    } else if hovered {
+        egui::Shape::rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.6))
+    } else {
+        egui::Shape::Noop
+    };
+    ui.painter().set(bg, shape);
+}
+
+/// Clickable row text (strong when selected).
+fn row_label(ui: &mut egui::Ui, selected: bool, text: RichText) -> egui::Response {
+    let text = if selected { text.strong().color(ui.visuals().strong_text_color()) } else { text };
+    ui.add(egui::Label::new(text).selectable(false).sense(egui::Sense::click()).truncate())
+}
+
 fn object_list(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -428,7 +464,7 @@ fn object_list(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.separator();
     if app.scene.objects.is_empty() {
-        ui.weak("Nothing here yet: add a shape or open a model.");
+        ui.weak("Nothing here yet: add a shape or open a model. Ctrl+K finds any command by name.");
         return;
     }
     if app.isolated.is_some() || app.any_hidden() {
@@ -446,7 +482,8 @@ fn object_list(app: &mut App, ui: &mut egui::Ui) {
         for row in list_rows(app) {
             match row {
                 Row::Group { g, name, ids, folded, vis, locked } => {
-                    ui.horizontal(|ui| {
+                    let selected = ids.iter().all(|i| app.selection.contains(i));
+                    list_row(ui, selected, |ui| {
                         if icon_toggle(
                             ui,
                             true,
@@ -463,10 +500,8 @@ fn object_list(app: &mut App, ui: &mut egui::Ui) {
                         if lock_toggle(ui, locked, "Lock: can't be clicked or moved in the view") {
                             app.set_locked(&ids, !locked);
                         }
-                        let selected = ids.iter().all(|i| app.selection.contains(i));
                         let text = RichText::new(format!("🗀 {name}  ({})", ids.len())).strong();
-                        let r =
-                            ui.selectable_label(selected, text).on_hover_text("Click selects the whole group · right-click for options");
+                        let r = row_label(ui, selected, text).on_hover_text("Click selects the whole group · right-click for options");
                         if r.clicked() {
                             app.select_group(g, additive);
                         }
@@ -477,7 +512,8 @@ fn object_list(app: &mut App, ui: &mut egui::Ui) {
                     });
                 }
                 Row::Item { id, indent, name, color, vis, locked } => {
-                    ui.horizontal(|ui| {
+                    let selected = app.selection.contains(&id);
+                    list_row(ui, selected, |ui| {
                         ui.add_space(indent);
                         if icon_toggle(ui, vis, if vis { "eye" } else { "eye-off" }, "Show / hide (H)") {
                             app.set_visible(&[id], !vis);
@@ -488,12 +524,11 @@ fn object_list(app: &mut App, ui: &mut egui::Ui) {
                         let [r, g, b, _] = color;
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                         ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
-                        let selected = app.selection.contains(&id);
                         let mut text = RichText::new(name);
                         if !vis {
                             text = text.weak().italics();
                         }
-                        let resp = ui.selectable_label(selected, text);
+                        let resp = row_label(ui, selected, text);
                         if resp.clicked() {
                             app.click_select(id, additive, true);
                         }
@@ -646,13 +681,13 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                     ui.label("Position of");
                     egui::ComboBox::from_id_salt("posref")
                         .selected_text(match app.pos_ref {
-                            PosRef::Center => "Center",
-                            PosRef::BottomCenter => "Bottom center",
+                            PosRef::Center => "Centre",
+                            PosRef::BottomCenter => "Bottom centre",
                             PosRef::MinCorner => "Min corner",
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut app.pos_ref, PosRef::BottomCenter, "Bottom center");
-                            ui.selectable_value(&mut app.pos_ref, PosRef::Center, "Center");
+                            ui.selectable_value(&mut app.pos_ref, PosRef::BottomCenter, "Bottom centre");
+                            ui.selectable_value(&mut app.pos_ref, PosRef::Center, "Centre");
                             ui.selectable_value(&mut app.pos_ref, PosRef::MinCorner, "Min corner");
                         });
                 });
@@ -1557,6 +1592,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("W / E / R / Q", "Move / rotate / scale / hide gizmo"),
                     ("Ctrl while dragging gizmo", "Toggle snapping"),
                     ("M / L / T", "Measure / lay flat / text tools"),
+                    ("P / S / B", "Paint / select faces / sculpt"),
                     ("Alt+click", "Select one part of a group"),
                     ("Ctrl+G / Ctrl+Shift+G", "Group / ungroup"),
                     ("H / Shift+H", "Hide selected / show all"),
@@ -1572,6 +1608,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                     ("Ctrl+D, Del", "Duplicate, delete"),
                     ("Ctrl+K / F3", "Command palette: search every action"),
+                    ("? / F1", "This list"),
                     ("Ctrl+P", "Print: check the plate, open it in your slicer"),
                     ("Esc", "Cancel running operation / leave tool / clear selection"),
                     ("In number fields", "20+5, (10+2)*3, 1in, 2.5cm, 45°, *2, /4, 50%"),
@@ -1957,7 +1994,7 @@ pub fn primitive_fields(ui: &mut egui::Ui, p: &mut Primitive, id: &str) -> bool 
                 mm(ui, "Hook", &mut c.hook);
                 ui.label("Base");
                 ui.add(num(&mut c.base, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"))
-                    .on_hover_text("Block under the beam; 0 to attach the clip to your own part (Union)");
+                    .on_hover_text("Block under the beam; 0 to attach the clip to your own part (Merge)");
                 ui.end_row();
                 ui.label("");
                 hint(ui, "Tip: duplicate it, make the copy a Hole and scale it up a little to cut the matching slot.");

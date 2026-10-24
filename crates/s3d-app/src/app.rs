@@ -798,7 +798,7 @@ impl App {
                 let one_for_one = remove.len() >= add.len();
                 let carry: Vec<_> = remove.iter().map(|id| self.scene.get(*id).map(|o| (o.group, o.locked))).collect();
                 // paint (and, for unions, each object's colour) carries over to the result
-                let src = self.paint_source(&remove, matches!(label.as_str(), "Union" | "Intersect"));
+                let src = self.paint_source(&remove, matches!(label.as_str(), "Merge" | "Intersect"));
                 for (i, (name, mut mesh, color)) in add.into_iter().enumerate() {
                     if mesh.is_empty() {
                         continue;
@@ -1295,7 +1295,7 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
-        self.checkpoint("Center on plate");
+        self.checkpoint("Centre on plate");
         let b = self.selection_bounds();
         let d = Vec3::new(-b.center().x, -b.center().y, 0.0);
         for id in self.selection.clone() {
@@ -1404,7 +1404,7 @@ impl App {
             self.info("Nothing to apply: the selection isn't rotated or scaled");
             return;
         }
-        self.checkpoint("Apply transform");
+        self.checkpoint("Bake");
         for id in self.selection.clone() {
             self.scene.bake_transform(id);
         }
@@ -1469,7 +1469,12 @@ impl App {
         let others: Vec<Mesh> = self.selection[1..].iter().filter_map(|id| self.scene.get(*id)).map(|o| o.world_mesh()).collect();
         let remove = self.selection.clone();
         let base_mesh = base.world_mesh();
-        let name = format!("{op:?}");
+        let name = match op {
+            BoolOp::Union => "Merge",
+            BoolOp::Subtract => "Subtract",
+            BoolOp::Intersect => "Intersect",
+        }
+        .to_string();
         self.spawn_job(ctx, format!("{name}…"), move |_p| match csg::boolean_many(&base_mesh, &others, op) {
             Ok(m) if m.is_empty() => JobOutput::Error(format!("{name}: result is empty")),
             Ok(m) => JobOutput::Replace {
@@ -1565,7 +1570,7 @@ impl App {
                 return JobOutput::Error("Selection is already a single connected part".into());
             }
             let n = add.len();
-            JobOutput::Replace { label: "Split".into(), remove, add, message: format!("Split into {n} parts") }
+            JobOutput::Replace { label: "Separate".into(), remove, add, message: format!("Separated into {n} parts") }
         });
     }
 

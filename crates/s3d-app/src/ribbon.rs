@@ -211,6 +211,29 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                 if icon_button(ui, "redo-2", &rl, app.history.can_redo(), false).clicked() {
                     app.redo();
                 }
+                // the last steps: jump back several at once
+                let steps: Vec<String> = app.history.undo_labels().into_iter().take(20).map(str::to_string).collect();
+                let (rect, hist) = ui.allocate_exact_size(Vec2::new(14.0, 30.0), if steps.is_empty() { Sense::hover() } else { Sense::click() });
+                if ui.is_rect_visible(rect) {
+                    let col = if steps.is_empty() { weak(ui).gamma_multiply(0.45) } else if hist.hovered() { text_color(ui) } else { weak(ui) };
+                    icons::image("chevron-down", 12.0, col).paint_at(ui, Rect::from_center_size(rect.center(), Vec2::splat(12.0)));
+                }
+                let hist = hist.on_hover_text("Undo history");
+                egui::Popup::menu(&hist).show(|ui| {
+                    ui.set_min_width(200.0);
+                    ui.label(RichText::new("Undo back to before…").color(weak(ui)).small());
+                    for (k, l) in steps.iter().enumerate() {
+                        let text = if k == 0 { format!("{l}   (last step)") } else { l.clone() };
+                        if ui.button(text).clicked() {
+                            for _ in 0..=k {
+                                app.undo();
+                            }
+                        }
+                    }
+                    if app.history.undo_len() > steps.len() {
+                        ui.label(RichText::new(format!("… {} older", app.history.undo_len() - steps.len())).color(weak(ui)).small());
+                    }
+                });
                 let ul = app.history.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Undo (Ctrl+Z)".into());
                 if icon_button(ui, "undo-2", &ul, app.history.can_undo(), false).clicked() {
                     app.undo();
@@ -348,7 +371,7 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     let sel = app.tool == Tool::Select;
     group(ui, "Transform", |ui| {
         for (icon, label, kind, tip) in [
-            ("move", "Move", GizmoKind::Move, "Move handles (W)"),
+            ("move", "Move", GizmoKind::Move, "Move handles (W) · Q hides the handles"),
             ("rotate-3d", "Rotate", GizmoKind::Rotate, "Rotation rings (E)"),
             ("scale-3d", "Scale", GizmoKind::Scale, "Scale handles (R)"),
         ] {
@@ -380,10 +403,10 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         {
             app.tool = if app.tool == Tool::LayFlat { Tool::Select } else { Tool::LayFlat };
         }
-        if big(ui, "arrow-down-to-dot", "Settle", has, false, false).on_hover_text("Drop onto the plate (D)").clicked() {
+        if big(ui, "arrow-down-to-dot", "Drop", has, false, false).on_hover_text("Drop to plate (D)").clicked() {
             app.drop_selected();
         }
-        if big(ui, "locate-fixed", "Center", has, false, false).on_hover_text("Center on the plate").clicked() {
+        if big(ui, "locate-fixed", "Centre", has, false, false).on_hover_text("Centre on plate").clicked() {
             app.center_selected_on_plate();
         }
         if big(ui, "layout-grid", "Arrange", !app.scene.objects.is_empty(), false, false)
@@ -419,7 +442,7 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         });
     });
     group(ui, "Organise", |ui| {
-        if big(ui, "copy", "Duplicate", has, false, false).on_hover_text("Ctrl+D").clicked() {
+        if big(ui, "copy", "Duplicate", has, false, false).on_hover_text("Make a copy beside it (Ctrl+D)").clicked() {
             app.duplicate_selected();
         }
         if big(ui, "copy-plus", "Array", has, app.array_open, false)
@@ -434,13 +457,13 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
                 }
             }
         }
-        if big(ui, "trash-2", "Delete", has, false, false).on_hover_text("Del").clicked() {
+        if big(ui, "trash-2", "Delete", has, false, false).on_hover_text("Remove the selection (Del)").clicked() {
             app.delete_selected();
         }
         if big(ui, "group", "Group", many, false, false).on_hover_text("Keep the selected objects together (Ctrl+G)").clicked() {
             app.group_selected();
         }
-        if big(ui, "ungroup", "Ungroup", app.can_ungroup(), false, false).on_hover_text("Ctrl+Shift+G").clicked() {
+        if big(ui, "ungroup", "Ungroup", app.can_ungroup(), false, false).on_hover_text("Undo the grouping (Ctrl+Shift+G)").clicked() {
             app.ungroup_selected();
         }
         let all_holes = has && app.selection.iter().all(|id| app.scene.get(*id).is_some_and(|o| o.hole));
@@ -452,7 +475,7 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         }
     });
     group(ui, "Show", |ui| {
-        if big(ui, "eye-off", "Hide", has, false, false).on_hover_text("H · Shift+H shows everything").clicked() {
+        if big(ui, "eye-off", "Hide", has, false, false).on_hover_text("Hide the selection (H) · show everything again (Shift+H)").clicked() {
             app.hide_selected();
         }
         if big(ui, "focus", "Isolate", has || app.isolated.is_some(), app.isolated.is_some(), false)
@@ -527,7 +550,7 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         if big(ui, "scissors", "Cut", has, app.tool == Tool::Cut, false).on_hover_text("Cut with a plane, with optional pegs").clicked() {
             app.start_cut();
         }
-        if big(ui, "split", "Separate", has, false, false).on_hover_text("Split into its loose parts").clicked() {
+        if big(ui, "split", "Separate", has, false, false).on_hover_text("Separate into its loose parts").clicked() {
             app.split_selected(ctx);
         }
         if big(ui, "maximize", "Fit plate", has, app.split_dialog, false)
@@ -541,8 +564,8 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         for (icon, label, kind, tip) in [
             ("triangle", "Simplify", PreviewKind::Simplify, "Fewer triangles, same shape"),
             ("waves", "Smooth", PreviewKind::Smooth, "Smooth out facets and bumps"),
-            ("squircle", "Round", PreviewKind::Round, "Round the edges"),
-            ("arrow-down-from-line", "Extrude", PreviewKind::ExtrudeDown, "Extrude the underside down to the plate"),
+            ("squircle", "Round edges", PreviewKind::Round, "Fillets on every sharp edge"),
+            ("arrow-down-from-line", "Extrude down", PreviewKind::ExtrudeDown, "Extrude the underside down to the plate"),
             ("container", "Hollow", PreviewKind::Hollow, "Hollow it out with a wall thickness"),
             ("hexagon", "Pattern", PreviewKind::Pattern, "Voronoi, wireframe or gyroid lattice"),
         ] {
@@ -639,13 +662,13 @@ fn surface_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
 
 fn view_tab(app: &mut App, ui: &mut Ui) {
     group(ui, "Camera", |ui| {
-        if big(ui, "house", "Fit all", true, false, false).on_hover_text("Home").clicked() {
+        if big(ui, "house", "Fit all", true, false, false).on_hover_text("Show everything (Home)").clicked() {
             app.frame_all();
         }
-        if big(ui, "scan", "Fit selection", !app.selection.is_empty(), false, false).on_hover_text("F").clicked() {
+        if big(ui, "scan", "Fit selection", !app.selection.is_empty(), false, false).on_hover_text("Zoom to the selection (F)").clicked() {
             app.frame_selection();
         }
-        let r = big(ui, "axis-3d", "Views", true, false, true).on_hover_text("Front 1 · Right 3 · Top 7 · Iso 0");
+        let r = big(ui, "axis-3d", "Views", true, false, true).on_hover_text("Front (1), right (3), top (7), isometric (0)");
         egui::Popup::menu(&r).show(|ui| {
             for (n, v) in [
                 ("Front (1)", ViewPreset::Front),
@@ -669,7 +692,7 @@ fn view_tab(app: &mut App, ui: &mut Ui) {
     group(ui, "Display", |ui| {
         let s = &mut app.settings;
         for (icon, label, on, tip) in [
-            ("sparkles", "Smooth", &mut s.smooth_shading, "Smooth shading; sharp edges stay sharp (Shift+S)"),
+            ("sparkles", "Smooth shading", &mut s.smooth_shading, "Smooth shading; sharp edges stay sharp (Shift+S)"),
             ("grid-2x2", "Wireframe", &mut s.wireframe, "Show the triangles (Shift+W)"),
             ("layout-grid", "Plate", &mut s.show_plate, "Build plate and grid"),
             ("ratio", "Sizes", &mut s.show_dimensions, "Dimensions of the selection"),
@@ -706,7 +729,7 @@ fn help_tab(app: &mut App, ui: &mut Ui) {
         if big(ui, "search", "Commands", true, false, false).on_hover_text("Search every action (Ctrl+K)").clicked() {
             app.palette = Some(crate::commands::Palette::new());
         }
-        if big(ui, "keyboard", "Shortcuts", true, false, false).on_hover_text("Keyboard and mouse").clicked() {
+        if big(ui, "keyboard", "Shortcuts", true, false, false).on_hover_text("Every key and mouse action (?)").clicked() {
             app.show_shortcuts = true;
         }
         if big(ui, "info", "About", true, false, false).clicked() {
@@ -748,10 +771,10 @@ pub fn object_box(app: &mut App, ui: &mut Ui, view: Rect) {
                     if icon_button(ui, "arrow-down-to-line", "Lay flat: click a face (L)", true, app.tool == Tool::LayFlat).clicked() {
                         app.tool = if app.tool == Tool::LayFlat { Tool::Select } else { Tool::LayFlat };
                     }
-                    if icon_button(ui, "arrow-down-to-dot", "Settle onto the plate (D)", true, false).clicked() {
+                    if icon_button(ui, "arrow-down-to-dot", "Drop to plate (D)", true, false).clicked() {
                         app.drop_selected();
                     }
-                    if icon_button(ui, "locate-fixed", "Center on the plate", true, false).clicked() {
+                    if icon_button(ui, "locate-fixed", "Centre on plate", true, false).clicked() {
                         app.center_selected_on_plate();
                     }
                     ui.separator();
@@ -854,7 +877,7 @@ pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
                     }
                 }
                 ui.add_space(10.0);
-                ui.label(RichText::new("Tip: drop STL, OBJ, PLY, 3MF or picture files anywhere on the window.").small().color(weak(ui)));
+                ui.label(RichText::new("Tip: drop STL, OBJ, PLY, 3MF or picture files anywhere on the window. Ctrl+K finds any command, ? shows every shortcut.").small().color(weak(ui)));
             });
         },
     );

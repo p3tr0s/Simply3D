@@ -95,7 +95,8 @@ pub fn show(app: &mut App, ui: &egui::Ui, view: Rect) {
     egui::Area::new(egui::Id::new("toasts"))
         .fixed_pos(view.right_top() + egui::vec2(-12.0, 12.0))
         .pivot(Align2::RIGHT_TOP)
-        .order(egui::Order::Foreground)
+        // under windows and menus, over the view
+        .order(egui::Order::Middle)
         .interactable(true)
         .show(&ctx, |ui| {
             // one column, all notices as wide as the widest

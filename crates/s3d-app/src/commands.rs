@@ -74,14 +74,14 @@ pub fn all() -> Vec<Command> {
         cmd!("View", "Mouse: 3D Builder style (left-drag orbits)", "", always, |a, _| a.settings.left_drag = crate::app::LeftDrag::Orbit),
         cmd!("View", "Mouse: CAD style (left-drag box-selects)", "", always, |a, _| a.settings.left_drag = crate::app::LeftDrag::BoxSelect),
         cmd!("Transform", "Drop to plate", "D", has_sel, |a, _| a.drop_selected()),
-        cmd!("Transform", "Center on plate", "", has_sel, |a, _| a.center_selected_on_plate()),
+        cmd!("Transform", "Centre on plate", "", has_sel, |a, _| a.center_selected_on_plate()),
         cmd!("Transform", "Move back onto the plate", "", has_sel, |a, _| {
             let ids = a.selection.clone();
             a.fit_onto_plate(&ids)
         }),
         cmd!("Transform", "Lay flat on face", "L", always, |a, _| a.tool = Tool::LayFlat),
         cmd!("Transform", "Reset rotation & scale", "", has_sel, |a, _| a.reset_transform_selected()),
-        cmd!("Transform", "Apply transform", "", has_sel, |a, _| a.bake_selected()),
+        cmd!("Transform", "Bake rotation & scale into the shape", "", has_sel, |a, _| a.bake_selected()),
         cmd!("Transform", "Rotate 90° around X", "", has_sel, |a, _| a.rotate_selection(0, 90.0)),
         cmd!("Transform", "Rotate 90° around Y", "", has_sel, |a, _| a.rotate_selection(1, 90.0)),
         cmd!("Transform", "Rotate 90° around Z", "", has_sel, |a, _| a.rotate_selection(2, 90.0)),
@@ -98,8 +98,8 @@ pub fn all() -> Vec<Command> {
         cmd!("Arrange", "Align bottoms (Z min)", "", two_sel, |a, _| a.align(2, 0)),
         cmd!("Arrange", "Align centres Z", "", two_sel, |a, _| a.align(2, 1)),
         cmd!("Arrange", "Align tops (Z max)", "", two_sel, |a, _| a.align(2, 2)),
-        cmd!("Arrange", "Auto-orient for printing (least overhang)", "", has_objects, |a, _| a.auto_orient_selected()),
-        cmd!("Arrange", "Auto-arrange on the plate", "A", has_objects, |a, _| {
+        cmd!("Arrange", "Orient: turn parts for the least overhang", "", has_objects, |a, _| a.auto_orient_selected()),
+        cmd!("Arrange", "Arrange: pack the parts on the plate", "A", has_objects, |a, _| {
             let g = a.settings.arrange_gap;
             a.auto_arrange(g)
         }),
@@ -111,11 +111,11 @@ pub fn all() -> Vec<Command> {
             a.array_open = true
         }),
         // combine
-        cmd!("Combine", "Union", "", two_sel, |a, c| a.boolean_selected(c, BoolOp::Union)),
+        cmd!("Combine", "Merge (join into one solid)", "", two_sel, |a, c| a.boolean_selected(c, BoolOp::Union)),
         cmd!("Combine", "Subtract", "", two_sel, |a, c| a.boolean_selected(c, BoolOp::Subtract)),
         cmd!("Combine", "Intersect", "", two_sel, |a, c| a.boolean_selected(c, BoolOp::Intersect)),
-        cmd!("Combine", "Merge (no boolean)", "", two_sel, |a, _| a.merge_selected()),
-        cmd!("Combine", "Split into parts", "", has_sel, |a, c| a.split_selected(c)),
+        cmd!("Combine", "Combine (into one object, no boolean)", "", two_sel, |a, _| a.merge_selected()),
+        cmd!("Combine", "Separate into loose parts", "", has_sel, |a, c| a.split_selected(c)),
         cmd!("Combine", "Cut with plane…", "", has_sel, |a, _| a.start_cut()),
         // mesh
         cmd!("Mesh", "Simplify (preview)", "", has_sel, |a, _| {
@@ -194,8 +194,8 @@ pub fn all() -> Vec<Command> {
         cmd!("View", "Section view", "X", has_objects, |a, _| a.toggle_section()),
         // organise
         cmd!("Organise", "Group", "Ctrl+G", two_sel, |a, _| a.group_selected()),
-        cmd!("Combine", "Make hole (negative object)", "", has_sel, |a, _| a.set_hole_selected(true)),
-        cmd!("Combine", "Make solid", "", has_sel, |a, _| a.set_hole_selected(false)),
+        cmd!("Combine", "Type: hole (cuts what it overlaps)", "", has_sel, |a, _| a.set_hole_selected(true)),
+        cmd!("Combine", "Type: solid (not a hole)", "", has_sel, |a, _| a.set_hole_selected(false)),
         cmd!("Combine", "Apply holes (make the cut permanent)", "", |a| a.scene.objects.iter().any(|o| o.hole), |a, c| a
             .apply_holes_selected(c)),
         cmd!("Organise", "Ungroup", "Ctrl+Shift+G", |a| a.can_ungroup(), |a, _| a.ungroup_selected()),

@@ -44,7 +44,7 @@ impl App {
         if units.is_empty() {
             return;
         }
-        self.checkpoint("Auto-orient");
+        self.checkpoint("Orient");
         let mut changed = 0;
         let mut saved = 0.0f32;
         for u in units {

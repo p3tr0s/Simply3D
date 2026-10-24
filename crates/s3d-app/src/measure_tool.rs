@@ -139,7 +139,7 @@ impl App {
         self.info(if channel {
             "Channel added as a hole: it cuts through whatever it passes"
         } else {
-            "Tube added: Union it with the model to join them"
+            "Tube added: Merge it with the model to join them"
         });
     }
 

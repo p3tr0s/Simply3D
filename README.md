@@ -56,17 +56,17 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - Move, rotate and scale with the mouse or the gizmo, with **snapping** to grid steps and to other objects (guides show what lines up).
 - **Exact values everywhere:** position, size in mm (with locked proportions), scale %, rotation. Number fields accept maths and units (`20+5`, `1in`, `*2`, `50%`).
 - **Type a distance while dragging** for an exact move, or nudge with the arrow keys.
-- Align, distribute, mirror, lay flat on a face, drop to plate.
+- Align, distribute, mirror, lay flat on a face, drop to plate, centre on plate, and **bake** rotation and scale into the shape.
 - **Arrays:** grid copies, or **circular** copies around a centre (spokes, bolt circles, petals), with an outline of where each copy will go before you create them.
 - **Auto-arrange** packs parts on the plate; **auto-orient** turns parts for the least overhang.
 - Groups, hide, isolate and lock. Unlimited undo and redo.
 
 ### Combine and cut
-- **Union, subtract and intersect** with a robust boolean engine that runs in the background.
+- **Merge, subtract and intersect** with a robust boolean engine that runs in the background.
 - **Holes:** turn any object into a hole that cuts live as you move it. Save it as a negative part for the slicer or as a finished cut.
 - **Cut with a plane**, with optional **pegs or dowels** so the halves fit back together.
 - **Split to fit the printer:** a model too big for your printer is cut into pieces that fit (turned if that saves pieces), with pegs or dowels, and laid out ready to print.
-- Merge, split into separate parts, and separate selected faces.
+- **Combine** objects into one without a boolean, **separate** an object into its loose parts, or separate selected faces.
 
 ### Mesh tools
 - **Analysis and repair:** finds open edges, holes, non-manifold edges, flipped faces and loose parts, and fixes them in one click. Shows volume and surface area.

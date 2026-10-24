@@ -23,6 +23,11 @@ impl History {
         self.redo.clear();
     }
 
+    /// What each step that can be undone did, the most recent first.
+    pub fn undo_labels(&self) -> Vec<&str> {
+        self.undo.iter().rev().map(|(l, _)| l.as_str()).collect()
+    }
+
     /// Number of steps that can be undone.
     pub fn undo_len(&self) -> usize {
         self.undo.len()

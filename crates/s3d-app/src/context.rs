@@ -88,7 +88,7 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         if item(ui, true, "Drop to plate", "D") {
             app.drop_selected();
         }
-        if item(ui, true, "Center on plate", "") {
+        if item(ui, true, "Centre on plate", "") {
             app.center_selected_on_plate();
         }
         if item(ui, true, "Lay flat on a face…", "L") {
@@ -110,12 +110,12 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         if item(ui, true, "Reset rotation & scale", "") {
             app.reset_transform_selected();
         }
-        if item(ui, true, "Apply transform", "") {
+        if item(ui, true, "Bake rotation & scale", "") {
             app.bake_selected();
         }
     });
     ui.menu_button("Combine", |ui| {
-        if item(ui, many, "Union", "") {
+        if item(ui, many, "Merge", "") {
             app.boolean_selected(ctx, BoolOp::Union);
         }
         if item(ui, many, "Subtract", "") {
@@ -124,11 +124,11 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         if item(ui, many, "Intersect", "") {
             app.boolean_selected(ctx, BoolOp::Intersect);
         }
-        if item(ui, many, "Merge (no boolean)", "") {
+        if item(ui, many, "Combine (no boolean)", "") {
             app.merge_selected();
         }
         ui.separator();
-        if item(ui, true, "Split into parts", "") {
+        if item(ui, true, "Separate into loose parts", "") {
             app.split_selected(ctx);
         }
         if item(ui, true, "Cut with plane…", "") {
