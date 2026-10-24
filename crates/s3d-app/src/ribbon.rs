@@ -12,7 +12,7 @@ use egui::{Align, Align2, Color32, FontId, Layout, Rect, Response, RichText, Sen
 use s3d_core::csg::BoolOp;
 use s3d_core::primitives::Primitive;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub enum RibbonTab {
     #[default]
     Insert,
@@ -47,8 +47,166 @@ fn weak(ui: &Ui) -> Color32 {
     ui.visuals().weak_text_color()
 }
 
+// ----- fitting the ribbon to the window (like Office) -----
+//
+// Each group is drawn Large (big icon, label under it), Medium (small icon, label beside
+// it, three to a column) or Small (small icons only, three to a column). When the window
+// gets narrower, groups shrink one at a time from the right: first to Medium, then to
+// Small. Each group's width at each size is remembered from when it was last drawn, so
+// the sizes are chosen before drawing.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Size {
+    Large,
+    Medium,
+    Small,
+}
+
+/// Height of one compact row (three fit the height of a large button).
+const ROW_H: f32 = 18.5;
+
+#[derive(Default)]
+struct Plan {
+    tab: Option<RibbonTab>,
+    sizes: Vec<Size>,
+    /// Groups drawn so far this frame.
+    next: usize,
+}
+
+/// Where the next compact button of the group being drawn goes.
+struct Column {
+    origin: egui::Pos2,
+    x: f32,
+    row: usize,
+    width: f32,
+    size: Size,
+}
+
+thread_local! {
+    static PLAN: std::cell::RefCell<Plan> = Default::default();
+    static COLUMN: std::cell::RefCell<Option<Column>> = const { std::cell::RefCell::new(None) };
+}
+
+fn width_id(tab: RibbonTab, group: usize, size: Size) -> egui::Id {
+    egui::Id::new(("ribbon_width", tab, group, size))
+}
+
+/// Choose each group's size so the tab fits `avail`.
+fn plan(ctx: &egui::Context, tab: RibbonTab, avail: f32) {
+    let n: usize = ctx.data(|d| d.get_temp(egui::Id::new(("ribbon_groups", tab)))).unwrap_or(0);
+    let known = |i: usize, s: Size| ctx.data(|d| d.get_temp::<f32>(width_id(tab, i, s)));
+    let fixed = |i: usize| ctx.data(|d| d.get_temp::<bool>(egui::Id::new(("ribbon_fixed", tab, i)))).unwrap_or(false);
+    // a size not drawn yet: guessed from the large one
+    let width = |i: usize, s: Size| {
+        known(i, s)
+            .or_else(|| known(i, Size::Large).map(|w| w * if s == Size::Medium { 0.62 } else { 0.4 }))
+            .unwrap_or(0.0)
+    };
+    let mut sizes = vec![Size::Large; n];
+    let total = |sz: &[Size]| (0..n).map(|i| width(i, sz[i])).sum::<f32>();
+    'fit: for level in [Size::Medium, Size::Small] {
+        for i in (0..n).rev() {
+            if total(&sizes) <= avail {
+                break 'fit;
+            }
+            if !fixed(i) {
+                sizes[i] = level;
+            }
+        }
+    }
+    PLAN.with(|p| *p.borrow_mut() = Plan { tab: Some(tab), sizes, next: 0 });
+}
+
+/// After drawing a tab: remember how many groups it has.
+fn plan_done(ctx: &egui::Context) {
+    PLAN.with(|p| {
+        let p = p.borrow();
+        if let Some(tab) = p.tab {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new(("ribbon_groups", tab)), p.next));
+        }
+    });
+}
+
+/// The size for the next group, and its number.
+fn next_group() -> (Option<RibbonTab>, usize, Size) {
+    PLAN.with(|p| {
+        let mut p = p.borrow_mut();
+        let i = p.next;
+        p.next += 1;
+        (p.tab, i, p.sizes.get(i).copied().unwrap_or(Size::Large))
+    })
+}
+
+/// A compact ribbon button (Medium or Small), placed in the group's columns.
+fn compact(ui: &mut Ui, icon: &str, label: &str, enabled: bool, active: bool, menu: bool, size: Size) -> Response {
+    let font = FontId::proportional(11.5);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, Color32::PLACEHOLDER);
+    let arrow = if menu { 10.0 } else { 0.0 };
+    let w = match size {
+        Size::Small => 26.0 + arrow,
+        _ => 6.0 + 16.0 + 5.0 + galley.size().x + arrow + 6.0,
+    };
+    let rect = COLUMN.with(|c| {
+        let mut c = c.borrow_mut();
+        let c = c.as_mut().expect("compact button outside a group");
+        if c.row == 3 {
+            c.x += c.width + 3.0;
+            c.row = 0;
+            c.width = 0.0;
+        }
+        let r = Rect::from_min_size(c.origin + Vec2::new(c.x, 1.0 + c.row as f32 * ROW_H), Vec2::new(w, ROW_H - 1.0));
+        c.row += 1;
+        c.width = c.width.max(w);
+        r
+    });
+    let id = ui.id().with(("ribbon_button", label));
+    let resp = ui.interact(rect, id, if enabled { Sense::click() } else { Sense::hover() });
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        if active {
+            p.rect_filled(rect, 4.0, ACCENT.gamma_multiply(0.16));
+            p.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+        } else if enabled && resp.hovered() {
+            p.rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        let col = if !enabled {
+            weak(ui).gamma_multiply(0.45)
+        } else if active {
+            ACCENT
+        } else {
+            text_color(ui)
+        };
+        let ix = if size == Size::Small { rect.left() + 5.0 } else { rect.left() + 6.0 };
+        icons::image(icon, 16.0, col).paint_at(ui, Rect::from_min_size(egui::pos2(ix, rect.center().y - 8.0), Vec2::splat(16.0)));
+        let mut x = ix + 16.0;
+        if size == Size::Medium {
+            let gw = galley.size().x;
+            ui.painter().galley(egui::pos2(ix + 21.0, rect.center().y - galley.size().y * 0.5), galley, col);
+            x = ix + 21.0 + gw;
+        }
+        if menu {
+            let c = egui::pos2(x + 6.0, rect.center().y + 1.0);
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![c + Vec2::new(-3.0, -2.0), c + Vec2::new(3.0, -2.0), c + Vec2::new(0.0, 2.0)],
+                col,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    // icons only: the name goes in the tooltip, above what it does
+    if size == Size::Small {
+        resp.on_hover_text(RichText::new(label).strong())
+    } else {
+        resp
+    }
+}
+
 /// A big ribbon button: icon above a short label. `menu` adds a small arrow (it opens a list).
+/// Inside a compacted group it's drawn small instead.
 fn big(ui: &mut Ui, icon: &str, label: &str, enabled: bool, active: bool, menu: bool) -> Response {
+    if let Some(size) = COLUMN.with(|c| c.borrow().as_ref().map(|c| c.size)) {
+        return compact(ui, icon, label, enabled, active, menu, size);
+    }
     let font = FontId::proportional(11.5);
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, Color32::PLACEHOLDER);
     let w = (galley.size().x + if menu { 24.0 } else { 14.0 }).max(50.0);
@@ -87,22 +245,58 @@ fn big(ui: &mut Ui, icon: &str, label: &str, enabled: bool, active: bool, menu: 
     resp
 }
 
-/// A group of ribbon buttons with its caption underneath, then a divider.
+/// A group of ribbon buttons with its caption underneath, then a divider. It's drawn at
+/// the size the plan gave it.
 fn group(ui: &mut Ui, caption: &str, add: impl FnOnce(&mut Ui)) {
+    group_sized(ui, caption, false, add);
+}
+
+/// A group whose content isn't made of ribbon buttons (it always stays as it is).
+fn fixed_group(ui: &mut Ui, caption: &str, add: impl FnOnce(&mut Ui)) {
+    group_sized(ui, caption, true, add);
+}
+
+fn group_sized(ui: &mut Ui, caption: &str, fixed: bool, add: impl FnOnce(&mut Ui)) {
+    let (tab, index, size) = next_group();
+    let size = if fixed { Size::Large } else { size };
+    // a group is never narrower than its caption
+    let caption_w = ui.painter().layout_no_wrap(caption.to_string(), FontId::proportional(10.5), Color32::PLACEHOLDER).size().x + 4.0;
     let r = ui.vertical(|ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            add(ui);
+            if size == Size::Large {
+                let start = ui.cursor().min.x;
+                add(ui);
+                let w = ui.min_rect().right() - start;
+                if w < caption_w {
+                    ui.add_space(caption_w - w);
+                }
+            } else {
+                // compact buttons place themselves in columns of three; then the space
+                // they used is taken
+                let origin = ui.cursor().min;
+                COLUMN.with(|c| *c.borrow_mut() = Some(Column { origin, x: 0.0, row: 0, width: 0.0, size }));
+                add(ui);
+                let used = COLUMN.with(|c| c.borrow_mut().take()).map(|c| c.x + c.width).unwrap_or(0.0);
+                ui.allocate_exact_size(Vec2::new(used.max(caption_w), 56.0), Sense::hover());
+            }
         });
         ui.add_space(-2.0);
         let w = ui.min_rect().width();
         ui.allocate_ui_with_layout(Vec2::new(w, 14.0), Layout::top_down(Align::Center), |ui| {
-            ui.label(RichText::new(caption).size(10.5).color(weak(ui)));
+            ui.add(egui::Label::new(RichText::new(caption).size(10.5).color(weak(ui))).wrap_mode(egui::TextWrapMode::Extend));
         });
     });
     let x = r.response.rect.right() + 7.0;
     let y = r.response.rect.y_range();
     ui.add_space(14.0);
+    if let Some(tab) = tab {
+        let w = r.response.rect.width() + 14.0 + ui.spacing().item_spacing.x;
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(width_id(tab, index, size), w);
+            d.insert_temp(egui::Id::new(("ribbon_fixed", tab, index)), fixed);
+        });
+    }
     ui.painter().vline(x, (y.min + 6.0)..=(y.max - 4.0), egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
 }
 
@@ -151,15 +345,22 @@ pub fn top(app: &mut App, ui: &mut Ui) {
         };
     }
     egui::Panel::top("tabs").frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 3))).show(ui, |ui| {
+        // narrower windows: the search box becomes an icon, then the name goes
+        let width = ui.available_width();
+        let (short_search, no_name, tight) = (width < 1000.0, width < 820.0, width < 680.0);
         ui.horizontal(|ui| {
             let m = icon_button(ui, "menu", "File: new, open, save, settings", true, false);
             egui::Popup::menu(&m).show(|ui| app_menu(app, ui, &ctx));
-            ui.add(icons::logo(18.0));
-            ui.label(RichText::new("Simply3D").strong());
-            ui.add_space(14.0);
+            if !tight {
+                ui.add(icons::logo(18.0));
+            }
+            if !no_name {
+                ui.label(RichText::new("Simply3D").strong());
+            }
+            ui.add_space(if no_name { 6.0 } else { 14.0 });
             for t in RibbonTab::ALL {
                 let on = app.ribbon == t;
-                let txt = RichText::new(t.name()).size(13.5);
+                let txt = RichText::new(t.name()).size(if tight { 12.5 } else { 13.5 });
                 let txt = if on { txt.color(ACCENT).strong() } else { txt };
                 let r = ui.add(egui::Label::new(txt).selectable(false).sense(Sense::click()));
                 if on {
@@ -169,7 +370,7 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                 if r.clicked() {
                     app.ribbon = t;
                 }
-                ui.add_space(10.0);
+                ui.add_space(if tight { 4.0 } else { 10.0 });
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if icon_button(ui, "panel-right", "Show / hide the side panel", true, app.settings.sidebar).clicked() {
@@ -179,10 +380,13 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                 }
                 // the last step: check it and send it to the printer
                 let has_parts = app.scene.objects.iter().any(|o| o.visible && !o.hole);
-                let print = egui::Button::image_and_text(
-                    icons::image("printer", 16.0, if has_parts { Color32::WHITE } else { weak(ui) }),
-                    RichText::new("Print").strong().color(if has_parts { Color32::WHITE } else { weak(ui) }),
-                )
+                let fg = if has_parts { Color32::WHITE } else { weak(ui) };
+                let print = if tight {
+                    egui::Button::image(icons::image("printer", 16.0, fg))
+                } else {
+                    egui::Button::image_and_text(icons::image("printer", 16.0, fg), RichText::new("Print").strong().color(fg))
+                };
+                let print = print
                 .fill(if has_parts { ACCENT } else { ui.visuals().widgets.inactive.weak_bg_fill })
                 .min_size(Vec2::new(0.0, 26.0))
                 .corner_radius(13.0);
@@ -194,16 +398,19 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                 {
                     app.open_print();
                 }
-                if icon_button(ui, "save", "Save (Ctrl+S)", true, false).clicked() {
+                if !tight && icon_button(ui, "save", "Save (Ctrl+S)", true, false).clicked() {
                     app.save(&ctx);
                 }
-                let search = ui
-                    .add(
+                let search = if short_search {
+                    icon_button(ui, "search", "Search commands (Ctrl+K)", true, false)
+                } else {
+                    ui.add(
                         egui::Button::new(RichText::new("Search commands…   Ctrl+K").color(weak(ui)))
                             .min_size(Vec2::new(200.0, 26.0))
                             .corner_radius(13.0),
                     )
-                    .on_hover_text("Find any action by name");
+                    .on_hover_text("Find any action by name")
+                };
                 if search.clicked() {
                     app.palette = Some(crate::commands::Palette::new());
                 }
@@ -242,7 +449,9 @@ pub fn top(app: &mut App, ui: &mut Ui) {
         });
     });
     egui::Panel::top("ribbon").frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 4))).show(ui, |ui| {
-        egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+        // groups shrink to fit; past the smallest size, the ribbon scrolls
+        plan(&ctx, app.ribbon, ui.available_width());
+        egui::ScrollArea::horizontal().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded).show(ui, |ui| {
             ui.horizontal(|ui| match app.ribbon {
                 RibbonTab::Insert => insert_tab(app, ui, &ctx),
                 RibbonTab::Object => object_tab(app, ui, &ctx),
@@ -252,6 +461,7 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                 RibbonTab::Help => help_tab(app, ui),
             });
         });
+        plan_done(&ctx);
     });
 }
 
@@ -610,7 +820,7 @@ fn surface_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
             app.refine_for_paint(ctx);
         }
     });
-    group(ui, "Object colour", |ui| {
+    fixed_group(ui, "Object colour", |ui| {
         ui.vertical(|ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
