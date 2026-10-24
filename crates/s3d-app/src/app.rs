@@ -77,6 +77,12 @@ pub struct Settings {
     /// Colour overhangs, thin walls and islands.
     pub print_check: bool,
     pub check: s3d_core::printcheck::CheckOptions,
+    /// The printer picked from the presets (several share a build volume).
+    pub printer: String,
+    /// The slicer last used from Print (its name).
+    pub slicer: String,
+    /// Print sends everything (false) or just the selection.
+    pub print_selection: bool,
 }
 
 impl Default for Settings {
@@ -119,6 +125,9 @@ impl Default for Settings {
             plate_height: 256.0,
             print_check: false,
             check: Default::default(),
+            printer: String::new(),
+            slicer: String::new(),
+            print_selection: false,
         }
     }
 }
@@ -424,6 +433,11 @@ pub enum JobOutput {
     Saved {
         path: PathBuf,
     },
+    /// A file written for another program (a slicer), opened there if one is given.
+    Exported {
+        path: PathBuf,
+        slicer: Option<crate::slicers::Slicer>,
+    },
     Error(String),
 }
 
@@ -434,13 +448,6 @@ pub struct Job {
     pub started: Instant,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanelTab {
-    Object,
-    Arrange,
-    Mesh,
-    Repair,
-}
 
 pub struct RecoveryInfo {
     pub file: PathBuf,
@@ -448,10 +455,6 @@ pub struct RecoveryInfo {
     pub age_minutes: u64,
 }
 
-pub struct Status {
-    pub text: String,
-    pub error: bool,
-}
 
 pub struct App {
     pub scene: Scene,
@@ -488,7 +491,7 @@ pub struct App {
     pub lock_ratio: bool,
     pub pending_edit: Option<String>,
     pub report_cache: Option<(u64, MeshReport)>,
-    pub status: Option<Status>,
+    pub toasts: crate::toasts::Toasts,
     pub job: Option<Job>,
     pub current_file: Option<PathBuf>,
     pub dirty: bool,
@@ -499,7 +502,9 @@ pub struct App {
     pub fit_on_next_frame: bool,
     pub last_title: String,
     pub encode_srgb: bool,
-    pub tab: PanelTab,
+    /// The Array tool's bar is open.
+    pub array_open: bool,
+    pub print: crate::print_dialog::PrintState,
     /// Ribbon tab shown at the top.
     pub ribbon: crate::ribbon::RibbonTab,
     /// Tool seen last frame (the ribbon follows tool changes made by keys or menus).
@@ -610,7 +615,7 @@ impl App {
             lock_ratio: true,
             pending_edit: None,
             report_cache: None,
-            status: None,
+            toasts: Default::default(),
             job: None,
             current_file: None,
             dirty: false,
@@ -620,7 +625,8 @@ impl App {
             last_pointer: None,
             fit_on_next_frame: false,
             last_title: String::new(),
-            tab: PanelTab::Object,
+            array_open: false,
+            print: Default::default(),
             ribbon: Default::default(),
             ribbon_tool: Tool::Select,
             palette: None,
@@ -682,18 +688,11 @@ impl App {
 
     // ---------- status / history helpers ----------
 
-    pub fn info(&mut self, s: impl Into<String>) {
-        self.status = Some(Status { text: s.into(), error: false });
-    }
-    pub fn error(&mut self, s: impl Into<String>) {
-        let s = s.into();
-        log::error!("{s}");
-        self.status = Some(Status { text: s, error: true });
-    }
 
     /// Snapshot for undo before a discrete change.
     pub fn checkpoint(&mut self, label: &str) {
         self.history.push(label, &self.scene);
+        self.toasts.last_checkpoint = Some(Instant::now());
         self.dirty = true;
         self.edit_gen += 1;
     }
@@ -708,7 +707,7 @@ impl App {
 
     pub fn undo(&mut self) {
         if let Some(l) = self.history.undo(&mut self.scene) {
-            self.info(format!("Undid: {l}"));
+            self.note(format!("Undid: {l}"));
             self.prune_selection();
             self.dirty = true;
             self.edit_gen += 1;
@@ -716,7 +715,7 @@ impl App {
     }
     pub fn redo(&mut self) {
         if let Some(l) = self.history.redo(&mut self.scene) {
-            self.info(format!("Redid: {l}"));
+            self.note(format!("Redid: {l}"));
             self.prune_selection();
             self.dirty = true;
             self.edit_gen += 1;
@@ -761,7 +760,7 @@ impl App {
             j.progress.cancel();
             self.close_after_save = false;
             self.new_after_save = false;
-            self.info(format!("Cancelled: {}", j.label.trim_end_matches('…')));
+            self.note(format!("Cancelled: {}", j.label.trim_end_matches('…')));
         }
     }
 
@@ -866,6 +865,13 @@ impl App {
                     self.new_scene();
                 }
             }
+            JobOutput::Exported { path, slicer } => match slicer {
+                Some(s) => match crate::slicers::open(&s, &path) {
+                    Ok(()) => self.info(format!("Opened in {} — ready to slice", s.name)),
+                    Err(e) => self.error(format!("Couldn't start {}: {e}. The file is at {}", s.name, path.display())),
+                },
+                None => self.info(format!("Exported {}", path.display())),
+            },
             JobOutput::Error(e) => {
                 self.close_after_save = false;
                 self.new_after_save = false;
@@ -1067,7 +1073,7 @@ impl App {
         }
     }
 
-    fn save_to(&mut self, ctx: &egui::Context, path: PathBuf, only_selected: bool) {
+    pub fn save_to(&mut self, ctx: &egui::Context, path: PathBuf, only_selected: bool) {
         let project = !only_selected && Format::from_path(&path) == Some(Format::ThreeMf);
         let objs = self.export_objects(only_selected, project);
         if objs.is_empty() {

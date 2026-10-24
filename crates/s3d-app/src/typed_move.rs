@@ -106,7 +106,7 @@ impl App {
                 self.apply_typed_move();
             }
             if let Some(l) = self.drag_label.take() {
-                self.info(format!("Moved {}", l.replace('|', "")));
+                self.note(format!("Moved {}", l.replace('|', "")));
             }
             self.move_typed.clear();
             self.drag = DragMode::Finished;
@@ -146,7 +146,7 @@ impl App {
                     ob.transform = *t0;
                 }
             }
-            self.info("Move cancelled");
+            self.note("Move cancelled");
         }
         self.move_typed.clear();
         self.drag_label = None;
@@ -211,7 +211,7 @@ impl App {
         self.dirty = true;
         self.edit_gen += 1;
         let dec = self.settings.decimals;
-        self.info(format!("Nudged ΔX {:+.*}  ΔY {:+.*}  ΔZ {:+.*} mm (Shift ×10, Alt ×0.1)", dec, delta.x, dec, delta.y, dec, delta.z));
+        self.note(format!("Nudged ΔX {:+.*}  ΔY {:+.*}  ΔZ {:+.*} mm (Shift ×10, Alt ×0.1)", dec, delta.x, dec, delta.y, dec, delta.z));
     }
 }
 

@@ -30,6 +30,7 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 ### Files
 - **Open:** STL (text and binary), OBJ with MTL colours, PLY, 3MF, and pictures (PNG, JPG, BMP, TGA, GIF, WebP).
 - **Save and export:** 3MF projects, STL, OBJ and PLY, or just the selected objects.
+- **Print (Ctrl+P):** one window that checks the plate before you print (parts off or below the plate, too big for the printer, open meshes, overhangs that need supports, thin walls), with a one-click fix for each, then **opens the plate in your slicer**. It finds Bambu Studio, OrcaSlicer, ElegooSlicer, PrusaSlicer, UltiMaker Cura, Creality Print and others, or uses the app your computer opens 3MF files with.
 - **Slicer projects:** reads and writes Bambu Studio, OrcaSlicer and PrusaSlicer 3MF files, keeping objects, parts, colours, painted areas and negative parts.
 - 3MF files carry a **thumbnail**, so Windows Explorer and slicers show a preview.
 - Recent files, autosave and crash recovery.
@@ -56,7 +57,7 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Exact values everywhere:** position, size in mm (with locked proportions), scale %, rotation. Number fields accept maths and units (`20+5`, `1in`, `*2`, `50%`).
 - **Type a distance while dragging** for an exact move, or nudge with the arrow keys.
 - Align, distribute, mirror, lay flat on a face, drop to plate.
-- **Arrays:** grid copies, or **circular** copies around a centre (spokes, bolt circles, petals) with a live preview of where they go.
+- **Arrays:** grid copies, or **circular** copies around a centre (spokes, bolt circles, petals), with an outline of where each copy will go before you create them.
 - **Auto-arrange** packs parts on the plate; **auto-orient** turns parts for the least overhang.
 - Groups, hide, isolate and lock. Unlimited undo and redo.
 
@@ -91,14 +92,15 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - Perspective or orthographic view, view presets, and a clickable axis indicator.
 - **Smooth shading**, **wireframe**, **section view** and X-ray. Open or inside-out surfaces show in red.
 - **Print check:** colours **overhangs**, **thin walls** and **islands** (spots that start in mid-air) so you can fix or support them before slicing. Set the overhang angle and the thinnest wall for your nozzle.
-- Printer presets (plate size and height) with warnings for parts off or below the plate.
+- **Printer presets** (Bambu Lab, Elegoo, Prusa, Creality, Anycubic and more) set the plate size and build height, with warnings for parts off or below the plate.
 - **Measure** distances, angles, the gap between faces, and hole or pin diameters. Scale a model to a measured size, or add a tube or channel between two points.
 - Stays responsive on multi-million-triangle models.
 
 ### Comfort
-- 3D Builder-style ribbon with **Insert, Object, Edit, Paint, View and Help** tabs.
+- 3D Builder-style ribbon with **Insert, Object, Edit, Surface, View and Help** tabs.
+- **One place for everything:** the ribbon holds the actions, the bar under the view holds the settings of whatever you're doing (with a live preview), and the side panel shows what's selected: its settings, position and size, and its health.
 - **Command search** (Ctrl+K) finds any action by name.
-- Right-click menus, progress bars with cancel, and preview before applying.
+- Notices tell you what just happened, with **Undo** right there. Right-click menus, progress bars with cancel, and preview before applying.
 - Dark and light themes.
 
 ## Keyboard and mouse
@@ -123,6 +125,7 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 | H / Shift+H / I | Hide / show all / isolate |
 | Ctrl+G / Ctrl+Shift+G | Group / ungroup |
 | Ctrl+L | Lock |
+| Ctrl+P | Print: check the plate, open it in your slicer |
 | Arrows, Page Up/Down | Nudge (Shift ×10, Alt ×0.1) |
 | Type a number while dragging | Exact move (`25`, `10,5`, `1,2,3`) |
 | Ctrl+Z / Ctrl+Y | Undo / redo |

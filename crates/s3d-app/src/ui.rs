@@ -1,12 +1,11 @@
 //! Panels, menus, dialogs and keyboard shortcuts.
 
-use crate::app::{App, CutKeep, GizmoKind, PanelTab, PosRef, Tool};
+use crate::app::{App, CutKeep, GizmoKind, PosRef, Tool};
 use crate::camera::ViewPreset;
 use crate::expr::{self, Kind};
 use crate::preview::PreviewKind;
 use egui::{Color32, Key, KeyboardShortcut, Modifiers, RichText};
 use glam::Vec3;
-use s3d_core::csg::BoolOp;
 use s3d_core::primitives::Primitive;
 
 pub const ACCENT: Color32 = Color32::from_rgb(0, 120, 212);
@@ -84,6 +83,9 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if sc(Modifiers::COMMAND, Key::S) {
         app.save(ctx);
     }
+    if sc(Modifiers::COMMAND, Key::P) {
+        app.open_print();
+    }
     // editing shortcuts belong to the text field while one is focused
     if ctx.egui_wants_keyboard_input() {
         return;
@@ -136,6 +138,10 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if app.preview.is_some() && key(Key::Enter) {
         app.apply_preview();
     }
+    if app.array_open && app.preview.is_none() && key(Key::Enter) {
+        app.array_selected();
+        app.array_open = false;
+    }
     if app.placing.is_some() && key(Key::Escape) {
         app.cancel_placing();
     }
@@ -144,7 +150,9 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
             app.cancel_job();
             return;
         }
-        if app.tool != Tool::Select {
+        if app.array_open {
+            app.array_open = false;
+        } else if app.tool != Tool::Select {
             app.tool = Tool::Select;
         } else if app.preview.is_some() {
             app.cancel_preview();
@@ -312,9 +320,6 @@ fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                 if cancel {
                     app.cancel_job();
                 }
-            } else if let Some(s) = &app.status {
-                let t = RichText::new(&s.text);
-                ui.label(if s.error { t.color(Color32::from_rgb(255, 110, 100)) } else { t });
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let tris: usize = app.scene.objects.iter().map(|o| o.mesh.mesh.triangles.len()).sum();
@@ -624,29 +629,14 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.add_space(6.0);
 
-    // ----- tabs -----
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let w = (ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0;
-        for (t, label) in
-            [(PanelTab::Object, "Object"), (PanelTab::Arrange, "Arrange"), (PanelTab::Mesh, "Mesh"), (PanelTab::Repair, "Repair")]
-        {
-            let r = ui.add_sized([w, 24.0], egui::Button::selectable(app.tab == t, label));
-            if r.clicked() {
-                app.tab = t;
-            }
-        }
-    });
-    ui.separator();
-    let tab = app.tab;
+    // ----- inspector sections -----
+    ui.add_space(2.0);
     egui::ScrollArea::vertical().id_salt("tab_scroll").auto_shrink([false, false]).show(ui, |ui| {
-        // ----- generator settings: edit a generated shape again -----
-        if tab == PanelTab::Object && n == 1 {
+        // settings of a generated shape (bolt, gear, box…): edit and rebuild it
+        if n == 1 {
             shape_settings(app, ui, id);
         }
-        // ----- transform (primary object) -----
-        if tab == PanelTab::Object {
-            section(ui, "Transform");
+        egui::CollapsingHeader::new(RichText::new("Position & size").strong()).id_salt("insp_transform").default_open(true).show(ui, |ui| {
             let locked = app.any_locked_selected();
             ui.add_enabled_ui(!locked, |ui| {
                 if n > 1 {
@@ -766,214 +756,14 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                         }
                     }
                 });
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Drop to plate").on_hover_text("D").clicked() {
-                        app.drop_selected();
-                    }
-                    if ui.button("Center on plate").clicked() {
-                        app.center_selected_on_plate();
-                    }
-                    if ui.button("Reset rot/scale").clicked() {
-                        app.reset_transform_selected();
-                    }
-                    if ui.add_enabled(app.bakeable(), egui::Button::new("Apply transform"))
-                        .on_hover_text("Build the rotation and scale into the shape itself, so it reads 0° and 100% again. Nothing changes on screen")
-                        .on_disabled_hover_text("Nothing to apply: not rotated or scaled")
-                        .clicked() {
-                        app.bake_selected();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Mirror");
-                    for a in 0..3 {
-                        if ui.small_button(RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a])).clicked() {
-                            app.mirror_selected(a);
-                        }
-                    }
-                });
-            });
-        }
-
-        // ----- arrange -----
-        if tab == PanelTab::Arrange {
-            section(ui, "Align & distribute");
-            ui.scope(|ui| {
-                if n < 2 {
-                    ui.weak("Select two or more objects to align them.");
-                }
-                ui.add_enabled_ui(n >= 2, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Align to");
-                        ui.selectable_value(&mut app.settings.align_to_first, false, "Selection");
-                        ui.selectable_value(&mut app.settings.align_to_first, true, "First selected")
-                            .on_hover_text("The first object you selected stays put; the others line up with it");
-                    });
-                    egui::Grid::new("align").num_columns(4).show(ui, |ui| {
-                        for a in 0..3 {
-                            ui.label(RichText::new(format!("Align {}", AXIS_NAMES[a])).color(AXIS_COLORS[a]));
-                            if ui.small_button("Min").clicked() {
-                                app.align(a, 0);
-                            }
-                            if ui.small_button("Center").clicked() {
-                                app.align(a, 1);
-                            }
-                            if ui.small_button("Max").clicked() {
-                                app.align(a, 2);
-                            }
-                            ui.end_row();
-                        }
-                    });
-                });
-                ui.add_enabled_ui(n >= 3, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Distribute");
-                        for a in 0..3 {
-                            if ui.small_button(AXIS_NAMES[a]).clicked() {
-                                app.distribute(a);
-                            }
-                        }
-                    });
-                });
-                section(ui, "Plate");
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .button("Auto-orient")
-                        .on_hover_text(
-                            "Turn the selected parts (or all) to print with the least overhang and the most contact with the plate",
-                        )
-                        .clicked()
-                    {
-                        app.auto_orient_selected();
-                    }
-                    if ui
-                        .button("Auto-arrange")
-                        .on_hover_text("Pack the selected parts (or all) on the plate, centred. Groups stay together")
-                        .clicked()
-                    {
-                        let gap = app.settings.arrange_gap;
-                        app.auto_arrange(gap);
-                    }
-                    ui.label("gap");
-                    ui.add(num(&mut app.settings.arrange_gap, Kind::Length).speed(0.1).range(0.0..=100.0).suffix(" mm"));
-                });
-                section(ui, "Array copies");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut app.array.circular, false, "Grid");
-                    ui.selectable_value(&mut app.array.circular, true, "Circular").on_hover_text("Copies around a centre: spokes, bolt circles, petals");
-                });
-                if app.array.circular {
-                    let a = &mut app.array;
-                    egui::Grid::new("circ_array").num_columns(2).show(ui, |ui| {
-                        ui.label("Copies");
-                        ui.add(egui::DragValue::new(&mut a.circ_count).range(2..=360).suffix(" in total"));
-                        ui.end_row();
-                        ui.label("Spread over");
-                        ui.horizontal(|ui| {
-                            ui.add(num(&mut a.circ_angle, Kind::Angle).speed(1.0).range(-360.0..=360.0).suffix("°"));
-                            if ui.small_button("Full circle").clicked() {
-                                a.circ_angle = 360.0;
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Centre");
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(&mut a.circ_plate_centre, false, "Beside it");
-                            ui.selectable_value(&mut a.circ_plate_centre, true, "Plate centre");
-                        });
-                        ui.end_row();
-                        if !a.circ_plate_centre {
-                            ui.label("Radius");
-                            ui.add(num(&mut a.circ_radius, Kind::Length).speed(0.5).range(0.0..=10000.0).suffix(" mm"))
-                                .on_hover_text("The centre is this far to the left (−X) of the selection's centre");
-                            ui.end_row();
-                        }
-                        ui.label("");
-                        ui.checkbox(&mut a.circ_rotate, "Turn copies to face the centre");
-                        ui.end_row();
-                    });
-                    if ui.button("Create array").clicked() {
-                        app.array_selected();
-                    }
-                } else {
-                    ui.horizontal(|ui| {
-                        for a in 0..3 {
-                            ui.label(RichText::new(AXIS_NAMES[a]).color(AXIS_COLORS[a]));
-                            ui.add(egui::DragValue::new(&mut app.array.count[a]).range(1..=100).suffix("×"));
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Pitch");
-                        for a in 0..3 {
-                            ui.add(num(&mut app.array.spacing[a], Kind::Length).speed(0.5).suffix(" mm")).on_hover_text(NUM_TIP);
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.button("Create array").clicked() {
-                            app.array_selected();
-                        }
-                        if ui.small_button("Fit pitch to size").clicked() {
-                            let s = app.selection_bounds().size();
-                            app.array.spacing = s + Vec3::splat(5.0);
-                        }
-                    });
+                if ui.small_button("Reset rotation & scale").clicked() {
+                    app.reset_transform_selected();
                 }
             });
-            section(ui, "Combine & split");
-            ui.scope(|ui| {
-                ui.weak("Booleans use the first selected object as the base.");
-                ui.horizontal_wrapped(|ui| {
-                    let many = n >= 2;
-                    if ui.add_enabled(many, egui::Button::new("Union")).clicked() {
-                        app.boolean_selected(&ctx, BoolOp::Union);
-                    }
-                    if ui.add_enabled(many, egui::Button::new("Subtract")).clicked() {
-                        app.boolean_selected(&ctx, BoolOp::Subtract);
-                    }
-                    if ui.add_enabled(many, egui::Button::new("Intersect")).clicked() {
-                        app.boolean_selected(&ctx, BoolOp::Intersect);
-                    }
-                    if ui.add_enabled(many, egui::Button::new("Merge")).on_hover_text("Combine meshes without a boolean").clicked() {
-                        app.merge_selected();
-                    }
-                    if ui.button("Split parts").on_hover_text("Separate disconnected shells into objects").clicked() {
-                        app.split_selected(&ctx);
-                    }
-                    if ui.button("Cut…").clicked() {
-                        app.start_cut();
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    if ui.add_enabled(n >= 2, egui::Button::new("Group")).on_hover_text("Ctrl+G").clicked() {
-                        app.group_selected();
-                    }
-                    if ui.add_enabled(app.can_ungroup(), egui::Button::new("Ungroup")).on_hover_text("Ctrl+Shift+G").clicked() {
-                        app.ungroup_selected();
-                    }
-                    if ui.button("Hide").on_hover_text("H").clicked() {
-                        app.hide_selected();
-                    }
-                    if ui
-                        .button(if app.isolated.is_some() { "Show others" } else { "Isolate" })
-                        .on_hover_text("Show only the selection (I)")
-                        .clicked()
-                    {
-                        app.toggle_isolate();
-                    }
-                    if ui.button("Lock").on_hover_text("Ctrl+L").clicked() {
-                        app.toggle_lock_selected();
-                    }
-                });
-            });
-        }
-
-        // ----- mesh tools -----
-        if tab == PanelTab::Mesh {
-            mesh_tools(app, ui);
-        }
-
-        // ----- analysis & repair -----
-        if tab == PanelTab::Repair {
-            section(ui, "Analysis");
+        });
+        let problems = app.primary_report().is_some_and(|r| !r.problems().is_empty());
+        let health = if problems { RichText::new("Health  ⚠").strong().color(Color32::from_rgb(255, 170, 80)) } else { RichText::new("Health").strong() };
+        egui::CollapsingHeader::new(health).id_salt("insp_health").default_open(problems).show(ui, |ui| {
             ui.scope(|ui| {
                 if let Some(r) = app.primary_report() {
                     egui::Grid::new("report").num_columns(2).striped(true).show(ui, |ui| {
@@ -1009,13 +799,11 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Make solid…").on_hover_text("For badly broken meshes: rebuild as one closed solid (Mesh tab)").clicked()
-                    {
-                        app.tab = PanelTab::Mesh;
+                    if ui.button("Make solid…").on_hover_text("For badly broken meshes: rebuild as one closed solid").clicked() {
                         app.start_preview(PreviewKind::MakeSolid);
                     }
                     if ui
-                        .button("🔧 Repair")
+                        .button("Repair")
                         .on_hover_text("Weld, remove degenerate/duplicate faces, fix orientation, fill holes")
                         .clicked()
                     {
@@ -1028,7 +816,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                     .on_hover_text(NUM_TIP);
                 });
             });
-        }
+        });
     });
 }
 
@@ -1074,12 +862,6 @@ fn shape_settings(app: &mut App, ui: &mut egui::Ui, id: s3d_core::ObjectId) {
         });
     app.param_edit = Some((id, work));
     ui.separator();
-}
-
-fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(6.0);
-    ui.label(RichText::new(title).strong());
-    ui.add_space(2.0);
 }
 
 /// A group of controls kept together on one line. In a wrapping layout (the preview
@@ -1264,6 +1046,85 @@ pub fn op_settings(app: &mut App, ui: &mut egui::Ui, kind: PreviewKind) {
     }
 }
 
+/// Array copies: a grid, or copies around a centre.
+fn array_settings(app: &mut App, ui: &mut egui::Ui) {
+    let a = &mut app.array;
+    row(ui, |ui| {
+        ui.selectable_value(&mut a.circular, false, "Grid");
+        ui.selectable_value(&mut a.circular, true, "Circular").on_hover_text("Copies around a centre: spokes, bolt circles, petals");
+    });
+    if a.circular {
+        row(ui, |ui| {
+            ui.label("Copies");
+            ui.add(egui::DragValue::new(&mut a.circ_count).range(2..=360).suffix(" in total"));
+        });
+        row(ui, |ui| {
+            ui.label("Over");
+            ui.add(num(&mut a.circ_angle, Kind::Angle).speed(1.0).range(-360.0..=360.0).suffix("°"));
+            if ui.small_button("360°").on_hover_text("All the way round").clicked() {
+                a.circ_angle = 360.0;
+            }
+        });
+        row(ui, |ui| {
+            ui.label("Centre");
+            ui.selectable_value(&mut a.circ_plate_centre, false, "Beside it");
+            ui.selectable_value(&mut a.circ_plate_centre, true, "Plate centre");
+        });
+        if !a.circ_plate_centre {
+            row(ui, |ui| {
+                ui.label("Radius");
+                ui.add(num(&mut a.circ_radius, Kind::Length).speed(0.5).range(0.0..=10000.0).suffix(" mm"))
+                    .on_hover_text("The centre is this far to the left (−X) of the selection's centre");
+            });
+        }
+        ui.checkbox(&mut a.circ_rotate, "Face the centre");
+    } else {
+        row(ui, |ui| {
+            ui.label("Copies");
+            for k in 0..3 {
+                ui.label(RichText::new(AXIS_NAMES[k]).color(AXIS_COLORS[k]));
+                ui.add(egui::DragValue::new(&mut a.count[k]).range(1..=100).suffix("×"));
+            }
+        });
+        let size = app.selection_bounds().size();
+        let a = &mut app.array;
+        row(ui, |ui| {
+            ui.label("Pitch");
+            for k in 0..3 {
+                ui.add(num(&mut a.spacing[k], Kind::Length).speed(0.5).suffix(" mm")).on_hover_text(NUM_TIP);
+            }
+            if ui.small_button("Fit").on_hover_text("Pitch = the selection's size plus 5 mm").clicked() {
+                a.spacing = size + Vec3::splat(5.0);
+            }
+        });
+    }
+}
+
+/// The Array tool's bar at the bottom of the view.
+pub fn array_bar(app: &mut App, ui: &mut egui::Ui, width: f32) {
+    ui.set_width(width);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Array").strong());
+        ui.add_space(6.0);
+        array_settings(app, ui);
+    });
+    ui.add_space(2.0);
+    let a = &app.array;
+    let total = if a.circular { a.circ_count.max(2) } else { a.count.iter().product::<u32>() };
+    ui.horizontal(|ui| {
+        ui.weak(format!("{} copies in all, the original included · the outline shows where they go", total));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                app.array_open = false;
+            }
+            if ui.add_enabled(total > 1, egui::Button::new(RichText::new("Create").strong())).on_hover_text("Enter").clicked() {
+                app.array_selected();
+                app.array_open = false;
+            }
+        });
+    });
+}
+
 /// Cut plane, what to keep, and connectors.
 fn cut_settings(app: &mut App, ui: &mut egui::Ui) {
     use s3d_core::connectors::ConnectorKind;
@@ -1326,87 +1187,6 @@ fn cut_settings(app: &mut App, ui: &mut egui::Ui) {
             }
         });
     }
-}
-
-fn mesh_tools(app: &mut App, ui: &mut egui::Ui) {
-    let active = app.preview.as_ref().map(|p| p.kind);
-    let sections: [(PreviewKind, &str, &str); 7] = [
-        (PreviewKind::Simplify, "Simplify", "Quadric edge-collapse decimation; keeps the mesh closed and sharp edges crisp"),
-        (PreviewKind::Smooth, "Smooth", "Preview the smoothed mesh, then Apply"),
-        (
-            PreviewKind::Round,
-            "Round edges (bevel)",
-            "Works on any closed mesh: every edge sharper than the radius becomes a fillet. The surface is rebuilt, so tiny details below the detail size are lost.",
-        ),
-        (
-            PreviewKind::ExtrudeDown,
-            "Extrude down",
-            "Extends the underside of the model straight down to the plate, from the chosen height: a flat base, simple supports under overhangs, floating parts tied to the plate (like 3D Builder).",
-        ),
-        (
-            PreviewKind::Hollow,
-            "Hollow",
-            "Keeps a shell of the given wall thickness and removes the inside, saving material and weight. The outside stays exactly as it is. Use Section view (X) to see the inside.",
-        ),
-        (
-            PreviewKind::MakeSolid,
-            "Make solid / remesh",
-            "Rebuilds any mesh — holes, overlaps, flipped or loose parts — as one clean closed solid (Meshmixer's Make Solid). Details smaller than the detail size are lost.",
-        ),
-        (
-            PreviewKind::Pattern,
-            "Pattern / lattice",
-            "Turns the part into a decorative or lightweight lattice. Works on closed meshes (use Make solid first if it isn't).",
-        ),
-    ];
-    let mut clicks = vec![];
-    for (i, (kind, title, tip)) in sections.into_iter().enumerate() {
-        if i > 0 {
-            ui.add_space(6.0);
-        }
-        ui.label(RichText::new(title).strong());
-        op_settings(app, ui, kind);
-        if let Some(c) = preview_buttons(ui, active, kind, tip) {
-            clicks.push((c, kind));
-        }
-    }
-    for (clicked, kind) in clicks {
-        match clicked {
-            PreviewClick::Start if kind == PreviewKind::ExtrudeDown => app.start_extrude_down(),
-            PreviewClick::Start => app.start_preview(kind),
-            PreviewClick::Apply => app.apply_preview(),
-            PreviewClick::Cancel => app.cancel_preview(),
-        }
-    }
-}
-
-enum PreviewClick {
-    Start,
-    Apply,
-    Cancel,
-}
-
-/// "Preview" button, or Apply / Cancel while this operation is being previewed.
-fn preview_buttons(ui: &mut egui::Ui, active: Option<PreviewKind>, kind: PreviewKind, tip: &str) -> Option<PreviewClick> {
-    let mut out = None;
-    ui.horizontal(|ui| {
-        if active == Some(kind) {
-            if ui.button(RichText::new("✔ Apply").strong()).on_hover_text("Enter").clicked() {
-                out = Some(PreviewClick::Apply);
-            }
-            if ui.button("Cancel").on_hover_text("Esc").clicked() {
-                out = Some(PreviewClick::Cancel);
-            }
-            ui.weak("live preview").on_hover_text("Change the settings above and the preview updates");
-        } else if ui
-            .button(format!("{}…", kind.name()))
-            .on_hover_text(format!("{tip}\n\nShows a live preview first; nothing changes until you Apply."))
-            .clicked()
-        {
-            out = Some(PreviewClick::Start);
-        }
-    });
-    out
 }
 
 fn edge_controls(ui: &mut egui::Ui, edge: &mut s3d_core::primitives::Edge) {
@@ -1510,6 +1290,7 @@ fn cut_panel(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn dialogs(app: &mut App, ctx: &egui::Context) {
+    crate::print_dialog::window(app, ctx);
     if app.recovery.is_some() {
         let mut choice = None;
         let r = app.recovery.as_ref().unwrap();
@@ -1686,8 +1467,15 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                 ui.label("Build plate Y");
                 ui.add(num(&mut s.plate.y, Kind::Length).range(10.0..=2000.0).suffix(" mm"));
                 ui.end_row();
+                ui.label("Build height");
+                ui.add(num(&mut s.plate_height, Kind::Length).range(10.0..=2000.0).suffix(" mm"));
+                ui.end_row();
                 ui.label("Grid spacing");
                 ui.add(num(&mut s.grid_step, Kind::Length).range(0.5..=100.0).suffix(" mm"));
+                ui.end_row();
+                ui.label("Gap when arranging");
+                ui.add(num(&mut s.arrange_gap, Kind::Length).range(0.0..=100.0).suffix(" mm"))
+                    .on_hover_text("Space between parts when Arrange packs them on the plate");
                 ui.end_row();
                 ui.label("New shapes");
                 ui.horizontal(|ui| {
@@ -1743,13 +1531,8 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
             ui.checkbox(&mut app.settings.snap_objects, "Snap to other objects while moving");
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label("Plate presets");
-                for (n, x, y, z) in PRINTERS {
-                    if ui.small_button(n).clicked() {
-                        app.settings.plate = glam::Vec2::new(x, y);
-                        app.settings.plate_height = z;
-                    }
-                }
+                ui.label("Printer");
+                printer_combo(app, ui, "settings_printer");
             });
         });
         app.show_settings = open;
@@ -1780,7 +1563,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("I", "Isolate selection (again: show the rest)"),
                     ("Ctrl+L", "Lock / unlock (locked objects can't be clicked or moved)"),
                     ("X", "Section view"),
-                    ("Enter / Esc", "Apply / cancel a preview"),
+                    ("Enter / Esc", "Apply / cancel a preview or an array"),
                     ("D", "Drop to plate"),
                     ("F / Home", "Frame selection / all"),
                     ("1 / 3 / 7 / 0", "Front / right / top / iso view"),
@@ -1789,6 +1572,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
                     ("Ctrl+D, Del", "Duplicate, delete"),
                     ("Ctrl+K / F3", "Command palette: search every action"),
+                    ("Ctrl+P", "Print: check the plate, open it in your slicer"),
                     ("Esc", "Cancel running operation / leave tool / clear selection"),
                     ("In number fields", "20+5, (10+2)*3, 1in, 2.5cm, 45°, *2, /4, 50%"),
                 ] {
@@ -1822,14 +1606,7 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                 });
                 ui.end_row();
                 ui.label("");
-                egui::ComboBox::from_id_salt("split_printer").selected_text("Printer presets").show_ui(ui, |ui| {
-                    for (n, x, y, z) in PRINTERS {
-                        if ui.selectable_label(false, format!("{n}  ({x:.0} × {y:.0} × {z:.0})")).clicked() {
-                            app.settings.plate = glam::Vec2::new(x, y);
-                            app.settings.plate_height = z;
-                        }
-                    }
-                });
+                printer_combo(app, ui, "split_printer");
                 ui.end_row();
                 ui.label("Margin");
                 ui.add(num(&mut app.split_opts.margin, Kind::Length).speed(0.5).range(0.0..=50.0).suffix(" mm"))
@@ -2337,14 +2114,50 @@ pub fn primitive_fields(ui: &mut egui::Ui, p: &mut Primitive, id: &str) -> bool 
 }
 
 /// Common printers: name, plate X, plate Y, build height (mm).
-pub const PRINTERS: [(&str, f32, f32, f32); 6] = [
-    ("Bambu X1/P1", 256.0, 256.0, 256.0),
-    ("Bambu A1", 256.0, 256.0, 256.0),
-    ("A1 mini", 180.0, 180.0, 180.0),
-    ("Prusa MK4", 250.0, 210.0, 220.0),
+/// Common printers: name, bed X, bed Y, build height (mm).
+pub const PRINTERS: [(&str, f32, f32, f32); 17] = [
+    ("Bambu Lab X1 / P1", 256.0, 256.0, 256.0),
+    ("Bambu Lab A1", 256.0, 256.0, 256.0),
+    ("Bambu Lab A1 mini", 180.0, 180.0, 180.0),
+    ("Bambu Lab H2D", 325.0, 320.0, 325.0),
+    ("Elegoo Centauri Carbon", 256.0, 256.0, 256.0),
+    ("Elegoo Neptune 4 / 4 Pro", 225.0, 225.0, 265.0),
+    ("Elegoo Neptune 4 Max", 420.0, 420.0, 480.0),
+    ("Prusa MK4 / MK4S", 250.0, 210.0, 220.0),
+    ("Prusa CORE One", 250.0, 220.0, 270.0),
     ("Prusa MINI", 180.0, 180.0, 180.0),
-    ("Ender 3", 220.0, 220.0, 250.0),
+    ("Prusa XL", 360.0, 360.0, 360.0),
+    ("Creality K1 / K1C", 220.0, 220.0, 250.0),
+    ("Creality K1 Max", 300.0, 300.0, 300.0),
+    ("Creality Ender 3 V3 SE", 220.0, 220.0, 250.0),
+    ("Creality Ender 3", 220.0, 220.0, 250.0),
+    ("Anycubic Kobra 3", 250.0, 250.0, 260.0),
+    ("Voron 2.4 (350)", 350.0, 350.0, 340.0),
 ];
+
+/// Pick a printer: sets the plate size and build height.
+pub fn printer_combo(app: &mut App, ui: &mut egui::Ui, id: &str) {
+    let s = &mut app.settings;
+    let current = printer_name(s)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Custom {:.0} × {:.0} × {:.0} mm", s.plate.x, s.plate.y, s.plate_height));
+    egui::ComboBox::from_id_salt(id).selected_text(current).width(240.0).show_ui(ui, |ui| {
+        for (n, x, y, z) in PRINTERS {
+            let on = printer_name(s) == Some(n);
+            if ui.selectable_label(on, format!("{n}   {x:.0} × {y:.0} × {z:.0}")).clicked() {
+                s.plate = glam::Vec2::new(x, y);
+                s.plate_height = z;
+                s.printer = n.to_string();
+            }
+        }
+    });
+}
+
+/// The printer whose build volume the plate has: the one picked, or the first that fits.
+pub fn printer_name(s: &crate::app::Settings) -> Option<&'static str> {
+    let same = |p: &&(&str, f32, f32, f32)| (p.1 - s.plate.x).abs() < 0.5 && (p.2 - s.plate.y).abs() < 0.5 && (p.3 - s.plate_height).abs() < 0.5;
+    PRINTERS.iter().filter(same).find(|p| p.0 == s.printer).or_else(|| PRINTERS.iter().find(same)).map(|p| p.0)
+}
 
 /// A greyed note that wraps instead of widening its column.
 fn hint(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {

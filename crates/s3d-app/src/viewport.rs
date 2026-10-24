@@ -322,7 +322,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
         if matches!(app.drag, DragMode::Move { .. }) {
             if let Some(l) = app.drag_label.take() {
-                app.info(format!("Moved {l}"));
+                app.note(format!("Moved {l}"));
             }
         }
         app.drag = DragMode::None;
@@ -793,7 +793,39 @@ fn build_frame(app: &App, view: &View, checked: &std::collections::HashMap<s3d_c
     let mut lines = vec![];
     let mut overlay = vec![];
     // circular array: the circle the copies will sit on, and where each one goes
-    if app.tab == crate::app::PanelTab::Arrange && app.array.circular && !app.selection.is_empty() && app.tool == Tool::Select {
+    let array_on = app.array_open && !app.selection.is_empty() && app.tool == Tool::Select && app.preview.is_none();
+    // grid array: an outline where each copy will go
+    if array_on && !app.array.circular {
+        let a = &app.array;
+        let b = app.selection_bounds();
+        let col = lin_rgba(0.35, 0.75, 1.0, 1.0);
+        let mut n = 0;
+        'grid: for i in 0..a.count[0].max(1) {
+            for j in 0..a.count[1].max(1) {
+                for k in 0..a.count[2].max(1) {
+                    if i + j + k == 0 {
+                        continue;
+                    }
+                    n += 1;
+                    if n > 400 {
+                        break 'grid;
+                    }
+                    let d = Vec3::new(i as f32, j as f32, k as f32) * a.spacing;
+                    let (lo, hi) = (b.min + d, b.max + d);
+                    let c = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
+                    let pts = [
+                        c(lo.x, lo.y, lo.z), c(hi.x, lo.y, lo.z), c(hi.x, hi.y, lo.z), c(lo.x, hi.y, lo.z),
+                        c(lo.x, lo.y, hi.z), c(hi.x, lo.y, hi.z), c(hi.x, hi.y, hi.z), c(lo.x, hi.y, hi.z),
+                    ];
+                    for (e0, e1) in [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)] {
+                        overlay.push(LineVertex::new(pts[e0], col));
+                        overlay.push(LineVertex::new(pts[e1], col));
+                    }
+                }
+            }
+        }
+    }
+    if array_on && app.array.circular {
         let a = &app.array;
         let c = app.circular_centre();
         let p0 = app.selection_bounds().center();
@@ -1154,6 +1186,7 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
     }
     axis_triad(app, ui, p, view);
     plate_warnings(app, ui, view);
+    crate::toasts::show(app, ui, view.rect);
     print_check_legend(app, ui, view);
     bottom_bars(app, ui, view);
     if !app.section.enabled && app.preview.is_none() {
@@ -1453,8 +1486,7 @@ fn finish_box_select(app: &mut App, view: &View, start: Pos2, end: Pos2, additiv
             app.selection.push(id);
         }
     }
-    let n = app.selection.len();
-    app.info(format!("{n} object{} selected", if n == 1 { "" } else { "s" }));
+    // the object box shows how many are selected
 }
 
 /// Box-select rectangle, snap guides label and the move readout.
@@ -1488,7 +1520,8 @@ fn drag_overlays(app: &App, ui: &egui::Ui, p: &egui::Painter) {
 /// Apply / Cancel bar of a running preview.
 fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
     let picture = app.tool == Tool::Image && app.preview.is_none();
-    if !app.section.enabled && app.preview.is_none() && !picture {
+    let array = app.array_open && !app.selection.is_empty() && app.tool == Tool::Select && app.preview.is_none();
+    if !app.section.enabled && app.preview.is_none() && !picture && !array {
         return;
     }
     let ctx = ui.ctx().clone();
@@ -1504,6 +1537,10 @@ fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
             if app.section.enabled {
                 egui::Frame::popup(ui.style()).show(ui, |ui| section_bar(app, ui));
                 ui.add_space(6.0);
+            }
+            if array {
+                let w = (room.width() - 40.0).clamp(380.0, 760.0);
+                egui::Frame::popup(ui.style()).show(ui, |ui| crate::ui::array_bar(app, ui, w));
             }
             if picture {
                 let w = (room.width() - 40.0).clamp(380.0, 760.0);

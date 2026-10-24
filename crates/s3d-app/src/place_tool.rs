@@ -89,7 +89,7 @@ impl App {
 
     pub fn cancel_placing(&mut self) {
         if self.placing.take().is_some() {
-            self.info("Cancelled");
+            self.note("Cancelled");
         }
     }
 }

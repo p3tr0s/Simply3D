@@ -187,7 +187,7 @@ impl App {
 
     pub fn cancel_preview(&mut self) {
         if self.preview.take().is_some() {
-            self.info("Preview cancelled — nothing changed");
+            self.note("Preview cancelled — nothing changed");
         }
     }
 

@@ -1,6 +1,6 @@
 //! The right-click menu, shared by the viewport and the object list.
 
-use crate::app::{App, PanelTab, Tool};
+use crate::app::{App, Tool};
 use crate::preview::PreviewKind;
 use crate::text_tool::TextMode;
 use egui::{Color32, RichText};
@@ -146,7 +146,6 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             ("Pattern / lattice…", PreviewKind::Pattern),
         ] {
             if item(ui, true, label, "") {
-                app.tab = PanelTab::Mesh;
                 if kind == PreviewKind::ExtrudeDown {
                     app.start_extrude_down();
                 } else {
@@ -156,7 +155,6 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
         }
         ui.separator();
         if item(ui, true, "Repair", "") {
-            app.tab = PanelTab::Repair;
             app.repair_selected(ctx);
         }
     });

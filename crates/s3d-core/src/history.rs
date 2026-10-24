@@ -23,6 +23,11 @@ impl History {
         self.redo.clear();
     }
 
+    /// Number of steps that can be undone.
+    pub fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
+
     pub fn undo(&mut self, current: &mut Scene) -> Option<String> {
         let (label, prev) = self.undo.pop()?;
         let now = std::mem::replace(current, prev);

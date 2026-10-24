@@ -1,6 +1,6 @@
 //! Every action in one registry, searchable from the command palette (Ctrl+K).
 
-use crate::app::{App, GizmoKind, PanelTab, Tool};
+use crate::app::{App, GizmoKind, Tool};
 use crate::camera::ViewPreset;
 use crate::preview::PreviewKind;
 use crate::text_tool::TextMode;
@@ -45,6 +45,7 @@ pub fn all() -> Vec<Command> {
         cmd!("File", "Open / import…", "Ctrl+O", always, |a, c| a.open_dialog(c)),
         cmd!("File", "Save", "Ctrl+S", has_objects, |a, c| a.save(c)),
         cmd!("File", "Save as…", "Ctrl+Shift+S", has_objects, |a, c| a.save_as_dialog(c, false)),
+        cmd!("File", "Print: check the plate and open it in a slicer", "Ctrl+P", has_objects, |a, _| a.open_print()),
         cmd!("File", "Export selection…", "", has_sel, |a, c| a.save_as_dialog(c, true)),
         cmd!("File", "Settings…", "", always, |a, _| a.show_settings = true),
         // edit
@@ -105,7 +106,10 @@ pub fn all() -> Vec<Command> {
         cmd!("Arrange", "Distribute along X", "", three_sel, |a, _| a.distribute(0)),
         cmd!("Arrange", "Distribute along Y", "", three_sel, |a, _| a.distribute(1)),
         cmd!("Arrange", "Distribute along Z", "", three_sel, |a, _| a.distribute(2)),
-        cmd!("Arrange", "Array copies…", "", has_sel, |a, _| a.tab = PanelTab::Arrange),
+        cmd!("Arrange", "Array copies…", "", has_sel, |a, _| {
+            a.tool = Tool::Select;
+            a.array_open = true
+        }),
         // combine
         cmd!("Combine", "Union", "", two_sel, |a, c| a.boolean_selected(c, BoolOp::Union)),
         cmd!("Combine", "Subtract", "", two_sel, |a, c| a.boolean_selected(c, BoolOp::Subtract)),
@@ -115,46 +119,34 @@ pub fn all() -> Vec<Command> {
         cmd!("Combine", "Cut with plane…", "", has_sel, |a, _| a.start_cut()),
         // mesh
         cmd!("Mesh", "Simplify (preview)", "", has_sel, |a, _| {
-            a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::Simplify)
         }),
         cmd!("Mesh", "Smooth (preview)", "", has_sel, |a, _| {
-            a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::Smooth)
         }),
         cmd!("Mesh", "Round edges / bevel (preview)", "", has_sel, |a, _| {
-            a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::Round)
         }),
         cmd!("Mesh", "Make solid: rebuild broken / open meshes as one closed solid (preview)", "", has_sel, |a, _| {
-            a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::MakeSolid)
         }),
         cmd!("Mesh", "Remesh: even triangles (preview)", "", has_sel, |a, _| {
-            a.tab = PanelTab::Mesh;
             a.mesh_tools.solid_adaptive = false;
             a.start_preview(PreviewKind::MakeSolid)
         }),
         cmd!("Mesh", "Pattern / lattice: wireframe, Voronoi, gyroid (preview)", "", has_sel, |a, _| {
-            a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::Pattern)
         }),
         cmd!("Mesh", "Hollow: shell with wall thickness (preview)", "", has_sel, |a, _| {
-            a.tab = PanelTab::Mesh;
             a.start_preview(PreviewKind::Hollow)
         }),
         cmd!("Mesh", "Extrude down to the plate (preview)", "", has_sel, |a, _| {
-            a.tab = PanelTab::Mesh;
             a.start_extrude_down()
         }),
         cmd!("Mesh", "Apply preview", "Enter", |a| a.preview.is_some(), |a, _| a.apply_preview()),
         cmd!("Mesh", "Cancel preview", "Esc", |a| a.preview.is_some(), |a, _| a.cancel_preview()),
-        cmd!("Mesh", "Repair", "", has_sel, |a, c| {
-            a.tab = PanelTab::Repair;
-            a.repair_selected(c)
-        }),
-        cmd!("Mesh", "Analyse mesh", "", has_sel, |a, _| a.tab = PanelTab::Repair),
-        cmd!("Mesh", "Mesh tools…", "", has_sel, |a, _| a.tab = PanelTab::Mesh),
+        cmd!("Mesh", "Repair", "", has_sel, |a, c| a.repair_selected(c)),
+        cmd!("Mesh", "Analyse mesh (side panel → Health)", "", has_sel, |a, _| a.settings.sidebar = true),
         // view
         cmd!("View", "Front view", "1", always, |a, _| a.settings.camera.set_preset(ViewPreset::Front)),
         cmd!("View", "Back view", "", always, |a, _| a.settings.camera.set_preset(ViewPreset::Back)),

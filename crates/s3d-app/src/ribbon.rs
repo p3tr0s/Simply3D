@@ -1,9 +1,9 @@
-//! 3D Builder–style chrome: a row of tabs (Insert, Object, Edit, Paint, View, Help) with a
+//! 3D Builder–style chrome: a row of tabs (Insert, Object, Edit, Surface, View, Help) with a
 //! ribbon of big icon buttons under it, the object box that floats at the bottom of the
 //! view while something is selected, the start card on an empty plate, and the notices in
 //! the bottom-right corner.
 
-use crate::app::{App, GizmoKind, PanelTab, Tool};
+use crate::app::{App, GizmoKind, Tool};
 use crate::camera::ViewPreset;
 use crate::icons;
 use crate::preview::PreviewKind;
@@ -18,19 +18,21 @@ pub enum RibbonTab {
     Insert,
     Object,
     Edit,
-    Paint,
+    /// Paint, faces, texture and sculpt (was "Paint").
+    #[serde(alias = "Paint")]
+    Surface,
     View,
     Help,
 }
 
 impl RibbonTab {
-    const ALL: [RibbonTab; 6] = [RibbonTab::Insert, RibbonTab::Object, RibbonTab::Edit, RibbonTab::Paint, RibbonTab::View, RibbonTab::Help];
+    const ALL: [RibbonTab; 6] = [RibbonTab::Insert, RibbonTab::Object, RibbonTab::Edit, RibbonTab::Surface, RibbonTab::View, RibbonTab::Help];
     fn name(self) -> &'static str {
         match self {
             RibbonTab::Insert => "Insert",
             RibbonTab::Object => "Object",
             RibbonTab::Edit => "Edit",
-            RibbonTab::Paint => "Paint",
+            RibbonTab::Surface => "Surface",
             RibbonTab::View => "View",
             RibbonTab::Help => "Help",
         }
@@ -144,8 +146,8 @@ pub fn top(app: &mut App, ui: &mut Ui) {
             Tool::Select => app.ribbon,
             Tool::Text | Tool::Image => RibbonTab::Insert,
             Tool::Measure | Tool::LayFlat => RibbonTab::Object,
-            Tool::Cut | Tool::Faces | Tool::Texture | Tool::Sculpt => RibbonTab::Edit,
-            Tool::Paint => RibbonTab::Paint,
+            Tool::Cut => RibbonTab::Edit,
+            Tool::Paint | Tool::Faces | Tool::Texture | Tool::Sculpt => RibbonTab::Surface,
         };
     }
     egui::Panel::top("tabs").frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 3))).show(ui, |ui| {
@@ -174,6 +176,23 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                     app.settings.sidebar = !app.settings.sidebar;
                     // your choice now: don't close it by itself when the tool ends
                     app.panel_for_tool = false;
+                }
+                // the last step: check it and send it to the printer
+                let has_parts = app.scene.objects.iter().any(|o| o.visible && !o.hole);
+                let print = egui::Button::image_and_text(
+                    icons::image("printer", 16.0, if has_parts { Color32::WHITE } else { weak(ui) }),
+                    RichText::new("Print").strong().color(if has_parts { Color32::WHITE } else { weak(ui) }),
+                )
+                .fill(if has_parts { ACCENT } else { ui.visuals().widgets.inactive.weak_bg_fill })
+                .min_size(Vec2::new(0.0, 26.0))
+                .corner_radius(13.0);
+                if ui
+                    .add_enabled(has_parts, print)
+                    .on_hover_text("Check the plate and open it in your slicer, or save a file (Ctrl+P)")
+                    .on_disabled_hover_text("Add a shape or open a model first")
+                    .clicked()
+                {
+                    app.open_print();
                 }
                 if icon_button(ui, "save", "Save (Ctrl+S)", true, false).clicked() {
                     app.save(&ctx);
@@ -205,7 +224,7 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                 RibbonTab::Insert => insert_tab(app, ui, &ctx),
                 RibbonTab::Object => object_tab(app, ui, &ctx),
                 RibbonTab::Edit => edit_tab(app, ui, &ctx),
-                RibbonTab::Paint => paint_tab(app, ui, &ctx),
+                RibbonTab::Surface => surface_tab(app, ui, &ctx),
                 RibbonTab::View => view_tab(app, ui),
                 RibbonTab::Help => help_tab(app, ui),
             });
@@ -241,6 +260,9 @@ fn app_menu(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     }
     if ui.add_enabled(!app.selection.is_empty(), egui::Button::new("Export selection…")).clicked() {
         app.save_as_dialog(ctx, true);
+    }
+    if ui.add(egui::Button::new("Print / open in slicer…").shortcut_text("Ctrl+P")).clicked() {
+        app.open_print();
     }
     ui.separator();
     if ui.button("Settings…").clicked() {
@@ -343,6 +365,13 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
                 }
             }
         });
+        if big(ui, "check", "Bake", app.bakeable(), false, false)
+            .on_hover_text("Build the rotation and scale into the shape itself, so it reads 0° and 100% again. Nothing changes on screen")
+            .on_disabled_hover_text("Nothing to bake: the selection isn't rotated or scaled")
+            .clicked()
+        {
+            app.bake_selected();
+        }
     });
     group(ui, "Place", |ui| {
         if big(ui, "arrow-down-to-line", "Lay flat", true, app.tool == Tool::LayFlat, false)
@@ -392,6 +421,18 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     group(ui, "Organise", |ui| {
         if big(ui, "copy", "Duplicate", has, false, false).on_hover_text("Ctrl+D").clicked() {
             app.duplicate_selected();
+        }
+        if big(ui, "copy-plus", "Array", has, app.array_open, false)
+            .on_hover_text("Copies in a grid or around a circle, set up in the bar under the view")
+            .clicked()
+        {
+            app.array_open = !app.array_open;
+            if app.array_open {
+                app.tool = Tool::Select;
+                if app.preview.is_some() {
+                    app.cancel_preview();
+                }
+            }
         }
         if big(ui, "trash-2", "Delete", has, false, false).on_hover_text("Del").clicked() {
             app.delete_selected();
@@ -452,8 +493,8 @@ fn object_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
 
 fn mesh_op(app: &mut App, kind: PreviewKind) {
     app.tool = Tool::Select;
-    // settings are in the preview bar; the side panel shows them too if it's open
-    app.tab = PanelTab::Mesh;
+    app.array_open = false;
+    // the settings are in the bar under the view
     if kind == PreviewKind::ExtrudeDown {
         app.start_extrude_down();
     } else {
@@ -482,7 +523,7 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
             app.merge_selected();
         }
     });
-    group(ui, "Split", |ui| {
+    group(ui, "Cut", |ui| {
         if big(ui, "scissors", "Cut", has, app.tool == Tool::Cut, false).on_hover_text("Cut with a plane, with optional pegs").clicked() {
             app.start_cut();
         }
@@ -501,7 +542,7 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
             ("triangle", "Simplify", PreviewKind::Simplify, "Fewer triangles, same shape"),
             ("waves", "Smooth", PreviewKind::Smooth, "Smooth out facets and bumps"),
             ("squircle", "Round", PreviewKind::Round, "Round the edges"),
-            ("arrow-down-from-line", "Extrude", PreviewKind::ExtrudeDown, "Extrude down to the plate"),
+            ("arrow-down-from-line", "Extrude", PreviewKind::ExtrudeDown, "Extrude the underside down to the plate"),
             ("container", "Hollow", PreviewKind::Hollow, "Hollow it out with a wall thickness"),
             ("hexagon", "Pattern", PreviewKind::Pattern, "Voronoi, wireframe or gyroid lattice"),
         ] {
@@ -510,31 +551,8 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
             }
         }
     });
-    group(ui, "Surface", |ui| {
-        if big(ui, "square-dashed-mouse-pointer", "Faces", true, app.tool == Tool::Faces, false)
-            .on_hover_text("Select faces, then extrude, smooth, flatten, paint or separate them (S)")
-            .clicked()
-        {
-            app.start_faces_tool();
-        }
-        if big(ui, "brick-wall", "Texture", true, app.tool == Tool::Texture, false)
-            .on_hover_text("Press a texture into the surface: knurl, carbon, wood, your own picture…")
-            .clicked()
-        {
-            app.start_texture_tool();
-        }
-        if big(ui, "hand", "Sculpt", true, app.tool == Tool::Sculpt, false)
-            .on_hover_text("Draw, inflate, smooth, flatten, grab (B)")
-            .clicked()
-        {
-            app.start_sculpt_tool();
-        }
-    });
     group(ui, "Fix", |ui| {
         if big(ui, "wrench", "Repair", has, false, false).on_hover_text("Close holes, fix flipped and broken faces").clicked() {
-            app.tab = PanelTab::Repair;
-            app.settings.sidebar = true;
-            app.panel_for_tool = false;
             app.repair_selected(ctx);
         }
         if big(ui, "shield-check", "Make solid", has, active(app, PreviewKind::MakeSolid), false)
@@ -543,17 +561,17 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         {
             mesh_op(app, PreviewKind::MakeSolid);
         }
-        if big(ui, "check", "Bake", app.bakeable(), false, false)
-            .on_hover_text("Build the rotation and scale into the shape itself, so it reads 0° and 100% again. Nothing changes on screen")
-            .on_disabled_hover_text("Nothing to bake: the selection isn't rotated or scaled")
+        let on = app.settings.print_check;
+        if big(ui, "triangle-alert", "Print check", !app.scene.objects.is_empty(), on, false)
+            .on_hover_text("Colour overhangs, thin walls and islands that may print badly")
             .clicked()
         {
-            app.bake_selected();
+            app.settings.print_check = !on;
         }
     });
 }
 
-fn paint_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
+fn surface_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     let has = !app.selection.is_empty();
     group(ui, "Paint", |ui| {
         if big(ui, "paintbrush", "Paint", true, app.tool == Tool::Paint, false)
@@ -596,6 +614,26 @@ fn paint_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
                 ui.weak("Any colour");
             });
         });
+    });
+    group(ui, "Reshape", |ui| {
+        if big(ui, "square-dashed-mouse-pointer", "Faces", true, app.tool == Tool::Faces, false)
+            .on_hover_text("Select faces, then extrude, smooth, flatten, paint or separate them (S)")
+            .clicked()
+        {
+            app.start_faces_tool();
+        }
+        if big(ui, "brick-wall", "Texture", true, app.tool == Tool::Texture, false)
+            .on_hover_text("Press a texture into the surface: knurl, carbon, wood, your own picture…")
+            .clicked()
+        {
+            app.start_texture_tool();
+        }
+        if big(ui, "hand", "Sculpt", true, app.tool == Tool::Sculpt, false)
+            .on_hover_text("Draw, inflate, smooth, flatten, grab (B)")
+            .clicked()
+        {
+            app.start_sculpt_tool();
+        }
     });
 }
 
@@ -643,15 +681,6 @@ fn view_tab(app: &mut App, ui: &mut Ui) {
             }
         }
     });
-    group(ui, "Print", |ui| {
-        let on = app.settings.print_check;
-        if big(ui, "shield-check", "Print check", !app.scene.objects.is_empty(), on, false)
-            .on_hover_text("Colour overhangs, thin walls and islands that may print badly")
-            .clicked()
-        {
-            app.settings.print_check = !on;
-        }
-    });
     group(ui, "Section", |ui| {
         if big(ui, "square-split-horizontal", "Section", !app.scene.objects.is_empty(), app.section.enabled, false)
             .on_hover_text("Slice the view with a plane to look inside (X)")
@@ -693,7 +722,8 @@ fn help_tab(app: &mut App, ui: &mut Ui) {
 
 /// The bar that floats at the bottom of the view while objects are selected.
 pub fn object_box(app: &mut App, ui: &mut Ui, view: Rect) {
-    if app.selection.is_empty() || app.tool != Tool::Select || app.placing.is_some() {
+    // a bar at the bottom (preview settings, array) takes this spot
+    if app.selection.is_empty() || app.tool != Tool::Select || app.placing.is_some() || app.preview.is_some() || app.array_open {
         return;
     }
     let ctx = ui.ctx().clone();
