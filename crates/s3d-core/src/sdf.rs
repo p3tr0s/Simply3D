@@ -247,6 +247,90 @@ fn parity_mask(m: &Mesh, g: &Grid, axis: usize) -> Vec<bool> {
     inside
 }
 
+/// Inside test for overlapping closed solids: inside if inside any of them (winding number
+/// above zero along +X), so where they overlap they add up instead of cancelling.
+fn winding_mask(m: &Mesh, g: &Grid) -> Vec<bool> {
+    let (nx, ny, nz) = (g.n[0], g.n[1], g.n[2]);
+    let jb = g.h * 0.000_731_4;
+    let jc = g.h * 0.000_517_9;
+    let mut rows: Vec<Vec<(f32, i32)>> = vec![vec![]; ny * nz];
+    for t in 0..m.triangles.len() {
+        let [a, b, c] = m.tri(t);
+        let lo = a.min(b).min(c);
+        let hi = a.max(b).max(c);
+        let j0 = (((lo.y - g.origin.y - jb) / g.h).ceil().max(0.0)) as usize;
+        let j1 = (((hi.y - g.origin.y - jb) / g.h).floor().min(ny as f32 - 1.0)) as isize;
+        let k0 = (((lo.z - g.origin.z - jc) / g.h).ceil().max(0.0)) as usize;
+        let k1 = (((hi.z - g.origin.z - jc) / g.h).floor().min(nz as f32 - 1.0)) as isize;
+        if j1 < j0 as isize || k1 < k0 as isize {
+            continue;
+        }
+        let n = (b - a).cross(c - a);
+        if n.x.abs() < 1e-20 {
+            continue;
+        }
+        // a face against the ray is a way in, one along it a way out
+        let step = if n.x < 0.0 { 1 } else { -1 };
+        for k in k0..=k1 as usize {
+            for j in j0..=j1 as usize {
+                let y = g.origin.y + j as f32 * g.h + jb;
+                let z = g.origin.z + k as f32 * g.h + jc;
+                let e = |p: Vec3, q: Vec3| (q.y - p.y) * (z - p.z) - (q.z - p.z) * (y - p.y);
+                let (w0, w1, w2) = (e(a, b), e(b, c), e(c, a));
+                if (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0) {
+                    let x = a.x - (n.y * (y - a.y) + n.z * (z - a.z)) / n.x;
+                    rows[j + ny * k].push((x, step));
+                }
+            }
+        }
+    }
+    let mut inside = vec![false; g.len()];
+    for k in 0..nz {
+        for j in 0..ny {
+            let r = &mut rows[j + ny * k];
+            if r.is_empty() {
+                continue;
+            }
+            r.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let (mut c, mut w) = (0, 0);
+            for i in 0..nx {
+                let x = g.origin.x + i as f32 * g.h;
+                while c < r.len() && r[c].0 < x {
+                    w += r[c].1;
+                    c += 1;
+                }
+                inside[g.idx(i, j, k)] = w > 0;
+            }
+        }
+    }
+    inside
+}
+
+/// The voxel size [`union_of_solids`] uses for a mesh with these bounds.
+pub fn union_voxel(b: &Aabb, wanted: f32, max_voxels: usize) -> f32 {
+    pick_voxel(b, wanted * 4.0, wanted, max_voxels)
+}
+
+/// One clean solid from closed solids that overlap each other (where booleans would choke
+/// on many nearly coincident walls). The surface keeps the distance field's precision;
+/// only sharp edges get rounded by about a voxel.
+pub fn union_of_solids(m: &Mesh, wanted: f32, max_voxels: usize, prog: &Progress) -> Result<(Mesh, f32)> {
+    if m.triangles.is_empty() {
+        return Err(Error::Parse("nothing to join".into()));
+    }
+    let b = m.bounds();
+    let h = union_voxel(&b, wanted, max_voxels);
+    let g = Grid::new(&b, wanted * 4.0 + 2.0 * h, h);
+    let (cp, d2) = distances(m, &g, &prog.range(0.0, 0.55))?;
+    let inside = winding_mask(m, &g);
+    let d: Vec<f32> = d2.iter().zip(inside).map(|(d, ins)| if ins { -d.sqrt() } else { d.sqrt() }).collect();
+    prog.check()?;
+    let f = Field { d, cp, shift: 0.0 };
+    let out = extract_surface(&g, &f, &prog.range(0.6, 0.75))?;
+    drop(f);
+    Ok((finish(out, h, true, &prog.range(0.75, 1.0))?, h))
+}
+
 /// Inside test for broken meshes (holes, overlaps): majority vote of the X, Y and Z rays.
 fn vote_mask(m: &Mesh, g: &Grid) -> Vec<bool> {
     let (x, y, z) = (parity_mask(m, g, 0), parity_mask(m, g, 1), parity_mask(m, g, 2));
