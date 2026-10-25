@@ -32,6 +32,7 @@ pub mod scene;
 pub mod sculpt;
 pub mod sdf;
 pub mod simplify;
+pub mod sketch;
 pub mod smooth;
 pub mod split;
 pub mod text;

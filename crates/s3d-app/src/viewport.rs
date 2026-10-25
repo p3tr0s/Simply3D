@@ -181,6 +181,34 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     app.update_wrap_ghost();
+    // ---------- sketch: the pointer on the sketch plane ----------
+    if app.tool == Tool::Sketch {
+        let ctrl = ui.input(|i| i.modifiers.command);
+        match app.sketch.plane {
+            Some(plane) => {
+                let hit = ray.and_then(|(o, d)| plane.hit(o, d));
+                if let Some(h) = hit {
+                    app.sketch.px = view.world_per_px(plane.to_world(h));
+                }
+                app.sketch.cursor = hit.map(|h| app.sketch_snap(h, ctrl));
+                app.sketch.free = ctrl || app.sketch.cursor.is_some_and(|c| c.1);
+                app.sketch.hover_start = None;
+                if let (Some((c, on_point)), true) = (app.sketch.cursor, matches!(app.drag, DragMode::SketchMove)) {
+                    app.sketch_move_to(c, ctrl || on_point);
+                }
+            }
+            None => {
+                app.sketch.cursor = None;
+                app.sketch.hover_start = ray.and_then(|(o, d)| {
+                    pick(app, o, d, false).map(|h| (h.point, h.normal, Some(h.id))).or_else(|| plate_hit(o, d).map(|p| (p, Vec3::Z, None)))
+                });
+            }
+        }
+        if pointer.is_none() {
+            app.sketch.cursor = None;
+            app.sketch.hover_start = None;
+        }
+    }
     // ---------- placing a new shape: on a face or the plate ----------
     if app.placing.is_some() {
         if moved || app.place_hover.is_none() {
@@ -246,7 +274,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
     }
     if matches!(
         app.tool,
-        Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image | Tool::Paint | Tool::Faces | Tool::Texture | Tool::Sculpt
+        Tool::Measure | Tool::LayFlat | Tool::Text | Tool::Image | Tool::Paint | Tool::Faces | Tool::Texture | Tool::Sculpt | Tool::Sketch
     ) && response.hovered()
     {
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
@@ -296,6 +324,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                     app.sculpt_drag(h, ray);
                 }
             }
+            DragMode::SketchMove => {}
             DragMode::FaceSel { remove } => {
                 if let (true, Some(h)) = (moved, app.face_rt.hover) {
                     let remove = *remove;
@@ -314,6 +343,9 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
         }
         if matches!(app.drag, DragMode::Paint) {
             app.end_paint_stroke();
+        }
+        if matches!(app.drag, DragMode::SketchMove) {
+            app.sketch.moving = None;
         }
         if let DragMode::Box { start, additive } = app.drag.clone() {
             if let Some(end) = ui.input(|i| i.pointer.latest_pos()) {
@@ -406,6 +438,21 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
                         _ => {}
                     }
                 }
+                Tool::Sketch => {
+                    let free = ctrl;
+                    if app.sketch.plane.is_none() {
+                        if let Some((p, n, t)) = app.sketch.hover_start {
+                            app.sketch_set_plane(p, n, t);
+                            // the click also starts the first shape there
+                            if let Some(h) = app.sketch.plane.and_then(|pl| pl.hit(o, d)) {
+                                let (q, _) = app.sketch_snap(h, free);
+                                app.sketch_click(q);
+                            }
+                        }
+                    } else if let Some((q, _)) = app.sketch.cursor {
+                        app.sketch_click(q);
+                    }
+                }
                 Tool::Measure => {
                     if let Some(hit) = pick(app, o, d, true) {
                         let mut p = hit.point;
@@ -433,7 +480,7 @@ pub fn viewport(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     }
-    if response.double_clicked() {
+    if response.double_clicked() && app.tool != Tool::Sketch {
         if let Some((o, d)) = ray {
             if let Some(h) = pick(app, o, d, true) {
                 app.settings.camera.target = h.point;
@@ -787,11 +834,36 @@ fn build_frame(app: &App, view: &View, checked: &std::collections::HashMap<s3d_c
             }
         }
     }
+    // sketch: the solid it will make
+    if app.tool == Tool::Sketch {
+        if let Some(m) = app.sketch_preview() {
+            let color = match app.sketch_op() {
+                crate::sketch_tool::SketchOp::Cut => [1.0, 0.35, 0.25, 0.5],
+                crate::sketch_tool::SketchOp::Add => [1.0, 0.75, 0.2, 0.5],
+                crate::sketch_tool::SketchOp::New => [0.3, 0.6, 1.0, 0.45],
+            };
+            ghosts.push(DrawItem { mesh: m.clone(), model: glam::Mat4::IDENTITY, color, params: [0.4, 0.0, 0.0, 0.0] });
+        }
+    }
 
     let dark = app.settings.dark;
     let mut tris = vec![];
     let mut lines = vec![];
     let mut overlay = vec![];
+    if app.tool == Tool::Sketch {
+        let (grid, fills) = crate::sketch_tool::plane_geometry(app);
+        let g = if dark { [0.75, 0.82, 0.95] } else { [0.15, 0.2, 0.3] };
+        for (a, b, alpha) in grid {
+            overlay.push(LineVertex::new(a, [g[0], g[1], g[2], alpha]));
+            overlay.push(LineVertex::new(b, [g[0], g[1], g[2], alpha]));
+        }
+        for (t, hole, sel) in fills {
+            let c = if sel { [1.0, 0.8, 0.2, 0.22] } else if hole { [1.0, 0.4, 0.3, 0.16] } else { [0.3, 0.6, 1.0, 0.2] };
+            for v in t {
+                tris.push(LineVertex::new(v, c));
+            }
+        }
+    }
     // circular array: the circle the copies will sit on, and where each one goes
     let array_on = app.array_open && !app.selection.is_empty() && app.tool == Tool::Select && app.preview.is_none();
     // grid array: an outline where each copy will go
@@ -1122,6 +1194,12 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             }
         }
     }
+    if app.tool == Tool::Sketch {
+        crate::sketch_tool::paint(app, p, &|w| view.to_screen(w));
+        if let (Some(l), Some(pos)) = (crate::sketch_tool::drawing_label(app), ui.input(|i| i.pointer.hover_pos())) {
+            label(p, pos + egui::vec2(0.0, 30.0), l, Color32::WHITE);
+        }
+    }
     // a tool is on: frame the view in the accent colour, so clicks behaving differently
     // never come as a surprise
     let busy = app.tool != Tool::Select || app.preview.is_some() || app.placing.is_some() || (app.array_open && !app.selection.is_empty());
@@ -1164,6 +1242,7 @@ fn overlays(app: &mut App, ui: &mut egui::Ui, p: &egui::Painter, view: &View) {
             crate::texture_tool::TexArea::Brush => "Texture: drag over the area · Shift removes",
         }),
         Tool::Sculpt => Some("Sculpt: drag on the model · Shift reverses · Ctrl smooths · drag off it to orbit"),
+        Tool::Sketch => Some(crate::sketch_tool::hint(app)),
         Tool::Select => None,
     };
     if let Some(pl) = &app.placing {
@@ -1317,6 +1396,16 @@ fn placed_one(app: &mut App, shift: bool) {
 /// Decide what a left-drag does, based on what is under the press point and modifiers.
 fn start_primary_drag(app: &mut App, view: &View, origin: Pos2, shift: bool, alt: bool, ctrl: bool, cad: bool) -> DragMode {
     if app.placing.is_some() {
+        return DragMode::Orbit;
+    }
+    if app.tool == Tool::Sketch && app.settings.sketch.draw == crate::sketch_tool::Draw::Select && !alt {
+        let (o, d) = view.ray(origin);
+        if let Some(h) = app.sketch.plane.and_then(|pl| pl.hit(o, d)) {
+            if let Some(i) = app.sketch_shape_at(h) {
+                app.sketch_begin_move(i, h);
+                return DragMode::SketchMove;
+            }
+        }
         return DragMode::Orbit;
     }
     if app.tool == Tool::Sculpt && !alt {
@@ -1527,8 +1616,9 @@ fn drag_overlays(app: &App, ui: &egui::Ui, p: &egui::Painter) {
 /// Apply / Cancel bar of a running preview.
 fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
     let picture = app.tool == Tool::Image && app.preview.is_none();
+    let sketch = app.tool == Tool::Sketch && app.preview.is_none();
     let array = app.array_open && !app.selection.is_empty() && app.tool == Tool::Select && app.preview.is_none();
-    if !app.section.enabled && app.preview.is_none() && !picture && !array {
+    if !app.section.enabled && app.preview.is_none() && !picture && !array && !sketch {
         return;
     }
     let ctx = ui.ctx().clone();
@@ -1548,6 +1638,11 @@ fn bottom_bars(app: &mut App, ui: &mut egui::Ui, view: &View) {
             if array {
                 let w = (room.width() - 40.0).clamp(380.0, 760.0);
                 egui::Frame::popup(ui.style()).show(ui, |ui| crate::ui::array_bar(app, ui, w));
+            }
+            if sketch {
+                let w = (room.width() - 40.0).clamp(380.0, 760.0);
+                let ctx = ui.ctx().clone();
+                egui::Frame::popup(ui.style()).show(ui, |ui| crate::sketch_tool::bar(app, ui, &ctx, w));
             }
             if picture {
                 let w = (room.width() - 40.0).clamp(380.0, 760.0);

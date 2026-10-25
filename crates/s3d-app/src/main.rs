@@ -21,6 +21,7 @@ mod print_dialog;
 mod render;
 mod ribbon;
 mod sculpt_tool;
+mod sketch_tool;
 mod slicers;
 mod snap;
 mod text_tool;

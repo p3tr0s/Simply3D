@@ -338,7 +338,7 @@ pub fn top(app: &mut App, ui: &mut Ui) {
         app.ribbon_tool = app.tool;
         app.ribbon = match app.tool {
             Tool::Select => app.ribbon,
-            Tool::Text | Tool::Image => RibbonTab::Insert,
+            Tool::Text | Tool::Image | Tool::Sketch => RibbonTab::Insert,
             Tool::Measure | Tool::LayFlat => RibbonTab::Object,
             Tool::Cut => RibbonTab::Edit,
             Tool::Paint | Tool::Faces | Tool::Texture | Tool::Sculpt => RibbonTab::Surface,
@@ -548,6 +548,14 @@ fn insert_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
     group(ui, "Toys", |ui| {
         let r = big(ui, "blocks", "Bricks", true, false, true).on_hover_text("Bricks, plates and tiles that fit LEGO® and DUPLO® bricks");
         egui::Popup::menu(&r).show(|ui| add_menu(ui, app, &Primitive::BRICK_NAMES));
+    });
+    group(ui, "Draw", |ui| {
+        if big(ui, "pencil-ruler", "Sketch", true, app.tool == Tool::Sketch, false)
+            .on_hover_text("Draw rectangles, circles, polygons and outlines on the plate or a face, then extrude or revolve them (K)")
+            .clicked()
+        {
+            app.toggle_sketch_tool();
+        }
     });
     group(ui, "Text & pictures", |ui| {
         if big(ui, "type", "Text", true, app.tool == Tool::Text, false)
@@ -1058,7 +1066,7 @@ pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
                 });
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
-                    let w = ((ui.available_width() - ui.spacing().item_spacing.x) * 0.5).floor();
+                    let w = ((ui.available_width() - ui.spacing().item_spacing.x * 2.0) / 3.0).floor();
                     let tile = |ui: &mut Ui, icon: &str, label: &str| {
                         let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 86.0), Sense::click());
                         let p = ui.painter();
@@ -1083,6 +1091,12 @@ pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
                     };
                     if tile(ui, "folder-open", "Open a model").clicked() {
                         app.open_dialog(&ctx);
+                    }
+                    if tile(ui, "pencil-ruler", "Sketch a shape")
+                        .on_hover_text("Draw rectangles, circles and outlines, then extrude or revolve them into a part")
+                        .clicked()
+                    {
+                        app.start_sketch_tool();
                     }
                     if tile(ui, "grid-3x3", "Empty plate")
                         .on_hover_text("Start with an empty plate: shapes, parts and storage are on the Insert tab")

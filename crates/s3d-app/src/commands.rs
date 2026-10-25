@@ -184,6 +184,7 @@ pub fn all() -> Vec<Command> {
             a.settings.text.mode = TextMode::Engrave;
             a.start_text_tool()
         }),
+        cmd!("Tools", "Sketch: draw shapes, then extrude or revolve them", "K", always, |a, _| a.start_sketch_tool()),
         cmd!("Tools", "Picture to 3D (contour, height map, stamp, lithophane)…", "", always, |a, c| a.image_dialog(c)),
         cmd!("Tools", "Paint colours (multi-colour / AMS)", "P", has_objects, |a, _| a.start_paint_tool()),
         cmd!("Tools", "Select faces: extrude, push in, delete, copy as solid", "S", has_objects, |a, _| a.start_faces_tool()),

@@ -97,10 +97,12 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if ctx.egui_wants_keyboard_input() {
         return;
     }
-    if sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || sc(Modifiers::COMMAND, Key::Y) {
+    // while sketching, undo / redo step through the sketch first
+    let sketching = app.tool == Tool::Sketch;
+    if (sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || sc(Modifiers::COMMAND, Key::Y)) && !(sketching && app.sketch_redo()) {
         app.redo();
     }
-    if sc(Modifiers::COMMAND, Key::Z) {
+    if sc(Modifiers::COMMAND, Key::Z) && !(sketching && app.sketch_undo()) {
         app.undo();
     }
     if sc(Modifiers::COMMAND, Key::D) {
@@ -130,7 +132,11 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if sc(Modifiers::SHIFT, Key::W) {
         app.settings.wireframe = !app.settings.wireframe;
     }
-    app.arrow_nudge(ctx);
+    if sketching {
+        app.sketch_keys(ctx);
+    } else {
+        app.arrow_nudge(ctx);
+    }
     // single-key shortcuts
     let key = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
     if key(Key::Delete) || key(Key::Backspace) {
@@ -205,6 +211,9 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     }
     if key(Key::B) {
         app.start_sculpt_tool();
+    }
+    if key(Key::K) {
+        app.toggle_sketch_tool();
     }
     if key(Key::A) {
         let g = app.settings.arrange_gap;
@@ -576,6 +585,7 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
         Tool::Faces => crate::faces_tool::panel(app, ui, &ctx),
         Tool::Texture => crate::texture_tool::panel(app, ui),
         Tool::Sculpt => crate::sculpt_tool::panel(app, ui),
+        Tool::Sketch => crate::sketch_tool::panel(app, ui),
         Tool::Select => {}
     }
     let Some(&id) = app.selection.first() else {
@@ -1597,6 +1607,9 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     ("Ctrl while dragging gizmo", "Toggle snapping"),
                     ("M / L / T", "Measure / lay flat / text tools"),
                     ("P / S / B", "Paint / select faces / sculpt"),
+                    ("K", "Sketch: draw shapes, then extrude or revolve them"),
+                    ("  R / C / P / L / V (sketching)", "Rectangle / circle / polygon / outline / select"),
+                    ("  A / H / Enter (sketching)", "Arc segments / make the shape a hole / extrude"),
                     ("Alt+click", "Select one part of a group"),
                     ("Ctrl+G / Ctrl+Shift+G", "Group / ungroup"),
                     ("H / Shift+H", "Hide selected / show all"),

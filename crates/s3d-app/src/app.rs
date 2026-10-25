@@ -53,6 +53,7 @@ pub struct Settings {
     pub faces: crate::faces_tool::FaceSettings,
     pub texture: crate::texture_tool::TextureSettings,
     pub sculpt: crate::sculpt_tool::SculptSettings,
+    pub sketch: crate::sketch_tool::SketchSettings,
     /// Align to the first selected object instead of the whole selection.
     pub align_to_first: bool,
     /// New shapes follow the pointer and are placed with a click (on the plate or a face).
@@ -119,6 +120,7 @@ impl Default for Settings {
             faces: Default::default(),
             texture: Default::default(),
             sculpt: Default::default(),
+            sketch: Default::default(),
             align_to_first: false,
             new_shapes: NewShapes::Click,
             arrange_gap: 6.0,
@@ -194,6 +196,8 @@ pub enum DragMode {
         bounds: Aabb,
         vertical: bool,
     },
+    /// Moving a sketch shape.
+    SketchMove,
     /// Done (typed move confirmed / cancelled) but the button is still held.
     Finished,
 }
@@ -210,6 +214,7 @@ pub enum Tool {
     Faces,
     Texture,
     Sculpt,
+    Sketch,
 }
 
 /// Section view: everything on the far side of a plane is cut away (display only).
@@ -566,6 +571,7 @@ pub struct App {
     pub face_rt: crate::faces_tool::FaceRuntime,
     pub tex_rt: crate::texture_tool::TextureRuntime,
     pub sculpt_rt: crate::sculpt_tool::SculptRuntime,
+    pub sketch: crate::sketch_tool::SketchRuntime,
     /// A new shape waiting to be placed, and where it would go (point, normal).
     pub placing: Option<crate::place_tool::Placing>,
     pub place_hover: Option<(Vec3, Vec3)>,
@@ -677,6 +683,7 @@ impl App {
             face_rt: Default::default(),
             tex_rt: Default::default(),
             sculpt_rt: Default::default(),
+            sketch: Default::default(),
             placing: None,
             place_hover: None,
             see_through: vec![],
@@ -1761,6 +1768,7 @@ impl eframe::App for App {
         self.poll_updates(ctx);
         self.tick_preview(ctx);
         self.tick_text(ctx);
+        self.tick_sketch(ctx);
         self.tick_image(ctx);
         self.tick_holes(ctx);
         self.tick_faces();
