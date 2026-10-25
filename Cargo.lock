@@ -2883,7 +2883,7 @@ dependencies = [
 
 [[package]]
 name = "s3d-app"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytemuck",
  "eframe",
@@ -2905,7 +2905,7 @@ dependencies = [
 
 [[package]]
 name = "s3d-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "boolmesh",
  "bytemuck",

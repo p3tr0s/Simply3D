@@ -1,0 +1,14 @@
+Sketch your own parts: draw flat shapes, then extrude or revolve them into solids.
+
+### What's new
+- **Sketch (K, or Insert ▸ Draw ▸ Sketch):** draw rectangles (rounded corners or slots), circles, polygons and outlines with straight and curved segments, on the plate or on any face of an object.
+  - Grid snapping, snapping to corners and centres of other shapes, and exact sizes for the selected shape in the bottom bar.
+  - Shapes drawn inside another become holes; overlapping shapes merge.
+  - **Extrude** into a new part, onto the object you drew on, or **cut** into it (optionally all the way through). **Revolve** into an upright part — vases, knobs, wheels.
+  - Live 3D preview, its own undo while sketching, and **Last sketch** brings back the sketch you just used.
+- **Update check:** Simply3D looks for a newer release once a day (turn it off in Settings) and shows a button with what's new when there is one. Help ▸ Updates checks right away.
+- **Extrude down works on threaded parts:** bolts, nuts and threaded rods can now be extruded down to the plate without errors.
+
+### Download
+- **Windows:** `Simply3D-windows-x64.zip` — unzip and run `simply3d.exe` (64-bit Windows 10/11).
+- **Linux:** `Simply3D-linux-x64.tar.gz` — unpack and run `./simply3d`, or `./install.sh` to add it to your applications menu.
