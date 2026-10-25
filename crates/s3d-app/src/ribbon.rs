@@ -378,6 +378,16 @@ pub fn top(app: &mut App, ui: &mut Ui) {
                     // your choice now: don't close it by itself when the tool ends
                     app.panel_for_tool = false;
                 }
+                // a newer version is out
+                if let Some(r) = &app.updates.available {
+                    let label = if tight { String::new() } else { format!("v{}", r.version) };
+                    let b = egui::Button::image_and_text(icons::image("download", 15.0, ACCENT), RichText::new(label).color(ACCENT))
+                        .min_size(Vec2::new(0.0, 26.0))
+                        .corner_radius(13.0);
+                    if ui.add(b).on_hover_text(format!("Simply3D v{} is available: see what's new", r.version)).clicked() {
+                        app.updates.show = !app.updates.show;
+                    }
+                }
                 // the last step: check it and send it to the printer
                 let has_parts = app.scene.objects.iter().any(|o| o.visible && !o.hole);
                 let fg = if has_parts { Color32::WHITE } else { weak(ui) };
@@ -941,6 +951,17 @@ fn help_tab(app: &mut App, ui: &mut Ui) {
         }
         if big(ui, "keyboard", "Shortcuts", true, false, false).on_hover_text("Every key and mouse action (?)").clicked() {
             app.show_shortcuts = true;
+        }
+        let newer = app.updates.available.is_some();
+        if big(ui, "download", "Updates", true, newer, false)
+            .on_hover_text(format!("Check for a newer version (you have v{})", crate::updates::CURRENT))
+            .clicked()
+        {
+            if newer {
+                app.updates.show = true;
+            } else {
+                app.check_updates(true);
+            }
         }
         if big(ui, "info", "About", true, false, false).clicked() {
             app.show_about = true;

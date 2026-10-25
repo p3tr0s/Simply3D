@@ -46,6 +46,7 @@ pub fn all() -> Vec<Command> {
         cmd!("File", "Save", "Ctrl+S", has_objects, |a, c| a.save(c)),
         cmd!("File", "Save as…", "Ctrl+Shift+S", has_objects, |a, c| a.save_as_dialog(c, false)),
         cmd!("File", "Print: check the plate and open it in a slicer", "Ctrl+P", has_objects, |a, _| a.open_print()),
+        cmd!("Help", "Check for updates", "", always, |a, _| a.check_updates(true)),
         cmd!("File", "Export selection…", "", has_sel, |a, c| a.save_as_dialog(c, true)),
         cmd!("File", "Settings…", "", always, |a, _| a.show_settings = true),
         // edit

@@ -29,6 +29,7 @@ pub fn source(name: &str) -> ImageSource<'static> {
         "copy" => egui::include_image!("../icons/copy.svg"),
         "copy-plus" => egui::include_image!("../icons/copy-plus.svg"),
         "cylinder" => egui::include_image!("../icons/cylinder.svg"),
+        "download" => egui::include_image!("../icons/download.svg"),
         "eraser" => egui::include_image!("../icons/eraser.svg"),
         "external-link" => egui::include_image!("../icons/external-link.svg"),
         "eye" => egui::include_image!("../icons/eye.svg"),

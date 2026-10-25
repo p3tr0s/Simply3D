@@ -75,7 +75,7 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Smooth:** subdivide, relax or refine, with sharp edges kept.
 - **Round edges:** fillets on any closed mesh, outside, inside or both.
 - **Hollow** with a wall thickness and drain holes.
-- **Extrude down** to the plate, for flat bases and simple supports.
+- **Extrude down** to the plate, for flat bases and simple supports, threaded parts included.
 - **Face tools:** select an area and extrude it, flatten it, smooth it, paint it, copy it as a solid, delete it, or lay the model flat on it.
 - **Patterns:** Voronoi cells, wireframe struts and gyroid lattices.
 - **Textures:** knurl, ribs, bumps, grid, bricks, carbon fibre, wood grain, leather, waves, sand, or your own picture, pressed into the surface as real geometry.
@@ -102,6 +102,7 @@ Open models from the ☰ menu, drag files onto the window, or pass them on the c
 - **Command search** (Ctrl+K) finds any action by name.
 - Notices tell you what just happened, with **Undo** right there. Right-click menus, progress bars with cancel, and preview before applying.
 - Dark and light themes.
+- **Update check:** once a day at start-up Simply3D asks GitHub for the latest release and shows a button when a new version is out (turn it off in Settings; nothing else is sent). Help → Updates checks right away.
 
 ## Keyboard and mouse
 

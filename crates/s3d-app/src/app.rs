@@ -83,6 +83,12 @@ pub struct Settings {
     pub slicer: String,
     /// Print sends everything (false) or just the selection.
     pub print_selection: bool,
+    /// Look for a newer release at start-up (once a day).
+    pub check_updates: bool,
+    /// When that was last done (seconds since 1970).
+    pub last_update_check: u64,
+    /// A release you chose not to be reminded about.
+    pub skipped_version: String,
 }
 
 impl Default for Settings {
@@ -128,6 +134,9 @@ impl Default for Settings {
             printer: String::new(),
             slicer: String::new(),
             print_selection: false,
+            check_updates: true,
+            last_update_check: 0,
+            skipped_version: String::new(),
         }
     }
 }
@@ -505,6 +514,7 @@ pub struct App {
     /// The Array tool's bar is open.
     pub array_open: bool,
     pub print: crate::print_dialog::PrintState,
+    pub updates: crate::updates::Updates,
     /// Ribbon tab shown at the top.
     pub ribbon: crate::ribbon::RibbonTab,
     /// Tool seen last frame (the ribbon follows tool changes made by keys or menus).
@@ -627,6 +637,7 @@ impl App {
             last_title: String::new(),
             array_open: false,
             print: Default::default(),
+            updates: Default::default(),
             ribbon: Default::default(),
             ribbon_tool: Tool::Select,
             palette: None,
@@ -683,6 +694,7 @@ impl App {
         if !files.is_empty() {
             app.import_files(files, &cc.egui_ctx);
         }
+        app.startup_update_check();
         app
     }
 
@@ -1746,6 +1758,7 @@ impl App {
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_job();
+        self.poll_updates(ctx);
         self.tick_preview(ctx);
         self.tick_text(ctx);
         self.tick_image(ctx);

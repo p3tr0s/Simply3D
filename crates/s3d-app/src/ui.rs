@@ -1326,6 +1326,7 @@ fn cut_panel(app: &mut App, ui: &mut egui::Ui) {
 
 fn dialogs(app: &mut App, ctx: &egui::Context) {
     crate::print_dialog::window(app, ctx);
+    crate::updates::window(app, ctx);
     if app.recovery.is_some() {
         let mut choice = None;
         let r = app.recovery.as_ref().unwrap();
@@ -1554,6 +1555,9 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
                     .on_hover_text("CAD style: right-drag orbits, middle-drag pans");
             });
             ui.checkbox(&mut app.settings.drag_moves_objects, "Left-drag on an object moves it");
+            ui.separator();
+            ui.checkbox(&mut app.settings.check_updates, "Check for a new version at start-up")
+                .on_hover_text("At most once a day, Simply3D asks GitHub for the latest release. Nothing else is sent.");
             ui.separator();
             ui.label(RichText::new("Holes in saved 3MF files").strong());
             ui.horizontal(|ui| {

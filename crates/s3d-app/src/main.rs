@@ -28,6 +28,7 @@ mod toasts;
 mod texture_tool;
 mod typed_move;
 mod ui;
+mod updates;
 mod viewport;
 
 fn main() -> eframe::Result {
