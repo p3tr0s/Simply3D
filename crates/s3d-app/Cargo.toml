@@ -16,7 +16,8 @@ bytemuck = { version = "1.25", features = ["derive"] }
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "persistence", "x11", "wayland"] }
 egui = "0.36"
 resvg = "0.45"
-egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+egui_extras = { version = "0.36", default-features = false, features = ["svg", "image"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 egui-wgpu = "0.36"
 env_logger = "0.11"
 glam = { version = "0.34", features = ["bytemuck", "serde"] }
@@ -28,3 +29,7 @@ serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "json"] }
 transform-gizmo-egui = "0.11"
 epaint_default_fonts = "0.36"
+
+# the program icon and version details in simply3d.exe
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

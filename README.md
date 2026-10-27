@@ -1,3 +1,5 @@
+<img src="crates/s3d-app/icons/logo.png" width="96" alt="Simply3D logo">
+
 # Simply3D
 
 **Simple, fast 3D modelling for 3D printing.**

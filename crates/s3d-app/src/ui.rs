@@ -1716,8 +1716,13 @@ fn dialogs(app: &mut App, ctx: &egui::Context) {
     if app.show_about {
         let mut open = true;
         egui::Window::new("About Simply3D").open(&mut open).resizable(false).show(ctx, |ui| {
-            ui.label(RichText::new("Simply3D").heading().strong());
-            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+            ui.horizontal(|ui| {
+                ui.add(crate::icons::logo(56.0));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Simply3D").heading().strong());
+                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+                });
+            });
             ui.label("A fast, open 3D Builder-style mesh editor written in Rust.");
             ui.label("Booleans: boolmesh · UI: egui + wgpu");
             if !app.viewport_ok {

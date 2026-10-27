@@ -352,7 +352,7 @@ pub fn top(app: &mut App, ui: &mut Ui) {
             let m = icon_button(ui, "menu", "File: new, open, save, settings", true, false);
             egui::Popup::menu(&m).show(|ui| app_menu(app, ui, &ctx));
             if !tight {
-                ui.add(icons::logo(18.0));
+                ui.add(icons::logo(20.0));
             }
             if !no_name {
                 ui.label(RichText::new("Simply3D").strong());
@@ -1058,7 +1058,7 @@ pub fn start_card(app: &mut App, ui: &mut Ui, view: Rect) {
             egui::Frame::popup(ui.style()).corner_radius(14.0).inner_margin(egui::Margin::same(22)).show(ui, |ui| {
                 ui.set_width(440.0);
                 ui.horizontal(|ui| {
-                    ui.add(icons::logo(40.0));
+                    ui.add(icons::logo(56.0));
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Simply3D").size(22.0).strong());
                         ui.label(RichText::new("Make it, fix it, print it.").color(weak(ui)));

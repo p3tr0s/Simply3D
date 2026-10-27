@@ -62,7 +62,7 @@ jobs:
           cp target/release/simply3d dist/Simply3D/
           strip dist/Simply3D/simply3d
           cp packaging/linux/install.sh packaging/linux/simply3d.desktop LICENSE dist/Simply3D/
-          cp crates/s3d-app/icons/logo.svg dist/Simply3D/simply3d.svg
+          cp crates/s3d-app/icons/logo.png dist/Simply3D/simply3d.png
           chmod +x dist/Simply3D/simply3d dist/Simply3D/install.sh
           tar -C dist -czf Simply3D-linux-x64.tar.gz Simply3D
       - uses: actions/upload-artifact@v4

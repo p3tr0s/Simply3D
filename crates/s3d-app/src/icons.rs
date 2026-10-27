@@ -57,7 +57,8 @@ pub fn source(name: &str) -> ImageSource<'static> {
         "locate-fixed" => egui::include_image!("../icons/locate-fixed.svg"),
         "lock" => egui::include_image!("../icons/lock.svg"),
         "lock-open" => egui::include_image!("../icons/lock-open.svg"),
-        "logo" => egui::include_image!("../icons/logo.svg"),
+        "logo" => egui::include_image!("../icons/logo.png"),
+        "logo-small" => egui::include_image!("../icons/logo-small.png"),
         "magnet" => egui::include_image!("../icons/magnet.svg"),
         "maximize" => egui::include_image!("../icons/maximize.svg"),
         "menu" => egui::include_image!("../icons/menu.svg"),
@@ -109,28 +110,14 @@ pub fn image(name: &str, size: f32, tint: Color32) -> Image<'static> {
     Image::new(source(name)).fit_to_exact_size(Vec2::splat(size)).tint(tint)
 }
 
-/// The app logo in its own colours.
+/// The app logo in its own colours (a smaller copy for small sizes, so it stays sharp).
 pub fn logo(size: f32) -> Image<'static> {
-    Image::new(source("logo")).fit_to_exact_size(Vec2::splat(size))
+    Image::new(source(if size <= 32.0 { "logo-small" } else { "logo" })).fit_to_exact_size(Vec2::splat(size))
 }
 
 /// The logo as window icon pixels.
 pub fn window_icon() -> Option<egui::IconData> {
-    let svg = include_bytes!("../icons/logo.svg");
-    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
-    let size = 64;
-    let mut pix = resvg::tiny_skia::Pixmap::new(size, size)?;
-    let s = size as f32 / tree.size().width();
-    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(s, s), &mut pix.as_mut());
-    // tiny-skia stores premultiplied alpha
-    let mut rgba = pix.take();
-    for p in rgba.chunks_mut(4) {
-        let a = p[3] as f32 / 255.0;
-        if a > 0.0 {
-            for c in &mut p[..3] {
-                *c = (*c as f32 / a).round().min(255.0) as u8;
-            }
-        }
-    }
-    Some(egui::IconData { rgba, width: size, height: size })
+    let img = image::load_from_memory(include_bytes!("../icons/logo.png")).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData { rgba: img.into_raw(), width, height })
 }
