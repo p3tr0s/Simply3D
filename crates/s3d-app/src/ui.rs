@@ -1037,6 +1037,20 @@ pub fn op_settings(app: &mut App, ui: &mut egui::Ui, kind: PreviewKind) {
                     .on_hover_text("Air under the ceiling and at the ends, so they break away. About one layer height");
             });
             row(ui, |ui| {
+                let mut skip = t.fin_max_bridge > 0.0;
+                if ui
+                    .checkbox(&mut skip, "Skip spans up to")
+                    .on_hover_text("Openings this narrow between their side walls get no fins: your printer bridges them")
+                    .changed()
+                {
+                    t.fin_max_bridge = if skip { 8.0 } else { 0.0 };
+                }
+                if skip {
+                    ui.add(num(&mut t.fin_max_bridge, Kind::Length).speed(0.1).range(0.5..=200.0).suffix(" mm"))
+                        .on_hover_text("Most printers bridge 8–10 mm cleanly");
+                }
+            });
+            row(ui, |ui| {
                 ui.checkbox(&mut t.fin_pegs, "On pegs").on_hover_text(
                     "Stand each fin on small tapered pegs instead of its whole bottom edge: a quick snip or file and they're off",
                 );

@@ -391,6 +391,8 @@ pub struct MeshTools {
     pub fin_pegs: bool,
     pub fin_peg_lift: f32,
     pub fin_peg_spacing: f32,
+    /// Openings spanning this or less are left to bridge (0 = off).
+    pub fin_max_bridge: f32,
 }
 
 impl Default for MeshTools {
@@ -434,6 +436,7 @@ impl Default for MeshTools {
             fin_pegs: true,
             fin_peg_lift: 1.0,
             fin_peg_spacing: 5.0,
+            fin_max_bridge: 0.0,
         }
     }
 }

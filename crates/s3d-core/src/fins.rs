@@ -43,6 +43,9 @@ pub struct FinOptions {
     /// under the ceiling (at 45°, so it prints), holding the ceiling up across a wide
     /// strip instead of a thin edge. Its thickness or less: straight fins.
     pub top: f32,
+    /// Openings whose ceiling spans no more than this between the walls holding it get
+    /// no fins: the printer bridges them. 0 = support every opening.
+    pub max_bridge: f32,
 }
 
 /// Fins held up on pegs: a gap under each fin, bridged by tapered pegs.
@@ -62,7 +65,7 @@ impl Default for Pegs {
 
 impl Default for FinOptions {
     fn default() -> Self {
-        Self { angle: 45.0, thickness: 0.8, spacing: 4.0, gap: 0.2, dir: FinDir::Auto, openings_only: true, faces: None, pegs: Some(Pegs::default()), top: 3.0 }
+        Self { angle: 45.0, thickness: 0.8, spacing: 4.0, gap: 0.2, dir: FinDir::Auto, openings_only: true, faces: None, pegs: Some(Pegs::default()), top: 3.0, max_bridge: 0.0 }
     }
 }
 
@@ -73,6 +76,8 @@ pub struct FinReport {
     pub areas: usize,
     /// Overhang areas skipped because they are inside a closed cavity.
     pub enclosed: usize,
+    /// Overhang areas skipped because they are short enough to bridge.
+    pub bridged: usize,
 }
 
 /// Openings lower than this need no fins, mm.
@@ -354,6 +359,12 @@ pub fn support_fins(m: &Mesh, o: &FinOptions, progress: &Progress) -> Result<(Me
             wmin = wmin.min(w);
             wmax = wmax.max(w);
         }
+        // the ceiling bridges across the fins' rows (between the walls at either side):
+        // short enough, and the printer manages without them
+        if o.max_bridge > 0.0 && wmax - wmin <= o.max_bridge {
+            report.bridged += 1;
+            continue;
+        }
         // fins evenly across, their tops clear of the sides
         let margin = o.top.max(t) * 0.5 + gap;
         let avail = wmax - wmin - 2.0 * margin;
@@ -478,8 +489,10 @@ pub fn support_fins(m: &Mesh, o: &FinOptions, progress: &Progress) -> Result<(Me
         }
     }
     if out.is_empty() {
-        return Err(Error::Parse(if report.enclosed > 0 {
-            "the only overhangs are inside closed spaces, where fins couldn't be taken out".into()
+        return Err(Error::Parse(if report.bridged > 0 {
+            format!("every opening spans {} mm or less, short enough to bridge", o.max_bridge)
+        } else if report.enclosed > 0 {
+            "the only overhangs are inside closed spaces, where fins couldn't be taken out".to_string()
         } else if o.openings_only {
             "no holes or slots with an overhang (Down to the plate also supports overhangs over the plate)".into()
         } else {
@@ -585,6 +598,18 @@ mod tests {
         for w in xs.windows(2) {
             assert!(w[1].0 - w[0].1 >= 0.2, "{xs:?}");
         }
+    }
+
+    #[test]
+    fn short_spans_bridge() {
+        // the slot's ceiling spans 20 mm between its side walls
+        let m = slotted_wall();
+        let o = FinOptions { max_bridge: 25.0, ..Default::default() };
+        let e = support_fins(&m, &o, &Progress::new()).unwrap_err();
+        assert!(e.to_string().contains("bridge"), "{e}");
+        let o = FinOptions { max_bridge: 15.0, ..Default::default() };
+        let (_, r) = support_fins(&m, &o, &Progress::new()).unwrap();
+        assert!(r.fins > 0 && r.bridged == 0, "{r:?}");
     }
 
     #[test]

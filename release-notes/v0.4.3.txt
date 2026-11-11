@@ -1,0 +1,13 @@
+Support fins for holes and slots, and a new icon.
+
+### What's new
+- **Support fins (Edit ▸ Fix ▸ Support fins):** break-away fins under the ceilings of holes and slots through a wall, so they print without slicer supports.
+  - Each fin stands on small tapered pegs (a snip or a file and it's off), stays thin, and flares out at 45° to a wide top just under the ceiling, with a small gap so it snaps away.
+  - They run across each opening so they slide out, keep clear of the sides and of each other, and skip closed cavities they could never come out of.
+  - Settings: overhang angle, thickness, top width, spacing, gap, peg height and spacing, direction, skip openings narrow enough to bridge, down to the plate, only on selected faces, and separate object (grouped with the part) or joined into it. Live preview.
+  - Turn off the slicer's own supports for those areas, or it adds them on top.
+- **New icon:** in Windows Explorer, the taskbar and shortcuts, the window, the start card and About, and the Linux applications menu.
+
+### Download
+- **Windows:** `Simply3D-windows-x64.zip` — unzip and run `simply3d.exe` (64-bit Windows 10/11).
+- **Linux:** `Simply3D-linux-x64.tar.gz` — unpack and run `./simply3d`, or `./install.sh` to add it to your applications menu.

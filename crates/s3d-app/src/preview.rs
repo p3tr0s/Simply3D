@@ -141,7 +141,8 @@ impl App {
                     sel.hash(&mut sh);
                 }
                 format!(
-                    "{} {} {} {} {} {} {} {} {:?} {} {} {}",
+                    "{} {} {} {} {} {} {} {} {} {:?} {} {} {}",
+                    t.fin_max_bridge,
                     t.fin_top,
                     t.fin_pegs,
                     t.fin_peg_lift,
@@ -636,6 +637,7 @@ impl App {
                     faces: None,
                     pegs: t.fin_pegs.then_some(s3d_core::fins::Pegs { lift: t.fin_peg_lift, spacing: t.fin_peg_spacing }),
                     top: t.fin_top,
+                    max_bridge: t.fin_max_bridge,
                 };
                 let join = t.fin_join;
                 (
