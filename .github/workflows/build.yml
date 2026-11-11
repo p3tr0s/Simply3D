@@ -78,9 +78,10 @@ jobs:
   # A new version number in Cargo.toml publishes itself: once both builds pass, the
   # vX.Y.Z tag and release are created with both downloads and the notes from
   # release-notes/vX.Y.Z.txt (or notes made from the commits if there's no file).
-  # Pushes that keep the version only build and test.
+  # Pushes and manual runs (Actions ▸ Build ▸ Run workflow) that keep the version only
+  # build and test.
   release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: [windows, linux]
     runs-on: ubuntu-latest
     concurrency: release
