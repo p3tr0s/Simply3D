@@ -1010,6 +1010,43 @@ pub fn op_settings(app: &mut App, ui: &mut egui::Ui, kind: PreviewKind) {
                 ui.add_sized([78.0, ui.spacing().interact_size.y], field);
             });
         }
+        PreviewKind::Fins => {
+            row(ui, |ui| {
+                ui.label("Overhang over");
+                ui.add(num(&mut t.fin_angle, Kind::Angle).speed(0.5).range(10.0..=89.0).suffix("°"))
+                    .on_hover_text("Faces leaning further than this from vertical get fins (45° is the usual slicer setting)");
+            });
+            row(ui, |ui| {
+                ui.label("Fins");
+                ui.add(num(&mut t.fin_thickness, Kind::Length).speed(0.05).range(0.2..=10.0).suffix(" mm"))
+                    .on_hover_text("Thickness: two lines of your nozzle (0.8 for a 0.4 nozzle) prints clean and still snaps off");
+                ui.label("every");
+                ui.add(num(&mut t.fin_spacing, Kind::Length).speed(0.1).range(0.5..=100.0).suffix(" mm"))
+                    .on_hover_text("Distance between fins: how far the ceiling bridges between them");
+            });
+            row(ui, |ui| {
+                ui.label("Gap");
+                ui.add(num(&mut t.fin_gap, Kind::Length).speed(0.01).range(0.0..=2.0).max_decimals(2).suffix(" mm"))
+                    .on_hover_text("Air under the ceiling and at the ends, so they break away. About one layer height");
+            });
+            row(ui, |ui| {
+                use s3d_core::fins::FinDir;
+                ui.label("Run");
+                ui.selectable_value(&mut t.fin_dir, FinDir::Auto, "Auto").on_hover_text("Across each opening's short side, so they slide out");
+                ui.selectable_value(&mut t.fin_dir, FinDir::X, "Along X");
+                ui.selectable_value(&mut t.fin_dir, FinDir::Y, "Along Y");
+            });
+            row(ui, |ui| {
+                ui.checkbox(&mut t.fin_plate, "Down to the plate")
+                    .on_hover_text("Also under overhangs that hang over the plate, not just in holes and slots");
+                ui.checkbox(&mut t.fin_join, "Part of the object")
+                    .on_hover_text("Off: the fins are their own object, easy to move or delete. On: joined into the model");
+            });
+            if app.face_rt.count() > 0 {
+                ui.checkbox(&mut t.fin_faces, format!("Only on the {} selected faces", app.face_rt.count()))
+                    .on_hover_text("Limit them to the faces picked with Select faces (S)");
+            }
+        }
         PreviewKind::Hollow => {
             row(ui, |ui| {
                 ui.label("Wall");

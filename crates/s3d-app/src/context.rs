@@ -144,6 +144,7 @@ pub fn object_menu(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             ("Hollow…", PreviewKind::Hollow),
             ("Make solid / remesh…", PreviewKind::MakeSolid),
             ("Pattern / lattice…", PreviewKind::Pattern),
+            ("Support fins…", PreviewKind::Fins),
         ] {
             if item(ui, true, label, "") {
                 if kind == PreviewKind::ExtrudeDown {

@@ -13,6 +13,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
+/// Fins as their own object: amber, so they read as supports.
+const FIN_COLOUR: [u8; 4] = [235, 180, 60, 255];
+
 pub type JobFn = Box<dyn FnOnce(&Progress) -> JobOutput + Send>;
 
 /// A cancellable background computation. Dropping it cancels the work.
@@ -59,6 +62,7 @@ pub enum PreviewKind {
     MakeSolid,
     Pattern,
     Texture,
+    Fins,
 }
 
 impl PreviewKind {
@@ -73,6 +77,7 @@ impl PreviewKind {
             PreviewKind::MakeSolid => "Make solid",
             PreviewKind::Pattern => "Pattern",
             PreviewKind::Texture => "Texture",
+            PreviewKind::Fins => "Support fins",
         }
     }
 }
@@ -129,6 +134,24 @@ impl App {
                     self.scene.get(self.face_rt.obj.unwrap_or(0)).map(|o| o.transform.scale)
                 )
             }
+            PreviewKind::Fins => {
+                let mut sh = std::collections::hash_map::DefaultHasher::new();
+                if let Some((id, sel)) = self.fin_faces() {
+                    id.hash(&mut sh);
+                    sel.hash(&mut sh);
+                }
+                format!(
+                    "{} {} {} {} {:?} {} {} {}",
+                    t.fin_angle,
+                    t.fin_thickness,
+                    t.fin_spacing,
+                    t.fin_gap,
+                    t.fin_dir,
+                    t.fin_plate,
+                    t.fin_join,
+                    sh.finish()
+                )
+            }
             PreviewKind::Pattern => {
                 format!(
                     "{:?} {} {} {} {} {}",
@@ -145,6 +168,7 @@ impl App {
                 | PreviewKind::Hollow
                 | PreviewKind::MakeSolid
                 | PreviewKind::Pattern
+                | PreviewKind::Fins
         );
         for o in self.selection.iter().filter_map(|id| self.scene.get(*id)) {
             o.id.hash(&mut h);
@@ -205,6 +229,7 @@ impl App {
         let p = self.preview.take().unwrap();
         let kind = p.kind;
         let r = p.result.unwrap();
+        let r_targets = r.targets.clone();
         if !r.swap.is_empty() {
             self.checkpoint(kind.name());
             for (id, h) in r.swap {
@@ -225,6 +250,9 @@ impl App {
             let add =
                 r.add.into_iter().map(|(n, h, c, _)| (n, std::sync::Arc::try_unwrap(h.mesh).unwrap_or_else(|a| (*a).clone()), c)).collect();
             self.apply_output(JobOutput::Replace { label: kind.name().into(), remove: r.hide, add, message: r.message }, r.secs);
+        }
+        if kind == PreviewKind::Fins && !self.mesh_tools.fin_join {
+            self.group_fins(&r_targets);
         }
         if kind == PreviewKind::Cut {
             self.tool = Tool::Select;
@@ -300,6 +328,39 @@ impl App {
     pub fn shown_preview(&self) -> Option<&PreviewResult> {
         let r = self.preview.as_ref()?.result.as_ref()?;
         (r.targets == self.selection).then_some(r)
+    }
+
+    /// New fins go into a group with the object they belong to, so they move with it.
+    fn group_fins(&mut self, targets: &[ObjectId]) {
+        for fins in self.selection.clone() {
+            let Some(name) = self.scene.get(fins).map(|o| o.name.clone()) else { continue };
+            let Some(part) = targets.iter().copied().find(|t| self.scene.get(*t).is_some_and(|o| format!("{} fins", o.name) == name)) else {
+                continue;
+            };
+            match self.scene.group_of(part) {
+                Some(g) => {
+                    if let Some(o) = self.scene.get_mut(fins) {
+                        o.group = Some(g);
+                    }
+                }
+                None => {
+                    let gname = self.scene.get(part).map(|o| o.name.clone()).unwrap_or_default();
+                    self.scene.group(&[part, fins], gname);
+                }
+            }
+        }
+    }
+
+    /// The face selection support fins are limited to, if that's on and there is one on a
+    /// selected object: (object, selected triangles).
+    pub fn fin_faces(&self) -> Option<(ObjectId, &[bool])> {
+        let id = self.face_rt.obj?;
+        let o = self.scene.get(id)?;
+        let on = self.mesh_tools.fin_faces
+            && self.selection.contains(&id)
+            && self.face_rt.count() > 0
+            && self.face_rt.sel.len() == o.mesh.mesh.triangles.len();
+        on.then_some((id, &self.face_rt.sel[..]))
     }
 
     fn cut_plane(&self) -> (Vec3, Vec3) {
@@ -554,6 +615,79 @@ impl App {
                             remove,
                             add,
                             message: format!("Hollowed — {} (Section view, X, shows the inside)", info.join("; ")),
+                        }
+                    }),
+                )
+            }
+            PreviewKind::Fins => {
+                let objs = world();
+                let faces = self.fin_faces().map(|(id, s)| (id, s.to_vec()));
+                let opts = s3d_core::fins::FinOptions {
+                    angle: t.fin_angle,
+                    thickness: t.fin_thickness,
+                    spacing: t.fin_spacing,
+                    gap: t.fin_gap,
+                    dir: t.fin_dir,
+                    openings_only: !t.fin_plate,
+                    faces: None,
+                };
+                let join = t.fin_join;
+                (
+                    "Adding support fins…".into(),
+                    Box::new(move |p: &Progress| {
+                        let mut add = vec![];
+                        let mut remove = vec![];
+                        let mut made = 0;
+                        let mut last_err = None;
+                        let n = objs.len() as f32;
+                        for (i, (id, name, color, m)) in objs.into_iter().enumerate() {
+                            let mut o = opts.clone();
+                            // a face selection on another object leaves this one out
+                            if let Some((fid, sel)) = &faces {
+                                if *fid != id {
+                                    continue;
+                                }
+                                o.faces = Some(sel.clone());
+                            }
+                            let r = p.range(i as f32 / n, (i + 1) as f32 / n);
+                            let (fins, rep) = match s3d_core::fins::support_fins(&m, &o, &r) {
+                                Ok(x) => x,
+                                Err(s3d_core::Error::Cancelled) => return JobOutput::Error("cancelled".into()),
+                                Err(s3d_core::Error::Parse(e)) => {
+                                    last_err = Some(e);
+                                    continue;
+                                }
+                                Err(e) => return JobOutput::Error(format!("Support fins failed on {name}: {e}")),
+                            };
+                            made += rep.fins;
+                            if join {
+                                // fins only touch the floor, so a union is quick; plain
+                                // combining is the fallback
+                                let joined = s3d_core::csg::boolean(&m, &fins, s3d_core::csg::BoolOp::Union).unwrap_or_else(|_| {
+                                    let mut c = m.clone();
+                                    c.append(&fins);
+                                    c
+                                });
+                                remove.push(id);
+                                add.push((name, joined, color));
+                            } else {
+                                add.push((format!("{name} fins"), fins, FIN_COLOUR));
+                            }
+                        }
+                        if made == 0 {
+                            return JobOutput::Error(match last_err {
+                                Some(e) => format!("No fins: {e}"),
+                                None => "No fins: nothing selected to put them on".into(),
+                            });
+                        }
+                        JobOutput::Replace {
+                            label: "Support fins".into(),
+                            remove,
+                            add,
+                            message: format!(
+                                "Added {made} support fin{} — they snap off after printing",
+                                if made == 1 { "" } else { "s" }
+                            ),
                         }
                     }),
                 )

@@ -374,6 +374,17 @@ pub struct MeshTools {
     pub pattern_skin: f32,
     pub pattern_voxel: f32,
     pub pattern_seed: u64,
+    pub fin_angle: f32,
+    pub fin_thickness: f32,
+    pub fin_spacing: f32,
+    pub fin_gap: f32,
+    pub fin_dir: s3d_core::fins::FinDir,
+    /// Also under overhangs over the plate, not only in openings.
+    pub fin_plate: bool,
+    /// Make them part of the object instead of a separate one.
+    pub fin_join: bool,
+    /// Only on the faces selected with Select faces.
+    pub fin_faces: bool,
 }
 
 impl Default for MeshTools {
@@ -405,6 +416,14 @@ impl Default for MeshTools {
             pattern_skin: 2.0,
             pattern_voxel: 0.0,
             pattern_seed: 1,
+            fin_angle: 45.0,
+            fin_thickness: 0.8,
+            fin_spacing: 4.0,
+            fin_gap: 0.2,
+            fin_dir: s3d_core::fins::FinDir::Auto,
+            fin_plate: false,
+            fin_join: false,
+            fin_faces: true,
         }
     }
 }

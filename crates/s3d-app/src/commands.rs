@@ -144,6 +144,9 @@ pub fn all() -> Vec<Command> {
         cmd!("Mesh", "Extrude down to the plate (preview)", "", has_sel, |a, _| {
             a.start_extrude_down()
         }),
+        cmd!("Mesh", "Support fins under holes and slots (preview)", "", has_sel, |a, _| {
+            a.start_preview(PreviewKind::Fins)
+        }),
         cmd!("Mesh", "Apply preview", "Enter", |a| a.preview.is_some(), |a, _| a.apply_preview()),
         cmd!("Mesh", "Cancel preview", "Esc", |a| a.preview.is_some(), |a, _| a.cancel_preview()),
         cmd!("Mesh", "Repair", "", has_sel, |a, c| a.repair_selected(c)),

@@ -12,6 +12,7 @@ pub mod bvh;
 pub mod connectors;
 pub mod csg;
 pub mod extrude;
+pub mod fins;
 pub mod faces;
 pub mod fonts;
 pub mod history;

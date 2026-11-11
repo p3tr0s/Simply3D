@@ -812,6 +812,12 @@ fn edit_tab(app: &mut App, ui: &mut Ui, ctx: &egui::Context) {
         {
             mesh_op(app, PreviewKind::MakeSolid);
         }
+        if big(ui, "fence", "Support fins", has, active(app, PreviewKind::Fins), false)
+            .on_hover_text("Thin break-away fins under the ceilings of holes and slots, so they print without slicer supports")
+            .clicked()
+        {
+            mesh_op(app, PreviewKind::Fins);
+        }
         let on = app.settings.print_check;
         if big(ui, "triangle-alert", "Print check", !app.scene.objects.is_empty(), on, false)
             .on_hover_text("Colour overhangs, thin walls and islands that may print badly")

@@ -35,6 +35,7 @@ pub fn source(name: &str) -> ImageSource<'static> {
         "external-link" => egui::include_image!("../icons/external-link.svg"),
         "eye" => egui::include_image!("../icons/eye.svg"),
         "eye-off" => egui::include_image!("../icons/eye-off.svg"),
+        "fence" => egui::include_image!("../icons/fence.svg"),
         "file-input" => egui::include_image!("../icons/file-input.svg"),
         "file-plus" => egui::include_image!("../icons/file-plus.svg"),
         "flip-horizontal-2" => egui::include_image!("../icons/flip-horizontal-2.svg"),
