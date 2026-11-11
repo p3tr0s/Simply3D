@@ -141,7 +141,11 @@ impl App {
                     sel.hash(&mut sh);
                 }
                 format!(
-                    "{} {} {} {} {:?} {} {} {}",
+                    "{} {} {} {} {} {} {} {} {:?} {} {} {}",
+                    t.fin_top,
+                    t.fin_pegs,
+                    t.fin_peg_lift,
+                    t.fin_peg_spacing,
                     t.fin_angle,
                     t.fin_thickness,
                     t.fin_spacing,
@@ -630,6 +634,8 @@ impl App {
                     dir: t.fin_dir,
                     openings_only: !t.fin_plate,
                     faces: None,
+                    pegs: t.fin_pegs.then_some(s3d_core::fins::Pegs { lift: t.fin_peg_lift, spacing: t.fin_peg_spacing }),
+                    top: t.fin_top,
                 };
                 let join = t.fin_join;
                 (

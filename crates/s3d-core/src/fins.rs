@@ -36,11 +36,33 @@ pub struct FinOptions {
     pub openings_only: bool,
     /// Only these triangles (a face selection), if given.
     pub faces: Option<Vec<bool>>,
+    /// Stand the fins on small pegs instead of their whole bottom edge, so they come
+    /// away with a snip or a file.
+    pub pegs: Option<Pegs>,
+    /// Width of the fin's top, mm: the fin flares out from its thickness to this just
+    /// under the ceiling (at 45°, so it prints), holding the ceiling up across a wide
+    /// strip instead of a thin edge. Its thickness or less: straight fins.
+    pub top: f32,
+}
+
+/// Fins held up on pegs: a gap under each fin, bridged by tapered pegs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pegs {
+    /// Gap between the fin and the surface below, mm.
+    pub lift: f32,
+    /// Distance between pegs along a fin, mm.
+    pub spacing: f32,
+}
+
+impl Default for Pegs {
+    fn default() -> Self {
+        Self { lift: 1.0, spacing: 5.0 }
+    }
 }
 
 impl Default for FinOptions {
     fn default() -> Self {
-        Self { angle: 45.0, thickness: 0.8, spacing: 4.0, gap: 0.2, dir: FinDir::Auto, openings_only: true, faces: None }
+        Self { angle: 45.0, thickness: 0.8, spacing: 4.0, gap: 0.2, dir: FinDir::Auto, openings_only: true, faces: None, pegs: Some(Pegs::default()), top: 3.0 }
     }
 }
 
@@ -60,6 +82,91 @@ const MIN_AREA: f32 = 0.5;
 /// How far fins reach into the surface they stand on, so they fuse with it, mm.
 const SINK: f32 = 0.1;
 const MAX_FINS: usize = 5000;
+/// Peg width where it meets the fin, and where it touches the surface below, mm.
+const PEG_TOP: f32 = 1.6;
+const PEG_TIP: f32 = 0.6;
+
+/// Height of the flat band at the top of a flared fin, mm.
+const BAND: f32 = 0.4;
+
+/// The flared top of a fin along a run: from the fin's thickness `t` out to `2 × half`
+/// just under the ceiling, in fin space (x along, y up, z across from 0 to `t`).
+fn flare(run: &[(f32, f32, f32)], t: f32, half: f32) -> Mesh {
+    let mut m = Mesh::default();
+    let rise = half - t * 0.5;
+    for s in run {
+        let (top, z1) = (s.1, s.1 - BAND);
+        let z0 = z1 - rise;
+        // the cross-section, counter-clockwise across (z) and up (y)
+        for (w, y) in [(-t * 0.5, z0), (t * 0.5, z0), (half, z1), (half, top), (-half, top), (-half, z1)] {
+            m.positions.push(Vec3::new(s.0, y, t * 0.5 + w));
+        }
+    }
+    let n = run.len() as u32;
+    let v = |i: u32, j: u32| i * 6 + (j % 6);
+    for i in 0..n - 1 {
+        for j in 0..6 {
+            m.triangles.push([v(i, j), v(i + 1, j + 1), v(i, j + 1)]);
+            m.triangles.push([v(i, j), v(i + 1, j), v(i + 1, j + 1)]);
+        }
+    }
+    for j in 1..5 {
+        m.triangles.push([v(0, 0), v(0, j), v(0, j + 1)]);
+        m.triangles.push([v(n - 1, 0), v(n - 1, j + 1), v(n - 1, j)]);
+    }
+    if m.volume() < 0.0 {
+        m.flip();
+    }
+    m
+}
+
+/// Value at `u` along a run of (u, top, bottom) samples (`f` picks top or bottom).
+fn along(run: &[(f32, f32, f32)], u: f32, f: impl Fn(&(f32, f32, f32)) -> f32) -> f32 {
+    let i = run.partition_point(|s| s.0 < u).clamp(1, run.len() - 1);
+    let (a, b) = (&run[i - 1], &run[i]);
+    let t = if b.0 > a.0 { ((u - a.0) / (b.0 - a.0)).clamp(0.0, 1.0) } else { 0.0 };
+    f(a) + (f(b) - f(a)) * t
+}
+
+/// The side outline of one fin in (u, z): its top under the ceiling and its bottom on
+/// the surface — whole, or lifted and resting on tapered pegs.
+fn fin_outline(run: &[(f32, f32, f32)], pegs: Option<Pegs>) -> Vec<Vec2> {
+    let mut poly: Vec<Vec2> = run.iter().map(|s| Vec2::new(s.0, s.1)).collect();
+    let solid = |mut poly: Vec<Vec2>| {
+        poly.extend(run.iter().rev().map(|s| Vec2::new(s.0, s.2)));
+        poly
+    };
+    let Some(pg) = pegs else { return solid(poly) };
+    let lift = pg.lift.max(0.1);
+    let (ua, ub) = (run[0].0, run[run.len() - 1].0);
+    let len = ub - ua;
+    // too low, or too short, for pegs: stand on the whole edge
+    let room = run.iter().map(|s| s.1 - (s.2 + SINK + lift)).fold(f32::INFINITY, f32::min);
+    if room < 0.8 || len < PEG_TOP {
+        return solid(poly);
+    }
+    let base = |u: f32| along(run, u, |s| s.2) + SINK + lift;
+    let n = if len < 2.0 * PEG_TOP { 1 } else { ((len - PEG_TOP) / pg.spacing.max(PEG_TOP)).ceil() as usize + 1 };
+    let pegs: Vec<f32> = if n == 1 {
+        vec![(ua + ub) * 0.5]
+    } else {
+        (0..n).map(|k| ua + PEG_TOP * 0.5 + (len - PEG_TOP) * k as f32 / (n - 1) as f32).collect()
+    };
+    let inside = |u: f32| pegs.iter().any(|c| (u - c).abs() < PEG_TOP * 0.5 + 1e-4);
+    // the underside, right to left: the lifted edge, dipping down at each peg
+    let mut bottom: Vec<Vec2> = run.iter().filter(|s| !inside(s.0)).map(|s| Vec2::new(s.0, base(s.0))).collect();
+    for &c in &pegs {
+        let foot = along(run, c, |s| s.2);
+        bottom.push(Vec2::new(c + PEG_TOP * 0.5, base(c + PEG_TOP * 0.5)));
+        bottom.push(Vec2::new(c + PEG_TIP * 0.5, foot));
+        bottom.push(Vec2::new(c - PEG_TIP * 0.5, foot));
+        bottom.push(Vec2::new(c - PEG_TOP * 0.5, base(c - PEG_TOP * 0.5)));
+    }
+    bottom.sort_by(|a, b| b.x.total_cmp(&a.x));
+    // the ends are always at a peg's outer edge or a sample; keep the outline closed there
+    poly.extend(bottom);
+    poly
+}
 
 /// Downward-facing triangles grouped into connected overhang areas.
 fn overhang_areas(m: &Mesh, o: &FinOptions) -> Vec<Vec<usize>> {
@@ -247,8 +354,8 @@ pub fn support_fins(m: &Mesh, o: &FinOptions, progress: &Progress) -> Result<(Me
             wmin = wmin.min(w);
             wmax = wmax.max(w);
         }
-        // fins evenly across, clear of the sides
-        let margin = t * 0.5 + gap;
+        // fins evenly across, their tops clear of the sides
+        let margin = o.top.max(t) * 0.5 + gap;
         let avail = wmax - wmin - 2.0 * margin;
         let rows: Vec<f32> = if avail <= 0.0 {
             if wmax - wmin < t {
@@ -263,17 +370,29 @@ pub fn support_fins(m: &Mesh, o: &FinOptions, progress: &Progress) -> Result<(Me
                 (0..n).map(|k| wmin + margin + avail * k as f32 / (n - 1) as f32).collect()
             }
         };
+        // how wide the tops can flare: not into the next fin, nor the sides
+        let row_step = if rows.len() > 1 { rows[1] - rows[0] } else { f32::INFINITY };
         let step = ((umax - umin) / 400.0).clamp(0.1, 0.5);
         let samples = ((umax - umin) / step).ceil() as usize + 1;
         let mut made = 0;
         for w in rows {
+            let half = (o.top * 0.5).min((row_step - gap.max(0.3)) * 0.5).min((w - wmin).min(wmax - w) - gap);
+            let half = if half >= t * 0.5 + 0.2 { half } else { t * 0.5 };
+            let ceil_at = |xy: Vec2| cbvh.ray_cast_where(&ceiling, Vec3::new(xy.x, xy.y, low), Vec3::Z, |_| true).map(|h| low + h.0);
             // (u, top, bottom) along the fin; None where there's nothing to support
             let col: Vec<Option<(f32, f32, f32)>> = (0..samples)
                 .map(|k| {
                     let u = (umin + k as f32 * step).min(umax);
                     let xy = d * u + p * w;
-                    let (tt, _) = cbvh.ray_cast_where(&ceiling, Vec3::new(xy.x, xy.y, low), Vec3::Z, |_| true)?;
-                    let top = low + tt;
+                    let mut top = ceil_at(xy)?;
+                    // a wide top stays clear of the ceiling across its whole width
+                    if half > t * 0.5 {
+                        for side in [-half, half] {
+                            if let Some(z) = ceil_at(xy + p * side) {
+                                top = top.min(z);
+                            }
+                        }
+                    }
                     let bottom = match floor_below(m, &bvh, Vec3::new(xy.x, xy.y, top - 0.01))? {
                         Some(z) => z - SINK,
                         None if o.openings_only => return None,
@@ -314,11 +433,28 @@ pub fn support_fins(m: &Mesh, o: &FinOptions, progress: &Progress) -> Result<(Me
                 if run.len() < 2 {
                     continue;
                 }
-                let mut poly: Vec<Vec2> = run.iter().map(|s| Vec2::new(s.0, s.1)).collect();
-                poly.extend(run.iter().rev().map(|s| Vec2::new(s.0, s.2)));
+                // the flare, as wide as the room under the ceiling allows here
+                let floor_gap = o.pegs.map_or(0.3, |pg| SINK + pg.lift.max(0.1) + 0.3);
+                let room = run.iter().map(|s| s.1 - BAND - (s.2 + floor_gap)).fold(f32::INFINITY, f32::min);
+                let half_run = half.min(t * 0.5 + room);
+                let cap = (half_run >= t * 0.5 + 0.2).then(|| flare(&run, t, half_run));
+                // under a flare the fin itself stops inside it
+                let body: Vec<(f32, f32, f32)> = match cap {
+                    Some(_) => run.iter().map(|s| (s.0, s.1 - BAND * 0.5, s.2)).collect(),
+                    None => run.clone(),
+                };
+                let poly = fin_outline(&body, o.pegs);
                 let fin = match crate::text::extrude_contours(vec![poly], t) {
                     Ok(f) if !f.is_empty() => f,
                     _ => continue,
+                };
+                let fin = match cap {
+                    Some(cap) => crate::csg::boolean(&fin, &cap, crate::csg::BoolOp::Union).unwrap_or_else(|_| {
+                        let mut f = fin.clone();
+                        f.append(&cap);
+                        f
+                    }),
+                    None => fin,
                 };
                 // (u, z, across) → world
                 let mut placed = fin;
@@ -377,7 +513,8 @@ mod tests {
     #[test]
     fn slot_gets_fins_along_its_depth() {
         let m = slotted_wall();
-        let (fins, r) = support_fins(&m, &FinOptions::default(), &Progress::new()).unwrap();
+        let o = FinOptions { top: 0.0, ..Default::default() };
+        let (fins, r) = support_fins(&m, &o, &Progress::new()).unwrap();
         assert_eq!(r.areas, 1);
         // 20 mm wide slot, fins every 4 mm: about 5 of them
         assert!((4..=6).contains(&r.fins), "{r:?}");
@@ -398,10 +535,63 @@ mod tests {
     }
 
     #[test]
+    fn fins_on_pegs() {
+        let m = slotted_wall();
+        let solid = FinOptions { pegs: None, top: 0.0, ..Default::default() };
+        let (whole, _) = support_fins(&m, &solid, &Progress::new()).unwrap();
+        let o = FinOptions { top: 0.0, ..Default::default() };
+        let (pegged, r) = support_fins(&m, &o, &Progress::new()).unwrap();
+        let parts = pegged.connected_components();
+        // still one closed piece per fin, reaching the floor only at its pegs
+        assert_eq!(parts.len(), r.fins);
+        for f in &parts {
+            assert!(analyze(f).is_watertight());
+            assert!((f.bounds().min.z - (10.0 - SINK)).abs() < 0.02);
+        }
+        assert!(pegged.volume() < whole.volume() * 0.9, "{} vs {}", pegged.volume(), whole.volume());
+        // what touches the floor: a sliver just above it holds only the peg tips
+        let touching: f32 = (0..pegged.triangles.len())
+            .filter_map(|i| {
+                let [a, b, c] = pegged.tri(i);
+                let n = (b - a).cross(c - a);
+                (n.z < 0.0 && a.z.max(b.z).max(c.z) < 10.0).then(|| n.length() * 0.5)
+            })
+            .sum();
+        // 10 mm long fins with pegs every 5 mm: 3 tips of 0.6 × 0.8 each
+        assert!(touching < r.fins as f32 * 3.0 * 0.6 * 0.8 * 1.1, "{touching}");
+    }
+
+    #[test]
+    fn flared_tops() {
+        let m = slotted_wall();
+        let (fins, r) = support_fins(&m, &FinOptions::default(), &Progress::new()).unwrap();
+        let parts = fins.connected_components();
+        assert_eq!(parts.len(), r.fins);
+        for f in &parts {
+            assert!(analyze(f).is_watertight(), "flared fin isn't closed");
+            let b = f.bounds();
+            // 3 mm wide at the top, under the 14 mm ceiling, still on pegs at the floor
+            assert!((b.size().x - 3.0).abs() < 0.05, "{b:?}");
+            assert!((b.max.z - 13.8).abs() < 0.02 && (b.min.z - (10.0 - SINK)).abs() < 0.02, "{b:?}");
+            // thin lower down: a slice through the middle is the fin's thickness
+            let mid: Vec<f32> = f.positions.iter().filter(|p| (p.z - 11.5).abs() < 0.6).map(|p| p.x).collect();
+            if let (Some(lo), Some(hi)) = (mid.iter().cloned().reduce(f32::min), mid.iter().cloned().reduce(f32::max)) {
+                assert!(hi - lo < 0.8 + 0.01, "{}", hi - lo);
+            }
+        }
+        // the tops of neighbouring fins don't touch
+        let mut xs: Vec<(f32, f32)> = parts.iter().map(|f| (f.bounds().min.x, f.bounds().max.x)).collect();
+        xs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for w in xs.windows(2) {
+            assert!(w[1].0 - w[0].1 >= 0.2, "{xs:?}");
+        }
+    }
+
+    #[test]
     fn directions_and_the_plate() {
         let m = slotted_wall();
         // fins across the slot instead (along X)
-        let o = FinOptions { dir: FinDir::X, ..Default::default() };
+        let o = FinOptions { dir: FinDir::X, top: 0.0, ..Default::default() };
         let (fins, _) = support_fins(&m, &o, &Progress::new()).unwrap();
         for f in fins.connected_components() {
             assert!((f.bounds().size().y - 0.8).abs() < 0.01);

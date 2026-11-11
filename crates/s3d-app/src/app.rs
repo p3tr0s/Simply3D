@@ -385,6 +385,12 @@ pub struct MeshTools {
     pub fin_join: bool,
     /// Only on the faces selected with Select faces.
     pub fin_faces: bool,
+    /// Width the fins flare out to under the ceiling (≤ thickness: straight fins).
+    pub fin_top: f32,
+    /// Stand them on pegs instead of their whole bottom edge.
+    pub fin_pegs: bool,
+    pub fin_peg_lift: f32,
+    pub fin_peg_spacing: f32,
 }
 
 impl Default for MeshTools {
@@ -424,6 +430,10 @@ impl Default for MeshTools {
             fin_plate: false,
             fin_join: false,
             fin_faces: true,
+            fin_top: 3.0,
+            fin_pegs: true,
+            fin_peg_lift: 1.0,
+            fin_peg_spacing: 5.0,
         }
     }
 }

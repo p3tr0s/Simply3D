@@ -1025,9 +1025,26 @@ pub fn op_settings(app: &mut App, ui: &mut egui::Ui, kind: PreviewKind) {
                     .on_hover_text("Distance between fins: how far the ceiling bridges between them");
             });
             row(ui, |ui| {
+                ui.label("Top");
+                ui.add(num(&mut t.fin_top, Kind::Length).speed(0.05).range(0.0..=50.0).suffix(" mm")).on_hover_text(
+                    "Each fin flares out (at 45°, so it prints) to this width just under the ceiling, holding it up across a wide strip. \
+                     At or below the fin thickness: straight fins",
+                );
+            });
+            row(ui, |ui| {
                 ui.label("Gap");
                 ui.add(num(&mut t.fin_gap, Kind::Length).speed(0.01).range(0.0..=2.0).max_decimals(2).suffix(" mm"))
                     .on_hover_text("Air under the ceiling and at the ends, so they break away. About one layer height");
+            });
+            row(ui, |ui| {
+                ui.checkbox(&mut t.fin_pegs, "On pegs").on_hover_text(
+                    "Stand each fin on small tapered pegs instead of its whole bottom edge: a quick snip or file and they're off",
+                );
+                ui.add_enabled(t.fin_pegs, num(&mut t.fin_peg_lift, Kind::Length).speed(0.05).range(0.2..=10.0).suffix(" mm"))
+                    .on_hover_text("Height of the pegs: the gap between the fin and the surface under it");
+                ui.add_enabled(t.fin_pegs, egui::Label::new("every"));
+                ui.add_enabled(t.fin_pegs, num(&mut t.fin_peg_spacing, Kind::Length).speed(0.1).range(1.0..=100.0).suffix(" mm"))
+                    .on_hover_text("Distance between pegs along a fin (there's always one near each end)");
             });
             row(ui, |ui| {
                 use s3d_core::fins::FinDir;
